@@ -181,3 +181,103 @@ body {
   font-size: 15px;
   text-align: center;
 }
+
+/* ========== 新建项目弹窗 ========== */
+.new-chat-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.dialog-box {
+  position: relative;
+  width: 320px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  z-index: 1;
+}
+
+.dialog-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 14px;
+}
+
+.dialog-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #333;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.dialog-input:focus {
+  border-color: #5B8DEF;
+}
+
+.dialog-input::placeholder {
+  color: #bbb;
+}
+
+.dialog-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 6px;
+  margin-bottom: 16px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dialog-btn-cancel {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.dialog-btn-cancel:hover {
+  background: #e4e4e4;
+}
+
+.dialog-btn-confirm {
+  background: #5B8DEF;
+  color: #fff;
+}
+
+.dialog-btn-confirm:hover {
+  background: #4a7de0;
+}

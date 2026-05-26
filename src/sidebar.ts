@@ -35,11 +35,21 @@ class Sidebar {
     this.toggleBtn = this.sidebarEl.querySelector(".sidebar-toggle-btn")!;
 
     this.toggleBtn.addEventListener("click", () => this.toggle());
-    this.createBtn.addEventListener("click", () => this.createChat());
+    this.createBtn.addEventListener("click", () => this.createChatWithDialog());
   }
 
-  /** 创建新对话 */
-  createChat(): ChatItem | null {
+  /** 获取下一个可用的项目名称（确保不重复） */
+  private getNextProjectName(): string {
+    let index = 1;
+    const existingNames = new Set(this.chats.map((c) => c.name));
+    while (existingNames.has(`项目 ${index}`)) {
+      index++;
+    }
+    return `项目 ${index}`;
+  }
+
+  /** 创建新对话（可指定名称） */
+  createChat(customName?: string): ChatItem | null {
     // 如果上一个对话没有任何操作，不新建
     if (this.chats.length > 0) {
       const lastChat = this.chats[this.chats.length - 1];
@@ -48,9 +58,10 @@ class Sidebar {
       }
     }
 
+    const name = customName?.trim() || this.getNextProjectName();
     const chat: ChatItem = {
       id: this.nextId++,
-      name: `对话 ${this.nextId - 1}`,
+      name,
       hasContent: false,
       iconColor: ICON_COLORS[Math.floor(Math.random() * ICON_COLORS.length)],
     };
@@ -59,6 +70,55 @@ class Sidebar {
     this.renderChatList();
     this.setActiveChat(chat.id);
     return chat;
+  }
+
+  /** 通过弹窗创建新对话 */
+  createChatWithDialog(): void {
+    // 如果上一个对话没有任何操作，不新建
+    if (this.chats.length > 0) {
+      const lastChat = this.chats[this.chats.length - 1];
+      if (!lastChat.hasContent) {
+        this.setActiveChat(lastChat.id);
+        return;
+      }
+    }
+
+    const defaultName = this.getNextProjectName();
+    const dialog = document.createElement("div");
+    dialog.className = "new-chat-dialog";
+    dialog.innerHTML = `
+      <div class="dialog-overlay"></div>
+      <div class="dialog-box">
+        <div class="dialog-title">新建项目</div>
+        <input type="text" class="dialog-input" placeholder="${defaultName}" value="" spellcheck="false" />
+        <div class="dialog-hint">留空将使用默认名称</div>
+        <div class="dialog-actions">
+          <button class="dialog-btn dialog-btn-cancel">取消</button>
+          <button class="dialog-btn dialog-btn-confirm">创建</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+
+    const input = dialog.querySelector(".dialog-input") as HTMLInputElement;
+    input.focus();
+
+    const closeDialog = () => dialog.remove();
+
+    const confirm = () => {
+      const name = input.value.trim() || defaultName;
+      this.createChat(name);
+      closeDialog();
+    };
+
+    dialog.querySelector(".dialog-btn-confirm")?.addEventListener("click", confirm);
+    dialog.querySelector(".dialog-btn-cancel")?.addEventListener("click", closeDialog);
+    dialog.querySelector(".dialog-overlay")?.addEventListener("click", closeDialog);
+
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") confirm();
+      if (ev.key === "Escape") closeDialog();
+    });
   }
 
   /** 设置当前活跃对话 */
@@ -76,7 +136,7 @@ class Sidebar {
   renameChat(id: number, newName: string): void {
     const chat = this.chats.find((c) => c.id === id);
     if (chat) {
-      chat.name = newName.trim() || `对话 ${id}`;
+      chat.name = newName.trim() || `项目 ${id}`;
       this.renderChatList();
     }
   }
