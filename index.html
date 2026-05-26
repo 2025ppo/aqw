@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/sidebar.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tauri App</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <!-- 顶部标题栏（全宽，覆盖最顶层） -->
+    <header data-tauri-drag-region class="app-header">
+      <div class="app-header-left">
+        <!-- 文件菜单 -->
+        <div class="menu-dropdown">
+          <button class="menu-trigger">文件</button>
+          <div class="menu-panel">
+            <div class="menu-item">新建对话</div>
+            <div class="menu-item">保存当前对话</div>
+            <div class="menu-item">导出当前对话</div>
+          </div>
+        </div>
+        <!-- 帮助菜单 -->
+        <div class="menu-dropdown">
+          <button class="menu-trigger">帮助</button>
+          <div class="menu-panel">
+            <div class="menu-item">说明书</div>
+          </div>
+        </div>
+      </div>
+      <div class="app-header-right">
+        <!-- 设置图标 -->
+        <div class="header-btn" id="header-settings" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 5.4 15 1.65 1.65 0 0 0 4 13.18V13a2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 7.6 9.4a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 11 4.77V4a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.77a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V11a2 2 0 0 1 2 2h.09A1.65 1.65 0 0 0 19.4 15z"/>
+          </svg>
+        </div>
+        <!-- 主题切换图标 -->
+        <div class="header-btn" id="header-theme" title="切换主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="5"/>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+        </div>
+        <div class="header-sep"></div>
+        <div class="header-btn" id="header-minimize" title="最小化">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="7.5" width="10" height="1.5" rx="0.5"/></svg>
+        </div>
+        <div class="header-btn" id="header-maximize" title="最大化">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/></svg>
+        </div>
+        <div class="header-btn header-btn-close" id="header-close" title="关闭">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </div>
+      </div>
+    </header>
+
+    <!-- 侧边栏 -->
+    <nav id="sidebar">
+      <div class="sidebar-top">
+        <button class="sidebar-create-btn" title="新建对话">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span class="sidebar-btn-text">新建对话</span>
+        </button>
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-chat-list"></div>
+      <div class="sidebar-bottom">
+        <button class="sidebar-toggle-btn" title="展开侧边栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </nav>
+
+    <!-- 主内容区 -->
+    <main id="main-content">
+      <div id="chat-area">
+        <p class="chat-placeholder">点击左侧 + 号创建新对话</p>
+      </div>
+    </main>
+  </body>
+</html>
