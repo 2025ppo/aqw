@@ -80,7 +80,8 @@ body {
   transition: background 0.15s;
 }
 
-.menu-trigger:hover {
+.menu-trigger:hover,
+.menu-dropdown.active .menu-trigger {
   background: #e4e4e4;
 }
 
@@ -98,8 +99,7 @@ body {
   z-index: 400;
 }
 
-.menu-dropdown:hover .menu-panel,
-.menu-dropdown:focus-within .menu-panel {
+.menu-dropdown.active .menu-panel {
   display: block;
 }
 
@@ -108,8 +108,9 @@ body {
   font-size: 12px;
   color: #444;
   border-radius: 4px;
-  cursor: default;
+  cursor: pointer;
   transition: background 0.1s;
+  user-select: none;
 }
 
 .menu-item:hover {

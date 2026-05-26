@@ -18,10 +18,33 @@ document
 
 // ========== 菜单绑定 ==========
 window.addEventListener("DOMContentLoaded", () => {
+  // 下拉菜单交互：点击触发按钮切换显隐
+  document.querySelectorAll(".menu-dropdown").forEach((dropdown) => {
+    const trigger = dropdown.querySelector(".menu-trigger");
+    trigger?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // 先关闭其他菜单
+      document.querySelectorAll(".menu-dropdown.active").forEach((d) => {
+        if (d !== dropdown) d.classList.remove("active");
+      });
+      dropdown.classList.toggle("active");
+    });
+  });
+
+  // 点击页面其他地方关闭菜单
+  document.addEventListener("click", () => {
+    document.querySelectorAll(".menu-dropdown.active").forEach((d) => {
+      d.classList.remove("active");
+    });
+  });
+
   // 文件菜单 - 新建对话
   document
     .getElementById("menu-new-chat")
-    ?.addEventListener("click", () => sidebar.createChatWithDialog());
+    ?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sidebar.createChatWithDialog();
+    });
 
   // 侧边栏初始化：默认创建一个项目
   sidebar.createChat();
