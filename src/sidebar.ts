@@ -50,14 +50,6 @@ class Sidebar {
 
   /** 创建新对话（可指定名称） */
   createChat(customName?: string): ChatItem | null {
-    // 如果上一个对话没有任何操作，不新建
-    if (this.chats.length > 0) {
-      const lastChat = this.chats[this.chats.length - 1];
-      if (!lastChat.hasContent) {
-        return null;
-      }
-    }
-
     const name = customName?.trim() || this.getNextProjectName();
     const chat: ChatItem = {
       id: this.nextId++,
@@ -72,41 +64,44 @@ class Sidebar {
     return chat;
   }
 
-  /** 通过弹窗创建新对话 */
+  /** 通过弹窗创建新项目 */
   createChatWithDialog(): void {
-    // 如果上一个对话没有任何操作，不新建
-    if (this.chats.length > 0) {
-      const lastChat = this.chats[this.chats.length - 1];
-      if (!lastChat.hasContent) {
-        this.setActiveChat(lastChat.id);
-        return;
-      }
-    }
 
     const defaultName = this.getNextProjectName();
+    // 默认项目目录：软件安装目录（Tauri 应用运行时目录）
+    const defaultDir = "./projects";
+
     const dialog = document.createElement("div");
     dialog.className = "new-chat-dialog";
     dialog.innerHTML = `
       <div class="dialog-overlay"></div>
-      <div class="dialog-box">
+      <div class="dialog-box dialog-box-lg">
         <div class="dialog-title">新建项目</div>
-        <input type="text" class="dialog-input" placeholder="${defaultName}" value="" spellcheck="false" />
-        <div class="dialog-hint">留空将使用默认名称</div>
+        <div class="dialog-field">
+          <label class="dialog-label">项目名称</label>
+          <input type="text" class="dialog-input" id="dialog-project-name" placeholder="${defaultName}" value="" spellcheck="false" />
+        </div>
+        <div class="dialog-field">
+          <label class="dialog-label">项目目录</label>
+          <input type="text" class="dialog-input" id="dialog-project-dir" placeholder="${defaultDir}" value="${defaultDir}" spellcheck="false" />
+          <div class="dialog-hint">默认使用软件安装目录下的 projects 文件夹</div>
+        </div>
         <div class="dialog-actions">
-          <button class="dialog-btn dialog-btn-cancel">取消</button>
-          <button class="dialog-btn dialog-btn-confirm">创建</button>
+          <button class="dialog-btn dialog-btn-cancel" type="button">取消</button>
+          <button class="dialog-btn dialog-btn-confirm" type="button">创建</button>
         </div>
       </div>
     `;
     document.body.appendChild(dialog);
 
-    const input = dialog.querySelector(".dialog-input") as HTMLInputElement;
-    input.focus();
+    const nameInput = dialog.querySelector("#dialog-project-name") as HTMLInputElement;
+    nameInput.focus();
 
     const closeDialog = () => dialog.remove();
 
     const confirm = () => {
-      const name = input.value.trim() || defaultName;
+      const name = nameInput.value.trim() || defaultName;
+      // const dir = (dialog.querySelector("#dialog-project-dir") as HTMLInputElement).value.trim() || defaultDir;
       this.createChat(name);
       closeDialog();
     };
@@ -115,7 +110,7 @@ class Sidebar {
     dialog.querySelector(".dialog-btn-cancel")?.addEventListener("click", closeDialog);
     dialog.querySelector(".dialog-overlay")?.addEventListener("click", closeDialog);
 
-    input.addEventListener("keydown", (ev) => {
+    nameInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") confirm();
       if (ev.key === "Escape") closeDialog();
     });

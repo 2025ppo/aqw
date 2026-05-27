@@ -1,4 +1,7 @@
-/* 侧边栏 - 收起状态（默认） */
+/* ========== 项目管理器（侧边栏） ========== */
+/* 项目管理器：左侧窄栏，用于管理项目列表，可展开/收起 */
+
+/* 项目管理器 - 收起状态（默认） */
 #sidebar {
   position: fixed;
   top: var(--header-height, 28px);
@@ -22,7 +25,7 @@
   display: none !important;
 }
 
-/* 侧边栏 - 展开状态 */
+/* 项目管理器 - 展开状态 */
 #sidebar.expanded {
   width: 240px;
   align-items: stretch;

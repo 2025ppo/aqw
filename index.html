@@ -11,15 +11,15 @@
 
   <body>
     <!-- 顶部标题栏（全宽，覆盖最顶层） -->
-    <header data-tauri-drag-region class="app-header">
+    <header class="app-header">
       <div class="app-header-left">
         <!-- 文件菜单 -->
         <div class="menu-dropdown">
-          <button class="menu-trigger">文件</button>
+          <button class="menu-trigger" type="button">文件</button>
           <div class="menu-panel">
-            <div class="menu-item" id="menu-new-chat">新建对话</div>
-            <div class="menu-item">保存当前对话</div>
-            <div class="menu-item">导出当前对话</div>
+            <div class="menu-item" id="menu-new-project">新建项目</div>
+            <div class="menu-item" id="menu-save-project">保存当前项目</div>
+            <div class="menu-item" id="menu-export-project">导出当前项目</div>
           </div>
         </div>
         <!-- 帮助菜单 -->
@@ -30,6 +30,9 @@
           </div>
         </div>
       </div>
+      <!-- 拖拽区域（中间空白部分） -->
+      <div class="header-drag-region" id="header-drag-region"></div>
+
       <div class="app-header-right">
         <!-- 主题切换图标 -->
         <div class="header-btn" id="header-theme" title="切换主题">
@@ -61,12 +64,12 @@
     <!-- 侧边栏 -->
     <nav id="sidebar">
       <div class="sidebar-top">
-        <button class="sidebar-create-btn" title="新建对话">
+        <button class="sidebar-create-btn" title="新建项目" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <line x1="12" y1="5" x2="12" y2="19"/>
             <line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
-          <span class="sidebar-btn-text">新建对话</span>
+          <span class="sidebar-btn-text">新建项目</span>
         </button>
       </div>
       <div class="sidebar-divider"></div>
@@ -84,8 +87,66 @@
 
     <!-- 主内容区 -->
     <main id="main-content">
-      <div id="chat-area">
-        <p class="chat-placeholder">点击左侧 + 号创建新对话</p>
+      <!-- AI 对话卡片 -->
+      <div id="chat-card">
+        <!-- 卡片顶部工具栏 -->
+        <div class="chat-toolbar">
+          <div class="chat-toolbar-left">
+            <button class="toolbar-btn" id="chat-history-dropdown" title="历史对话" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12h18M3 6h18M3 18h18"/>
+              </svg>
+            </button>
+            <div class="toolbar-sep"></div>
+            <div class="chat-history-list" id="chat-history-list">
+              <span class="history-placeholder">暂无历史对话</span>
+            </div>
+          </div>
+          <button class="toolbar-btn" id="chat-new-btn" title="新建对话" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 历史记录下拉面板 -->
+        <div class="history-dropdown-panel" id="history-dropdown-panel">
+          <div class="history-dropdown-header">历史对话记录</div>
+          <div class="history-dropdown-list" id="history-dropdown-list"></div>
+        </div>
+
+        <!-- 分割线 -->
+        <div class="chat-divider"></div>
+
+        <!-- 对话消息区域 -->
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-welcome">
+            <svg class="welcome-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="12" y1="8" x2="12" y2="8"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div class="welcome-title">AI 专家团</div>
+            <div class="welcome-desc">选择左侧项目开始对话，或点击下方输入框发送消息</div>
+          </div>
+        </div>
+
+        <!-- 分割线 -->
+        <div class="chat-divider"></div>
+
+        <!-- 输入区域 -->
+        <div class="chat-input-area">
+          <div class="chat-input-wrapper">
+            <textarea class="chat-input" id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+            <button class="chat-send-btn" id="chat-send-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
     </main>
   </body>
