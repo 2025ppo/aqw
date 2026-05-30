@@ -135,30 +135,84 @@
 
 ## 四、技术架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      前端层（TypeScript）                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  无限画布引擎  │  │  专家团 UI   │  │  设置/密钥池/Wiki    │  │
-│  │  (SVG-based) │  │             │  │                     │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                      调度层（TypeScript）                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  主管意图分析  │  │  Pipeline   │  │  词元配额/RBAC      │  │
-│  │             │  │  引擎        │  │  权限系统           │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                      后端层（Rust）                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  感知索引     │  │  记忆系统    │  │  沙箱文件系统        │  │
-│  │ TF-IDF+图谱  │  │ 三级记忆模型  │  │  (安全隔离)         │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  Wiki 生成   │  │  代码分析    │  │  SQLite 持久化      │  │
-│  │             │  │             │  │                     │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph 用户层["用户层"]
+        UI["用户界面<br/>HTML/CSS/TS"]
+    end
+
+    subgraph 前端引擎层["前端引擎层 (TypeScript)"]
+        Canvas["无限画布引擎<br/>SVG + 视口变换"]
+        Chat["对话系统<br/>消息渲染 + 流式输出"]
+        Settings["设置面板<br/>密钥池 + 专家配置 + 主题"]
+    end
+
+    subgraph 调度核心层["调度核心层 (TypeScript)"]
+        Supervisor["主管意图分析<br/>江星图 - 需求理解 + 场景选择"]
+        Pipeline["Pipeline 引擎<br/>顺序/并行/条件执行"]
+        Router["专家路由器<br/>动态替换 + 上下文传递"]
+        Quota["词元配额系统<br/>日/月/年三级检查 + 前置阻断"]
+        RBAC["RBAC 权限系统<br/>专家级 + 路径级控制"]
+    end
+
+    subgraph 后端服务层["后端服务层 (Rust)"]
+        subgraph 智能检索["智能检索模块"]
+            Index["感知索引<br/>代码分段 + TF-IDF + 代码图谱"]
+            Memory["记忆系统<br/>瞬时/工作/长期 三级模型"]
+        end
+
+        subgraph 文件安全["文件安全模块"]
+            Sandbox["沙箱文件系统<br/>路径校验 + 越界保护"]
+            FS["文件操作<br/>读/写/创建/删除"]
+        end
+
+        subgraph 知识生成["知识生成模块"]
+            Wiki["Wiki 生成器<br/>卡片生成 + 文章凝练 + 增量更新"]
+            Analyzer["代码分析器<br/>结构扫描 + 依赖分析"]
+        end
+
+        subgraph 数据持久化["数据持久化模块"]
+            SQLite[(SQLite<br/>项目/会话/消息)]
+            LocalFS["本地文件系统<br/>.xt 配置 + 草稿 + Token 数据"]
+        end
+    end
+
+    subgraph 外部服务层["外部服务层"]
+        DeepSeek["DeepSeek API"]
+        OpenAI["OpenAI API"]
+        Aliyun["阿里云 API"]
+        Tencent["腾讯云 API"]
+        Custom["自定义中转"]
+    end
+
+    UI --> Canvas
+    UI --> Chat
+    UI --> Settings
+
+    Chat --> Supervisor
+    Supervisor --> Pipeline
+    Pipeline --> Router
+    Router --> Quota
+    Quota --> RBAC
+    RBAC --> Index
+    RBAC --> Memory
+    RBAC --> Sandbox
+
+    Index --> SQLite
+    Memory --> LocalFS
+    Sandbox --> FS
+    Wiki --> LocalFS
+    Analyzer --> FS
+
+    Router --> DeepSeek
+    Router --> OpenAI
+    Router --> Aliyun
+    Router --> Tencent
+    Router --> Custom
+
+    Canvas --> LocalFS
+    Settings --> SQLite
+    Settings --> LocalFS
 ```
 
 ---
