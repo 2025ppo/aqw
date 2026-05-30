@@ -462,8 +462,10 @@ class Sidebar {
           return;
         }
         this.setActiveChat(chat.id);
-        // 自动收起侧边栏
-        this.collapse();
+        // 仅在展开状态下点击项目时自动收起侧边栏
+        if (this.sidebarEl.classList.contains("expanded")) {
+          this.collapse();
+        }
       });
 
       // 删除按钮（展开时显示）
