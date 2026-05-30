@@ -7,6 +7,13 @@
 
 :root {
   --bg-near-white: #fafafa;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #fafafa;
+  --text-primary: #333333;
+  --text-secondary: #666666;
+  --text-muted: #999999;
+  --border-color: #e0e0e0;
   --header-height: 28px;
   font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 14px;
@@ -2181,15 +2188,15 @@ body {
 .expert-model-config {
   margin-bottom: 20px;
   padding: 16px;
-  background: var(--bg-tertiary, rgba(255,255,255,0.03));
+  background: var(--bg-tertiary, #fafafa);
   border-radius: 8px;
-  border: 1px solid var(--border-color, #2a2a4a);
+  border: 1px solid var(--border-color, #e0e0e0);
 }
 .expert-model-config-title {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 12px;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary, #333333);
 }
 .model-config-row {
   display: flex;
@@ -2201,10 +2208,10 @@ body {
   flex: 1;
   min-width: 200px;
   padding: 8px 12px;
-  background: var(--bg-primary, #1a1a2e);
-  border: 1px solid var(--border-color, #2a2a4a);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-color, #e0e0e0);
   border-radius: 6px;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary, #333333);
   font-size: 13px;
 }
 .model-config-apply-all {
@@ -2212,7 +2219,7 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--text-secondary, #666666);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -2360,12 +2367,12 @@ body {
 .expert-quota-config {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--border-color, #2a2a4a);
+  border-top: 1px solid var(--border-color, #e0e0e0);
 }
 .quota-label {
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--text-secondary, #666666);
   display: block;
   margin-bottom: 8px;
 }
@@ -2382,10 +2389,10 @@ body {
 .quota-input {
   width: 100%;
   padding: 6px 8px;
-  background: var(--bg-primary, #1a1a2e);
-  border: 1px solid var(--border-color, #2a2a4a);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-color, #e0e0e0);
   border-radius: 4px;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary, #333333);
   font-size: 12px;
 }
 .quota-input:focus {
@@ -2394,12 +2401,12 @@ body {
 }
 .quota-unit {
   font-size: 11px;
-  color: var(--text-muted, #666);
+  color: var(--text-muted, #999999);
   white-space: nowrap;
 }
 .quota-hint {
   font-size: 11px;
-  color: var(--text-muted, #666);
+  color: var(--text-muted, #999999);
   display: block;
   margin-top: 6px;
 }
@@ -3826,14 +3833,46 @@ body.draft-paint-mode .draft-mini-canvas {
 }
 
 /* 词元面板页签 */
-.token-panel-tabs {
+.token-panel-header {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 16px;
   padding: 12px 24px 0;
   border-bottom: 1px solid #f0f0f0;
   flex-shrink: 0;
   background: #fff;
+}
+
+.token-panel-back {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.token-panel-back:hover {
+  background: #f5f5f5;
+  border-color: #ccc;
+}
+
+.token-panel-back svg {
+  width: 14px;
+  height: 14px;
+}
+
+.token-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
 }
 
 .token-tab {

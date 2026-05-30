@@ -1,0 +1,77 @@
+星图专家团工作台（社区版）许可证
+
+开发者：江仕玺
+
+本软件采用双许可证模式：
+
+================================================================================
+一、MIT 许可证（适用于个人非商用非营利目的）
+================================================================================
+
+Copyright (c) 2026 江仕玺
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+适用条件：
+- 个人学习、研究使用
+- 个人非商业项目使用
+- 个人非营利性使用
+
+================================================================================
+二、GNU General Public License v3.0（适用于个人商用、盈利目的）
+================================================================================
+
+Copyright (C) 2026 江仕玺
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+适用条件：
+- 个人商业用途
+- 个人盈利性使用
+- 任何产生经济收益的使用场景
+
+================================================================================
+三、企业版声明
+================================================================================
+
+本开源许可证仅适用于个人用户。企业、组织或机构如需部署、使用或二次
+开发本软件，需购买企业版授权。
+
+企业版授权请联系开发者获取详细信息。
+
+================================================================================
+四、许可证选择指南
+================================================================================
+
+1. 如果您是个人用户，且使用目的为非商业、非营利性质，可选择 MIT 许可证。
+2. 如果您是个人用户，但使用目的涉及商业或盈利性质，必须遵守 GPL-3.0 许可证。
+3. 如果您代表企业、组织或机构使用本软件，请联系开发者购买企业版授权。
+
+================================================================================

@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ai-experts",
+        "title": "星图专家团工作台",
         "width": 800,
         "height": 600,
         "decorations": false

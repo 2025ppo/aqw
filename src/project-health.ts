@@ -111,17 +111,6 @@ export function renderHealthScore(score: HealthScore): string {
     parts.push(`</div>`);
   }
 
-  // 建议
-  if (score.suggestions.length > 0) {
-    parts.push(`<div class="health-suggestions">`);
-    parts.push(`<div class="health-section-title">改进建议</div>`);
-    parts.push(`<ul>`);
-    for (const s of score.suggestions) {
-      parts.push(`<li>${escapeHtml(s)}</li>`);
-    }
-    parts.push(`</ul></div>`);
-  }
-
   return parts.join("");
 }
 

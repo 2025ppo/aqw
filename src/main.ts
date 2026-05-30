@@ -11,7 +11,6 @@ import {
   supervisorReview,
   resolveExpertApiKey,
   buildProgressReport,
-  clearActiveTasks,
   analyzeFollowupIntent,
   getAvailableExpertInfos,
   recordTokenUsage,
@@ -19,6 +18,7 @@ import {
   loadUserTokenData,
   userTokenData,
   getTokenUsageByExpert,
+  setExpertsRef,
   getTotalUsage,
   getExpertPerformance,
   type DispatchPlan,
@@ -45,6 +45,7 @@ export interface TokenUsageRecord {
   id: string;
   expertId: string;
   expertName: string;
+  expertTitle?: string;
   model: string;
   keyId: string;
   timestamp: number;
@@ -208,6 +209,13 @@ function applyTheme(dark: boolean) {
   const root = document.documentElement;
   if (isDarkMode) {
     root.style.setProperty("--bg-near-white", "#1e1e1e");
+    root.style.setProperty("--bg-primary", "#1a1a2e");
+    root.style.setProperty("--bg-secondary", "#252525");
+    root.style.setProperty("--bg-tertiary", "rgba(255,255,255,0.03)");
+    root.style.setProperty("--text-primary", "#e0e0e0");
+    root.style.setProperty("--text-secondary", "#a0a0b0");
+    root.style.setProperty("--text-muted", "#888888");
+    root.style.setProperty("--border-color", "#2a2a4a");
     document.body.style.backgroundColor = "#1e1e1e";
     document.body.style.color = "#e0e0e0";
 
@@ -237,6 +245,13 @@ function applyTheme(dark: boolean) {
     });
   } else {
     root.style.setProperty("--bg-near-white", "#fafafa");
+    root.style.setProperty("--bg-primary", "#ffffff");
+    root.style.setProperty("--bg-secondary", "#f5f5f5");
+    root.style.setProperty("--bg-tertiary", "#fafafa");
+    root.style.setProperty("--text-primary", "#333333");
+    root.style.setProperty("--text-secondary", "#666666");
+    root.style.setProperty("--text-muted", "#999999");
+    root.style.setProperty("--border-color", "#e0e0e0");
     document.body.style.backgroundColor = "#fafafa";
     document.body.style.color = "#333";
 
@@ -794,6 +809,8 @@ async function loadExpertsData() {
     experts = JSON.parse(JSON.stringify(DEFAULT_EXPERTS));
     try { await saveExperts(); } catch { /* 静默忽略 */ }
   }
+  // 同步 experts 引用到 expert-router.ts
+  setExpertsRef(experts);
 }
 
 async function saveExperts() {
@@ -1461,7 +1478,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // 记录词元使用（fire-and-forget）
         if (usage) {
-          recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", "supervisor", usage).catch(console.error);
+          recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", "supervisor", usage, "主管").catch(console.error);
         }
 
         finalReply = reply;
@@ -1530,9 +1547,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
         }
 
-        // 清除活跃任务
-        clearActiveTasks();
-        window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: [] } }));
+        // 流水线结束后保留专家任务卡片（不主动清除），由新对话或页面切换时自然清理
       } catch (e) {
         log("ERROR", `流水线执行失败: ${e}`);
         finalReply = `专家团执行出错：${e}`;
@@ -1866,9 +1881,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     return blocks;
   }
 
-  /** 行内 Markdown 格式化（粗体、斜体、行内代码） */
+  /** 行内 Markdown 格式化（粗体、斜体、行内代码、标题等） */
   function formatInlineMarkdown(html: string): string {
-    // 将换行转为 <br>（保留段落结构）
+    // 标题（# ## ### ####）
+    html = html.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
+    html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+    html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+    html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+    // 将换行转为 <br>（保留段落结构，但跳过已渲染的标题行）
     html = html.replace(/\n/g, "<br>");
     // **粗体**
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
@@ -3323,7 +3343,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                     (e) => `
               <div class="distribution-bar-item">
                 <div class="distribution-bar-label">
-                  <span class="distribution-name">${e.name}</span>
+                  <span class="distribution-name">${e.name}（${e.title}）</span>
                   <span class="distribution-value">${formatTokenCount(e.total)}</span>
                 </div>
                 <div class="distribution-bar-track">
@@ -3437,7 +3457,7 @@ document.addEventListener("DOMContentLoaded", async () => {
               <div class="activity-item">
                 <div class="activity-dot"></div>
                 <div class="activity-content">
-                  <span class="activity-expert">${r.expertName}</span>
+                  <span class="activity-expert">${r.expertName}（${r.expertTitle || "未知"}）</span>
                   <span class="activity-model">${r.model}</span>
                   <span class="activity-tokens">${formatTokenCount(r.totalTokens)}</span>
                 </div>
@@ -3627,6 +3647,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else {
       enterTokenMode();
     }
+  });
+
+  // 词元面板返回按钮
+  document.getElementById("token-panel-back")?.addEventListener("click", () => {
+    exitTokenMode();
   });
 
   // btn-draft 进入草稿模式

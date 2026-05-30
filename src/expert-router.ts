@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { tokenData, type TokenUsageRecord, experts, type Expert } from "./main";
+import { tokenData, type TokenUsageRecord, type Expert } from "./main";
+
+// 使用 getter 获取 experts，避免模块导入时绑定空数组引用
+let _expertsRef: Expert[] = [];
+export function setExpertsRef(ref: Expert[]) { _expertsRef = ref; }
+function getExperts(): Expert[] { return _expertsRef; }
 import {
   buildMemoryContext,
   saveExpertMemory,
@@ -35,7 +40,7 @@ export function checkQuota(expertId: string): { allowed: boolean; reason?: strin
   }
 
   // 2. 获取专家配额配置
-  const expert = experts.find((e: Expert) => e.id === expertId);
+  const expert = getExperts().find((e: Expert) => e.id === expertId);
   if (!expert || !expert.tokenAllocation) {
     return { allowed: true }; // 未配置配额 = 不限制
   }
@@ -137,12 +142,14 @@ export async function recordTokenUsage(
   expertName: string,
   model: string,
   keyId: string,
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+  expertTitle?: string
 ): Promise<void> {
   const record: TokenUsageRecord = {
     id: generateTokenId(),
     expertId,
     expertName,
+    expertTitle,
     model,
     keyId,
     timestamp: Date.now(),
@@ -746,7 +753,7 @@ async function callExpert(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage(expertId, expert.name, "deepseek-v4-flash", keyId, usage).catch(console.error);
+      recordTokenUsage(expertId, expert.name, "deepseek-v4-flash", keyId, usage, expert.title).catch(console.error);
       task.tokensUsed = usage.total_tokens;
     }
 
@@ -887,26 +894,30 @@ export async function executePipeline(
 
 // ========== 主管审核 ==========
 
-/** 主管审核所有专家结果，综合为最终回复 */
+/** 主管（资质调研员）审核所有专家结果，综合为最终回复 */
 export async function supervisorReview(
   taskDescription: string,
   expertResults: ExpertTask[],
   apiKey: string,
   keyId: string = "supervisor"
 ): Promise<string> {
-  const reviewPrompt = `你是「江星图」，项目主管。你的专家团已完成任务，请审核结果并综合为给用户的最终回复。
+  const reviewPrompt = `你是「江星图」，项目主管兼资质调研员。你的专家团已完成任务，请审核结果并综合为给用户的最终回复。
 
 审核要求：
 1. 检查专家输出是否满足用户的原始需求
 2. 如有审查员参与，以其结论为主要依据
-3. 若发现问题，明确指出需改进之处
-4. 以清晰、结构化的方式向用户呈现最终结果
-5. 如有代码文件操作（CREATE_FILE/WRITE_FILE），保留这些动作标记
+3. 以清晰、易懂的方式向用户呈现最终结果
+
+关键规则（必须遵守）：
+- 如果专家输出中包含 [ACTION:CREATE_FILE:路径] 或 [ACTION:WRITE_FILE:路径] 等文件操作标记，必须在最终回复中完整保留这些标记，包括标记后的代码块内容。不要删除、修改或简化任何文件操作标记。
+- 文件操作标记格式示例：先写 [ACTION:CREATE_FILE:src/main.ts] 然后紧跟代码块包含文件内容
 
 注意：
 - 你是主管，呈现专家工作成果，不声称自己完成了具体工作
+- 用自然、亲切的语言与用户交流，避免过于技术化或程式化的表达
 - 如专家之间有分歧，给出你的判断和建议
-- 简洁明了，不堆砌冗余内容`;
+- 简洁明了，不堆砌冗余内容
+- 不需要写"工作亮点"和"改进建议"这类总结性内容，直接给出结果即可`;
 
   const summary = expertResults
     .map((r) => {
@@ -917,7 +928,7 @@ export async function supervisorReview(
 
   const messages = [
     { role: "user", content: `任务描述：${taskDescription}` },
-    { role: "user", content: `专家工作结果：\n\n${summary}\n\n请审核并综合为最终回复。` },
+    { role: "user", content: `专家工作结果（包含文件操作标记，请保留所有 [ACTION:...] 标记并在最终回复中原样输出）：\n\n${summary}\n\n请审核并综合为最终回复。重要：如果专家输出中包含 [ACTION:CREATE_FILE:...] 或 [ACTION:WRITE_FILE:...] 等文件操作标记，必须在最终回复中完整保留这些标记，否则文件将无法被创建。` },
   ];
 
   // === 配额前置校验（主管）===
@@ -953,7 +964,7 @@ export async function supervisorReview(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
     }
 
     return reply;
@@ -970,12 +981,13 @@ function buildSupervisorPrompt(availableExperts: ExpertInfo[]): string {
     .map((e) => `- ${e.name}（${e.title}）：${e.description}`)
     .join("\n");
 
-  return `你是「江星图」，项目主管。你的职责是分析用户需求，制定任务计划并分配专家处理。
+  return `你是「江星图」，项目主管兼资质调研员。你的职责是分析用户需求，制定任务计划并分配专家处理。
 
 【核心原则】
 1. 你绝对不直接编写代码、审查代码、进行技术调研或设计
 2. 你的工作是：理解需求 → 选择场景 → 派遣专家 → 审核结果
 3. 所有实际工作必须交由专家完成
+4. 用自然、亲切的语言与用户交流，这款软件面向各类用户，并非只有专业程序员
 
 【可用专家】
 ${expertList}
@@ -1027,7 +1039,7 @@ export async function supervisorAnalyze(
 
   messages.push({
     role: "user",
-    content: `请分析以下需求并输出调度计划（仅输出 JSON）：\n${userMessage}`,
+    content: `请分析以下需求并输出调度计划（仅输出 JSON，用自然亲切的语言理解用户需求）：\n${userMessage}`,
   });
 
   // === 配额前置校验（主管）===
@@ -1063,7 +1075,7 @@ export async function supervisorAnalyze(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
     }
 
     return parseDispatchPlan(reply);
@@ -1126,7 +1138,7 @@ export async function analyzeFollowupIntent(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
     }
 
     const parsed = extractJson(reply);
