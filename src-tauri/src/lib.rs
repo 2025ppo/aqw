@@ -1188,6 +1188,8 @@ fn sandbox_delete(
 }
 
 /// 保存可视化目录数据到 .xt/config.json
+/// data 格式: { mode: "structure" | "logic", nodes, edges, updatedAt, directorySnapshot }
+/// 会按 mode 分别存入 canvasDirectory.structure 或 canvasDirectory.logic
 #[tauri::command]
 fn save_canvas_directory(
     project_name: String,
@@ -1206,20 +1208,27 @@ fn save_canvas_directory(
         .join("config.json");
 
     if !config_file.exists() {
-        // 如果配置文件不存在，先调用 ensure_xt_config
         ensure_xt_config(project_name.clone(), app_handle.clone())?;
     }
 
-    // 读取现有配置
     let content = fs::read_to_string(&config_file).map_err(|e| format!("读取配置文件失败: {}", e))?;
     let mut config: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))?;
 
-    // 更新 canvasDirectory 字段
     let dir_data: serde_json::Value =
         serde_json::from_str(&data).map_err(|e| format!("解析目录数据失败: {}", e))?;
+
+    // 获取 mode，决定存到 structure 还是 logic 子字段
+    let mode = dir_data.get("mode")
+        .and_then(|m| m.as_str())
+        .unwrap_or("structure");
+
     if let Some(obj) = config.as_object_mut() {
-        obj.insert("canvasDirectory".to_string(), dir_data);
+        let canvas_dir = obj.entry("canvasDirectory")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(canvas_obj) = canvas_dir.as_object_mut() {
+            canvas_obj.insert(mode.to_string(), dir_data);
+        }
     }
 
     let updated = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
@@ -1228,6 +1237,7 @@ fn save_canvas_directory(
 }
 
 /// 从 .xt/config.json 加载可视化目录数据
+/// 返回整个 canvasDirectory 对象（包含 structure 和 logic 两个子字段），如果不存在返回 null
 #[tauri::command]
 fn load_canvas_directory(
     project_name: String,
@@ -1252,7 +1262,7 @@ fn load_canvas_directory(
     let config: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))?;
 
-    // 返回 canvasDirectory 字段，如果不存在返回 null
+    // 返回整个 canvasDirectory 对象（包含 structure 和 logic），如果不存在返回 null
     if let Some(dir) = config.get("canvasDirectory") {
         Ok(dir.to_string())
     } else {

@@ -2261,34 +2261,47 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     canvas.clear();
 
-    // 1. 尝试从 .xt/config.json 读取缓存的目录数据
+    // 1. 尝试从 .xt/config.json 读取缓存的目录数据（新格式: { structure: {...}, logic: {...} }）
+    let allCachedData: { structure?: any; logic?: any } | null = null;
     try {
       const cached = await invoke<string>("load_canvas_directory", {
         projectName: project.name,
       });
 
       if (cached && cached !== "null") {
-        const cachedData = JSON.parse(cached);
-        // 读取并恢复模式
-        if (cachedData.mode === "logic") {
-          directoryMode = "logic";
+        const parsed = JSON.parse(cached);
+        // 兼容旧格式（直接是单模式数据对象）
+        if (parsed.mode) {
+          allCachedData = {};
+          if (parsed.mode === "logic") {
+            allCachedData.logic = parsed;
+            directoryMode = "logic";
+          } else {
+            allCachedData.structure = parsed;
+            directoryMode = "structure";
+          }
         } else {
+          // 新格式：包含 structure/logic 子字段
+          allCachedData = parsed;
+          // 默认优先 structure 模式
           directoryMode = "structure";
         }
         updateTabActive();
-        if (cachedData.nodes && cachedData.edges && cachedData.nodes.length > 0) {
-          canvas.setData(cachedData.nodes, cachedData.edges);
-          log("INFO", `从缓存加载目录数据 (模式: ${directoryMode})`);
-          // 比较目录快照判断是否需要更新
-          await checkDirectoryChanges(project.name, cachedData);
-          return;
-        }
       }
     } catch (e) {
       log("WARN", `读取缓存目录失败: ${e}`);
     }
 
-    // 2. 无缓存：结构模式直接自动生成（纯机械操作，不需要任何前提条件）
+    // 2. 根据当前模式加载对应缓存
+    const modeData = allCachedData?.[directoryMode];
+    if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
+      canvas.setData(modeData.nodes, modeData.edges);
+      log("INFO", `从缓存加载目录数据 (模式: ${directoryMode})`);
+      await checkDirectoryChanges(project.name, modeData);
+      return;
+    }
+
+    // 3. 无缓存：结构模式直接自动生成（纯机械操作，不需要任何前提条件）
     //    无论成功失败，画布上必须有内容（至少显示项目根节点）
     if (directoryMode === "structure") {
       updateDirectoryStatus("updating");
@@ -2349,7 +2362,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           // 收集目录快照
           const snapshot = await collectDirectorySnapshot(project.name);
 
-          // 持久化到 .xt/config.json
+          // 持久化逻辑模式数据到 .xt/config.json
           const now = new Date().toISOString();
           await invoke("save_canvas_directory", {
             projectName: project.name,
@@ -2361,6 +2374,31 @@ document.addEventListener("DOMContentLoaded", async () => {
               directorySnapshot: snapshot,
             }),
           });
+
+          // 同时确保结构模式也有缓存（如果还没有的话）
+          try {
+            const allCached = await invoke<string>("load_canvas_directory", {
+              projectName: project.name,
+            });
+            const parsedAll = allCached && allCached !== "null" ? JSON.parse(allCached) : {};
+            const hasStructure = parsedAll.structure && parsedAll.structure.nodes && parsedAll.structure.nodes.length > 0;
+            if (!hasStructure) {
+              const structureResult = await generateStructureCanvas(project.name);
+              const structureSnapshot = await collectDirectorySnapshot(project.name);
+              await invoke("save_canvas_directory", {
+                projectName: project.name,
+                data: JSON.stringify({
+                  nodes: structureResult.nodes,
+                  edges: structureResult.edges,
+                  updatedAt: now,
+                  mode: "structure",
+                  directorySnapshot: structureSnapshot,
+                }),
+              });
+              log("INFO", "逻辑模式生成时自动补全结构模式缓存");
+            }
+          } catch { /* 补全结构缓存失败不影响主流程 */ }
+
           updateDirectoryStatus("up-to-date");
           log("INFO", "AI 生成目录数据并持久化");
           return;
@@ -2521,10 +2559,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         projectName: activeProject.name,
       });
       if (cached && cached !== "null") {
-        const cachedData = JSON.parse(cached);
-        if (cachedData.nodes && cachedData.edges && cachedData.nodes.length > 0) {
-          canvas.setData(cachedData.nodes, cachedData.edges);
-          await checkDirectoryChanges(activeProject.name, cachedData);
+        const parsed = JSON.parse(cached);
+        // 兼容旧格式
+        const modeData = parsed.mode ? parsed : parsed.structure;
+        if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
+          canvas.setData(modeData.nodes, modeData.edges);
+          await checkDirectoryChanges(activeProject.name, modeData);
           return;
         }
       }
@@ -2560,11 +2600,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         projectName: activeProject.name,
       });
       if (cached && cached !== "null") {
-        const cachedData = JSON.parse(cached);
-        // 逻辑模式需要 mode 匹配
-        if (cachedData.mode === "logic" && cachedData.nodes && cachedData.edges && cachedData.nodes.length > 0) {
-          canvas.setData(cachedData.nodes, cachedData.edges);
-          await checkDirectoryChanges(activeProject.name, cachedData);
+        const parsed = JSON.parse(cached);
+        // 新格式: parsed.logic; 旧格式: parsed.mode === "logic"
+        const modeData = parsed.logic || (parsed.mode === "logic" ? parsed : null);
+        if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
+          canvas.setData(modeData.nodes, modeData.edges);
+          await checkDirectoryChanges(activeProject.name, modeData);
           return;
         }
       }
