@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { sidebar } from "./sidebar";
 import { initCanvas, getCanvas, FileCanvas, DocBlock, CanvasNode, CanvasEdge } from "./canvas";
-import { DraftCanvas, DraftToolbox } from "./draft";
+import { DraftCanvas, DraftToolbox, DraftSidebar, DraftTool } from "./draft";
 import hljs from "highlight.js";
 import "highlight.js/styles/atom-one-dark.css";
 import {
@@ -14,9 +14,23 @@ import {
   clearActiveTasks,
   analyzeFollowupIntent,
   getAvailableExpertInfos,
+  recordTokenUsage,
+  loadTokenData,
+  loadUserTokenData,
+  userTokenData,
+  getTokenUsageByExpert,
+  getTotalUsage,
+  getExpertPerformance,
   type DispatchPlan,
   type ExpertTask,
+  type TimeRange,
+  type ExpertPerformance,
 } from "./expert-router";
+import { saveUserIntentMemory } from "./memory-store";
+
+// 引用以避免 TS6133 未使用警告（专家表现面板后续将使用）
+void getExpertPerformance;
+void 0 as unknown as ExpertPerformance;
 
 // ========== 树节点类型（对应 Rust TreeEntry） ==========
 interface TreeEntry {
@@ -25,6 +39,45 @@ interface TreeEntry {
   type: "folder" | "file";
   children: TreeEntry[] | null;
 }
+
+// ========== 词元跟踪数据类型 ==========
+export interface TokenUsageRecord {
+  id: string;
+  expertId: string;
+  expertName: string;
+  model: string;
+  keyId: string;
+  timestamp: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface TokenAllocation {
+  expertId: string;
+  dailyLimit: number | null;
+  monthlyLimit: number | null;
+  yearlyLimit: number | null;
+}
+
+export interface TokenData {
+  records: TokenUsageRecord[];
+  allocations: TokenAllocation[];
+  lastResetDaily: string;
+  lastResetMonthly: string;
+  lastResetYearly: string;
+}
+
+export let tokenData: TokenData = {
+  records: [],
+  allocations: [],
+  lastResetDaily: new Date().toISOString().split("T")[0],
+  lastResetMonthly: new Date().toISOString().slice(0, 7),
+  lastResetYearly: new Date().getFullYear().toString(),
+};
+
+// 引用 tokenData 以避免 TS6133 未使用警告（词元面板后续将使用）
+void tokenData;
 
 // ========== 日志工具 ==========
 function log(level: string, msg: string) {
@@ -238,6 +291,8 @@ const normalUIElements = [
   "file-browser-card",
   "wiki-panel",
   "repo-browser",
+  "token-panel",
+  "time-manager",
 ];
 
 // 保存打开设置前的 display 状态，以便关闭时正确恢复
@@ -438,15 +493,6 @@ function renderKeyPool() {
         <span class="keypool-item-meta">${metaHtml}</span>
       </div>
       <div class="keypool-item-actions">
-        <button class="keypool-item-more" data-id="${id}" type="button" title="更多操作">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
-        </button>
-        <div class="keypool-item-dropdown" data-dropdown-id="${id}" style="display:none;">
-          <button class="keypool-item-dropdown-item" data-action="configure-all" data-key-id="${id}" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-            <span>一键配置所有专家团</span>
-          </button>
-        </div>
         <button class="keypool-item-delete" data-id="${id}" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -485,47 +531,6 @@ function renderKeyPool() {
       `${item.data.name} &middot; 自定义代码接口`,
     ))
     .join("");
-
-  // 绑定 ⋯ 下拉菜单展开/收起
-  document.querySelectorAll(".keypool-item-more").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const id = (e.currentTarget as HTMLElement).dataset.id!;
-      // 关闭其他已打开的下拉
-      document.querySelectorAll(".keypool-item-dropdown").forEach((d) => {
-        const dd = d as HTMLElement;
-        if (dd.dataset.dropdownId !== id) dd.style.display = "none";
-      });
-      const dropdown = document.querySelector(`.keypool-item-dropdown[data-dropdown-id="${id}"]`) as HTMLElement;
-      if (dropdown) {
-        dropdown.style.display = dropdown.style.display === "none" ? "block" : "none";
-      }
-    });
-  });
-
-  // 一键配置所有专家团
-  document.querySelectorAll(".keypool-item-dropdown-item[data-action='configure-all']").forEach((item) => {
-    item.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const keyId = (e.currentTarget as HTMLElement).dataset.keyId!;
-      experts.forEach((ex) => { ex.keyId = keyId; });
-      await saveExperts();
-      renderExperts();
-      // 关闭所有下拉
-      document.querySelectorAll(".keypool-item-dropdown").forEach((d) => {
-        (d as HTMLElement).style.display = "none";
-      });
-    });
-  });
-
-  // 点击页面其他地方关闭所有下拉
-  const closeAllDropdowns = () => {
-    document.querySelectorAll(".keypool-item-dropdown").forEach((d) => {
-      (d as HTMLElement).style.display = "none";
-    });
-  };
-  document.removeEventListener("click", closeAllDropdowns);
-  document.addEventListener("click", closeAllDropdowns);
 
   // 绑定删除事件
   document.querySelectorAll(".keypool-item-delete").forEach((btn) => {
@@ -673,12 +678,17 @@ document.getElementById("keypool-custom-add")?.addEventListener("click", async (
 });
 
 // ========== 专家团配置 ==========
-interface Expert {
+export interface Expert {
   id: string;
   name: string;
   title: string;
   description: string;
   keyId: string | null;
+  tokenAllocation?: {
+    dailyLimit: number | null;
+    monthlyLimit: number | null;
+    yearlyLimit: number | null;
+  };
 }
 
 // 核心角色 ID：江星图(主管)、江星河(助手)、江青澜(通用工程师)、江若溪(调研员)、江映秋(审查员)
@@ -753,7 +763,7 @@ const DEFAULT_EXPERTS: Expert[] = [
   },
 ];
 
-let experts: Expert[] = [];
+export let experts: Expert[] = [];
 
 async function loadExperts() {
   await loadExpertsData();
@@ -822,11 +832,38 @@ function renderExperts() {
     })
     .join("");
 
+  // 填充全局模型配置下拉框
+  const globalKeySelect = document.getElementById("expert-global-key") as HTMLSelectElement;
+  if (globalKeySelect) {
+    globalKeySelect.innerHTML = `<option value="">选择密钥...</option>${keyOptions}`;
+  }
+
+  const EXEMPT_EXPERT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
+
   const cardHtml = (expert: Expert) => {
     const selectHtml = `<select class="expert-key-select" data-expert-id="${expert.id}">
       <option value="">未配置</option>
       ${keyOptions}
     </select>`;
+    const quotaHtml = EXEMPT_EXPERT_IDS.includes(expert.id) ? "" : `
+      <div class="expert-quota-config">
+        <span class="quota-label">词元配额</span>
+        <div class="quota-inputs">
+          <div class="quota-input-group">
+            <input type="number" placeholder="不限制" class="quota-input quota-daily" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.dailyLimit ?? ""}" min="0" />
+            <span class="quota-unit">日</span>
+          </div>
+          <div class="quota-input-group">
+            <input type="number" placeholder="不限制" class="quota-input quota-monthly" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.monthlyLimit ?? ""}" min="0" />
+            <span class="quota-unit">月</span>
+          </div>
+          <div class="quota-input-group">
+            <input type="number" placeholder="不限制" class="quota-input quota-yearly" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.yearlyLimit ?? ""}" min="0" />
+            <span class="quota-unit">年</span>
+          </div>
+        </div>
+        <span class="quota-hint">留空表示不限制</span>
+      </div>`;
     return `<div class="expert-card${CORE_EXPERT_IDS.includes(expert.id) ? " expert-card-core" : ""}">
       <div class="expert-body">
         <div class="expert-header">
@@ -836,6 +873,7 @@ function renderExperts() {
         </div>
         <div class="expert-footer">
           ${selectHtml}
+          ${quotaHtml}
         </div>
       </div>
     </div>`;
@@ -874,6 +912,47 @@ function renderExperts() {
       });
     });
   });
+
+  // 绑定配额输入框 change 事件
+  allGrids.forEach((grid) => {
+    grid.querySelectorAll(".quota-input").forEach((input) => {
+      input.addEventListener("change", async (e) => {
+        const el = e.target as HTMLInputElement;
+        const expertId = el.dataset.expertId!;
+        const expert = experts.find((ex) => ex.id === expertId);
+        if (!expert) return;
+        if (!expert.tokenAllocation) {
+          expert.tokenAllocation = { dailyLimit: null, monthlyLimit: null, yearlyLimit: null };
+        }
+        const value = el.value ? parseInt(el.value, 10) : null;
+        if (el.classList.contains("quota-daily")) expert.tokenAllocation.dailyLimit = value;
+        if (el.classList.contains("quota-monthly")) expert.tokenAllocation.monthlyLimit = value;
+        if (el.classList.contains("quota-yearly")) expert.tokenAllocation.yearlyLimit = value;
+        await saveExperts();
+      });
+    });
+  });
+
+  // 绑定全局模型配置应用按钮
+  const applyModelBtn = document.getElementById("apply-model-btn");
+  if (applyModelBtn) {
+    applyModelBtn.addEventListener("click", async () => {
+      const globalSelect = document.getElementById("expert-global-key") as HTMLSelectElement;
+      const applyAllCheckbox = document.getElementById("apply-key-to-all") as HTMLInputElement;
+      const selectedKeyId = globalSelect?.value;
+      if (!applyAllCheckbox?.checked) {
+        showError("请先勾选\"为所有专家配置该模型\"确认选项");
+        return;
+      }
+      if (!selectedKeyId) {
+        showError("请先选择一个密钥");
+        return;
+      }
+      experts.forEach((ex) => { ex.keyId = selectedKeyId; });
+      await saveExperts();
+      renderExperts();
+    });
+  }
 }
 
 // ========== 监听对话切换 ==========
@@ -908,6 +987,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 初始化时加载密钥池和专家团数据（供画布分析和消息发送使用）
   await loadKeyPool();
   await loadExpertsData();
+  await Promise.all([loadTokenData(), loadUserTokenData()]);
 
   const historyDropdownBtn = document.getElementById("chat-history-dropdown");
   const historyPanel = document.getElementById("history-dropdown-panel");
@@ -1259,6 +1339,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 保存用户消息到数据库
     await saveSessionToDb(currentSessionId, currentProjectId);
 
+    // 保存用户意图到 Ephemeral 记忆
+    const projectForMemory = sidebar.getActiveChat();
+    if (projectForMemory) {
+      saveUserIntentMemory(projectForMemory.name, currentProjectId, text).catch(console.error);
+    }
+
     // 清空输入框
     chatInput.value = "";
     chatInput.style.height = "auto";
@@ -1281,7 +1367,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       showLoading();
       pendingFollowups.push(text);
       try {
-        await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey);
+        await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor");
         const reportMsg = `已收到新消息。当前专家团执行中，我已将您的补充要求转达给相关专家。\n\n${buildProgressReport()}`;
         session.messages.push({ role: "assistant", content: reportMsg });
         await saveSessionToDb(currentSessionId, currentProjectId);
@@ -1331,7 +1417,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         userMessageWithContext,
         historyForSupervisor,
         availableExperts,
-        supervisorKey
+        supervisorKey,
+        "supervisor"
       );
       log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
     } catch (e) {
@@ -1349,11 +1436,35 @@ document.addEventListener("DOMContentLoaded", async () => {
           role: m.role,
           content: m.content,
         }));
-        finalReply = await invoke<string>("chat_with_expert", {
+        const rawReply = await invoke<string>("chat_with_expert", {
           messages: apiMessages,
           apiKey: supervisorKey,
           systemPrompt: "你是「江星图」，项目主管。现在用户有一个简单问题，请直接回答。回答要简洁明了。",
         });
+
+        // 解析后端返回的 JSON（包含 content 和 usage）
+        let reply = rawReply;
+        let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+        try {
+          const parsed = JSON.parse(rawReply);
+          if (parsed && typeof parsed === "object") {
+            if (typeof parsed.content === "string") {
+              reply = parsed.content;
+            }
+            if (parsed.usage && typeof parsed.usage === "object") {
+              usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+            }
+          }
+        } catch {
+          // 不是 JSON 则直接使用原始文本
+        }
+
+        // 记录词元使用（fire-and-forget）
+        if (usage) {
+          recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", "supervisor", usage).catch(console.error);
+        }
+
+        finalReply = reply;
       } catch (e) {
         finalReply = `抱歉，请求出错：${e}`;
       }
@@ -1379,14 +1490,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       try {
         // 执行流水线（onProgress 回调实时更新 UI）
-        const expertResults = await executePipeline(
+        const activeProjectForPipeline = sidebar.getActiveChat();
+        const pipelineResult = await executePipeline(
           dispatchPlan,
           getExpertApiKey,
           (tasks: ExpertTask[]) => {
             // 实时渲染专家任务卡片（通过全局事件）
             window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks } }));
-          }
+          },
+          activeProjectForPipeline?.name,
+          activeProjectForPipeline?.id
         );
+        const expertResults = pipelineResult.tasks;
+        const pipelineId = pipelineResult.pipelineId;
 
         // 检查是否有补充消息需传递给审核阶段
         const followupContext = pendingFollowups.length > 0
@@ -1398,8 +1514,21 @@ document.addEventListener("DOMContentLoaded", async () => {
         finalReply = await supervisorReview(
           dispatchPlan.taskDescription + followupContext,
           expertResults,
-          supervisorKey
+          supervisorKey,
+          "supervisor"
         );
+
+        // 生成交付清单（fire-and-forget）
+        if (activeProjectForPipeline?.name && pipelineId) {
+          import("./task-tracker").then(({ generateDeliverable }) => {
+            generateDeliverable(
+              activeProjectForPipeline.name,
+              pipelineId,
+              dispatchPlan.taskDescription,
+              expertResults
+            ).catch(console.error);
+          });
+        }
 
         // 清除活跃任务
         clearActiveTasks();
@@ -2549,6 +2678,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /** 进入 Wiki 模式 */
   async function enterWikiMode() {
+    exitTokenMode();
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
       log("WARN", "Wiki: 没有活跃项目");
@@ -2819,7 +2949,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ========== 草稿模式 ==========
   const draftCanvas = new DraftCanvas();
   const draftToolbox = new DraftToolbox();
+  const draftSidebar = new DraftSidebar();
   let isDraftMode = false;
+
+  // 关联侧边栏与画布
+  draftSidebar.setCanvas(draftCanvas);
+
+  // 草稿模式下右键平移 / 滚轮缩放转发给主画布
+  draftCanvas.setOnPanRequest((dx, dy) => {
+    const c = getCanvas();
+    (c as any)?.panBy?.(dx, dy);
+  });
+  draftCanvas.setOnZoomRequest((cx, cy, factor) => {
+    const c = getCanvas();
+    (c as any)?.zoomAt?.(cx, cy, factor);
+  });
 
   // 同步无限画布的视口到草稿画布
   function syncDraftViewport() {
@@ -2833,15 +2977,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 进入草稿模式
   function enterDraftMode() {
     if (isDraftMode) return;
+    exitTokenMode();
     isDraftMode = true;
 
     // 更新浮动按钮状态
     document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
     document.getElementById("btn-draft")?.classList.add("active");
 
-    // 激活草稿画布
+    // 激活草稿画布和工具栏
     draftCanvas.activate();
     draftToolbox.show();
+    draftSidebar.show();
     syncDraftViewport();
 
     // 加载当前项目的草稿数据
@@ -2860,6 +3006,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     draftCanvas.deactivate();
     draftToolbox.hide();
+    draftSidebar.hide();
 
     // 恢复目录按钮激活状态
     document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
@@ -2875,6 +3022,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   draftToolbox.setOnColorChange((color) => {
     draftCanvas.setColor(color);
   });
+  draftToolbox.setOnEraserModeChange((mode) => {
+    draftCanvas.setEraserMode(mode);
+  });
+  draftToolbox.setOnClearCanvas(() => {
+    draftCanvas.clearCanvas();
+  });
+
+  // 监听工具变化事件（快捷键触发）
+  window.addEventListener("draft-tool-changed", ((e: CustomEvent) => {
+    const tool = e.detail.tool as DraftTool;
+    draftToolbox.selectTool(tool);
+    draftCanvas.setTool(tool);
+  }) as EventListener);
 
   // 监听无限画布视口变化，同步到草稿画布
   window.addEventListener("canvas-viewport-changed", ((e: CustomEvent) => {
@@ -2882,23 +3042,613 @@ document.addEventListener("DOMContentLoaded", async () => {
     draftCanvas.setViewport({ x, y, scale });
   }) as EventListener);
 
+  // 词元模式状态
+  let isTokenMode = false;
+
+  // 格式化词元数量（加千分位或缩写）
+  function formatTokenCount(count: number): string {
+    if (count >= 1000000) return (count / 1000000).toFixed(1) + "M";
+    if (count >= 1000) return (count / 1000).toFixed(1) + "K";
+    return count.toString();
+  }
+
+  // 获取时间范围起始时间戳
+  function getTimeRangeStart(range: TimeRange): number {
+    const now = new Date();
+    switch (range) {
+      case "today":
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      case "week": {
+        const day = now.getDay() || 7;
+        const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+        return monday.getTime();
+      }
+      case "month":
+        return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      case "year":
+        return new Date(now.getFullYear(), 0, 1).getTime();
+      case "all":
+        return 0;
+    }
+  }
+
+  // 相对时间格式化
+  function formatRelativeTime(timestamp: number): string {
+    const diff = Date.now() - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}天前`;
+    return new Date(timestamp).toLocaleDateString();
+  }
+
+  // Canvas 趋势图绘制
+  function drawTrendChart(range: TimeRange, dataSource: "project" | "user" = currentTokenSource): void {
+    const canvas = document.getElementById("trend-canvas") as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // 设置Canvas实际像素
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * 2; // 高DPI
+    canvas.height = rect.height * 2;
+    ctx.scale(2, 2);
+    const w = rect.width;
+    const h = rect.height;
+
+    // 根据时间范围确定数据点数和间隔
+    let buckets: number[];
+    let labels: string[];
+    const now = new Date();
+    const data = dataSource === "user" ? userTokenData : tokenData;
+
+    if (range === "today") {
+      // 按小时分组（24个点）
+      buckets = new Array(24).fill(0);
+      labels = Array.from({ length: 24 }, (_, i) => `${i}:00`);
+      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      data.records.filter((r) => r.timestamp >= dayStart).forEach((r) => {
+        const hour = new Date(r.timestamp).getHours();
+        buckets[hour] += r.totalTokens;
+      });
+    } else if (range === "week") {
+      // 按天分组（7天）
+      buckets = new Array(7).fill(0);
+      labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+      const day = now.getDay() || 7;
+      const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1).getTime();
+      data.records.filter((r) => r.timestamp >= weekStart).forEach((r) => {
+        const d = new Date(r.timestamp).getDay() || 7;
+        buckets[d - 1] += r.totalTokens;
+      });
+    } else if (range === "month") {
+      // 按天分组（当月天数）
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      buckets = new Array(daysInMonth).fill(0);
+      labels = Array.from({ length: daysInMonth }, (_, i) => `${i + 1}`);
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      data.records.filter((r) => r.timestamp >= monthStart).forEach((r) => {
+        const day = new Date(r.timestamp).getDate() - 1;
+        buckets[day] += r.totalTokens;
+      });
+    } else if (range === "year") {
+      // 按月分组（12个月）
+      buckets = new Array(12).fill(0);
+      labels = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+      const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+      data.records.filter((r) => r.timestamp >= yearStart).forEach((r) => {
+        const month = new Date(r.timestamp).getMonth();
+        buckets[month] += r.totalTokens;
+      });
+    } else {
+      // all - 按月分组（最近12个月）
+      buckets = new Array(12).fill(0);
+      labels = Array.from({ length: 12 }, (_, i) => {
+        const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+        return `${d.getMonth() + 1}月`;
+      });
+      data.records.forEach((r) => {
+        const rDate = new Date(r.timestamp);
+        const monthsDiff = (now.getFullYear() - rDate.getFullYear()) * 12 + (now.getMonth() - rDate.getMonth());
+        if (monthsDiff >= 0 && monthsDiff < 12) {
+          buckets[11 - monthsDiff] += r.totalTokens;
+        }
+      });
+    }
+
+    // 绘制
+    const maxVal = Math.max(...buckets, 1);
+    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    // 清空
+    ctx.clearRect(0, 0, w, h);
+
+    // 网格线
+    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padding.top + (chartH / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(w - padding.right, y);
+      ctx.stroke();
+    }
+
+    // Y轴标签
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 4; i++) {
+      const val = maxVal - (maxVal / 4) * i;
+      const y = padding.top + (chartH / 4) * i;
+      ctx.fillText(formatTokenCount(val), padding.left - 8, y + 3);
+    }
+
+    // 折线
+    if (buckets.length > 1) {
+      const step = chartW / (buckets.length - 1);
+      ctx.beginPath();
+      ctx.strokeStyle = "#6366f1";
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      buckets.forEach((val, i) => {
+        const x = padding.left + i * step;
+        const y = padding.top + chartH - (val / maxVal) * chartH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 填充渐变
+      ctx.lineTo(padding.left + (buckets.length - 1) * step, padding.top + chartH);
+      ctx.lineTo(padding.left, padding.top + chartH);
+      ctx.closePath();
+      const gradient = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+      gradient.addColorStop(0, "rgba(99, 102, 241, 0.3)");
+      gradient.addColorStop(1, "rgba(99, 102, 241, 0)");
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+
+    // X轴标签（间隔显示，避免重叠）
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    const labelInterval = Math.ceil(labels.length / 10);
+    labels.forEach((label, i) => {
+      if (i % labelInterval === 0) {
+        const x = padding.left + (chartW / (buckets.length - 1 || 1)) * i;
+        ctx.fillText(label, x, h - 8);
+      }
+    });
+  }
+
+  // 当前词元数据源
+  let currentTokenSource: "project" | "user" = "project";
+
+  // 渲染词元仪表盘
+  function renderTokenDashboard(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): void {
+    const panel = document.getElementById("token-panel-content");
+    if (!panel) return;
+
+    const todayUsage = getTotalUsage("today", dataSource);
+    const monthUsage = getTotalUsage("month", dataSource);
+
+    // 计算活跃专家数（在当前时段有消耗的专家）
+    const activeExpertIds = new Set(
+      (dataSource === "user" ? userTokenData : tokenData).records
+        .filter((r) => r.timestamp >= getTimeRangeStart(activeRange))
+        .map((r) => r.expertId)
+    );
+
+    // 专家分布统计
+    const expertDistribution = experts
+      .map((expert) => {
+        const records = getTokenUsageByExpert(expert.id, activeRange, dataSource);
+        const total = records.reduce((sum, r) => sum + r.totalTokens, 0);
+        return { name: expert.name, title: expert.title, id: expert.id, total };
+      })
+      .filter((e) => e.total > 0)
+      .sort((a, b) => b.total - a.total);
+
+    const maxExpertTokens = expertDistribution.length > 0 ? expertDistribution[0].total : 1;
+
+    // 模型统计
+    const modelStats: Record<string, { calls: number; tokens: number }> = {};
+    const rangeStart = getTimeRangeStart(activeRange);
+    (dataSource === "user" ? userTokenData : tokenData).records
+      .filter((r) => r.timestamp >= rangeStart)
+      .forEach((r) => {
+        if (!modelStats[r.model]) modelStats[r.model] = { calls: 0, tokens: 0 };
+        modelStats[r.model].calls++;
+        modelStats[r.model].tokens += r.totalTokens;
+      });
+    const modelList = Object.entries(modelStats).sort((a, b) => b[1].tokens - a[1].tokens);
+
+    // 配额状态（非豁免专家）—— 始终使用项目级数据
+    const QUOTA_EXEMPT = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
+    const quotaExperts = experts.filter((e) => !QUOTA_EXEMPT.includes(e.id) && e.tokenAllocation);
+
+    // 最近活动（最近20条）
+    const recentRecords = [...(dataSource === "user" ? userTokenData : tokenData).records]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 20);
+
+    panel.innerHTML = `
+      <div class="token-dashboard">
+        <!-- 顶部概览卡片 -->
+        <div class="dashboard-overview">
+          <div class="overview-card">
+            <span class="overview-label">今日消耗</span>
+            <span class="overview-value">${formatTokenCount(todayUsage.total)}</span>
+            <span class="overview-sub">输入 ${formatTokenCount(todayUsage.prompt)} / 输出 ${formatTokenCount(todayUsage.completion)}</span>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">本月消耗</span>
+            <span class="overview-value">${formatTokenCount(monthUsage.total)}</span>
+            <span class="overview-sub">输入 ${formatTokenCount(monthUsage.prompt)} / 输出 ${formatTokenCount(monthUsage.completion)}</span>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">总计消耗</span>
+            <span class="overview-value">${formatTokenCount(getTotalUsage("all").total)}</span>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">活跃专家</span>
+            <span class="overview-value">${activeExpertIds.size}</span>
+            <span class="overview-sub">/ ${experts.length} 位</span>
+          </div>
+        </div>
+
+        <!-- 消耗趋势图 -->
+        <div class="dashboard-section">
+          <h3 class="dashboard-section-title">消耗趋势</h3>
+          <div class="dashboard-chart-container">
+            <canvas id="trend-canvas" width="800" height="200"></canvas>
+          </div>
+        </div>
+
+        <!-- 专家词元分布 -->
+        <div class="dashboard-section">
+          <h3 class="dashboard-section-title">专家词元分布</h3>
+          <div class="expert-distribution-bars">
+            ${expertDistribution.length > 0
+              ? expertDistribution
+                  .map(
+                    (e) => `
+              <div class="distribution-bar-item">
+                <div class="distribution-bar-label">
+                  <span class="distribution-name">${e.name}</span>
+                  <span class="distribution-value">${formatTokenCount(e.total)}</span>
+                </div>
+                <div class="distribution-bar-track">
+                  <div class="distribution-bar-fill" style="width: ${(e.total / maxExpertTokens * 100).toFixed(1)}%"></div>
+                </div>
+              </div>
+            `
+                  )
+                  .join("")
+              : '<div class="dashboard-empty">暂无数据</div>'}
+          </div>
+        </div>
+
+        <!-- 模型使用统计 -->
+        <div class="dashboard-section">
+          <h3 class="dashboard-section-title">模型使用统计</h3>
+          <div class="model-stats-table">
+            ${modelList.length > 0
+              ? `
+              <div class="model-table-header">
+                <span>模型</span>
+                <span>调用次数</span>
+                <span>词元消耗</span>
+              </div>
+              ${modelList
+                .map(
+                  ([model, stats]) => `
+                <div class="model-table-row">
+                  <span class="model-name">${model}</span>
+                  <span class="model-calls">${stats.calls}</span>
+                  <span class="model-tokens">${formatTokenCount(stats.tokens)}</span>
+                </div>
+              `
+                )
+                .join("")}
+            `
+              : '<div class="dashboard-empty">暂无数据</div>'}
+          </div>
+        </div>
+
+        <!-- 配额状态 -->
+        <div class="dashboard-section">
+          <h3 class="dashboard-section-title">配额状态</h3>
+          <div class="quota-status-grid">
+            ${quotaExperts.length > 0
+              ? quotaExperts
+                  .map((expert) => {
+                    const alloc = expert.tokenAllocation!;
+                    const now = new Date();
+                    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+                    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+                    const dayUsed = tokenData.records
+                      .filter((r) => r.expertId === expert.id && r.timestamp >= dayStart)
+                      .reduce((s, r) => s + r.totalTokens, 0);
+                    const monthUsed = tokenData.records
+                      .filter((r) => r.expertId === expert.id && r.timestamp >= monthStart)
+                      .reduce((s, r) => s + r.totalTokens, 0);
+                    const yearUsed = tokenData.records
+                      .filter((r) => r.expertId === expert.id && r.timestamp >= yearStart)
+                      .reduce((s, r) => s + r.totalTokens, 0);
+                    return `
+                      <div class="quota-card">
+                        <div class="quota-card-header">
+                          <span class="quota-card-name">${expert.name}</span>
+                          <span class="quota-card-title">${expert.title}</span>
+                        </div>
+                        ${alloc.dailyLimit !== null
+                          ? `
+                          <div class="quota-card-row">
+                            <span class="quota-period">日</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${dayUsed >= alloc.dailyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (dayUsed / alloc.dailyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(dayUsed)}/${formatTokenCount(alloc.dailyLimit)}</span>
+                          </div>
+                        `
+                          : ""}
+                        ${alloc.monthlyLimit !== null
+                          ? `
+                          <div class="quota-card-row">
+                            <span class="quota-period">月</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${monthUsed >= alloc.monthlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (monthUsed / alloc.monthlyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(monthUsed)}/${formatTokenCount(alloc.monthlyLimit)}</span>
+                          </div>
+                        `
+                          : ""}
+                        ${alloc.yearlyLimit !== null
+                          ? `
+                          <div class="quota-card-row">
+                            <span class="quota-period">年</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${yearUsed >= alloc.yearlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (yearUsed / alloc.yearlyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(yearUsed)}/${formatTokenCount(alloc.yearlyLimit)}</span>
+                          </div>
+                        `
+                          : ""}
+                      </div>
+                    `;
+                  })
+                  .join("")
+              : '<div class="dashboard-empty">暂无配额配置</div>'}
+          </div>
+        </div>
+
+        <!-- 最近活动 -->
+        <div class="dashboard-section">
+          <h3 class="dashboard-section-title">最近活动</h3>
+          <div class="recent-activity-list">
+            ${recentRecords.length > 0
+              ? recentRecords
+                  .map(
+                    (r) => `
+              <div class="activity-item">
+                <div class="activity-dot"></div>
+                <div class="activity-content">
+                  <span class="activity-expert">${r.expertName}</span>
+                  <span class="activity-model">${r.model}</span>
+                  <span class="activity-tokens">${formatTokenCount(r.totalTokens)}</span>
+                </div>
+                <span class="activity-time">${formatRelativeTime(r.timestamp)}</span>
+              </div>
+            `
+                  )
+                  .join("")
+              : '<div class="dashboard-empty">暂无活动记录</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 绘制趋势图
+    drawTrendChart(activeRange, dataSource);
+  }
+
+  // 将仪表盘渲染函数挂载到window，供时间管理器联动调用
+  (window as unknown as Record<string, unknown>).renderTokenDashboard = renderTokenDashboard;
+
+  // 渲染时间管理器（到右侧token-browser卡片）
+  function renderTimeManager(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): void {
+    const container = document.getElementById("token-browser-body");
+    if (!container) return;
+
+    // 获取总统计
+    const totalUsage = getTotalUsage(activeRange, dataSource);
+
+    // 获取各专家统计
+    const expertStats = experts
+      .map((expert) => {
+        const records = getTokenUsageByExpert(expert.id, activeRange, dataSource);
+        const total = records.reduce((sum, r) => sum + r.totalTokens, 0);
+        const allocation = expert.tokenAllocation;
+        let quota: number | null = null;
+        if (activeRange === "today" && allocation?.dailyLimit) quota = allocation.dailyLimit;
+        else if (activeRange === "month" && allocation?.monthlyLimit) quota = allocation.monthlyLimit;
+        else if (activeRange === "year" && allocation?.yearlyLimit) quota = allocation.yearlyLimit;
+        return { expert, total, quota };
+      })
+      .filter((s) => s.total > 0 || s.quota !== null)
+      .sort((a, b) => b.total - a.total);
+
+    container.innerHTML = `
+      <div class="token-browser-nav">
+        <div class="tb-nav-item ${activeRange === "today" ? "active" : ""}" data-range="today">今日</div>
+        <div class="tb-nav-item ${activeRange === "week" ? "active" : ""}" data-range="week">本周</div>
+        <div class="tb-nav-item ${activeRange === "month" ? "active" : ""}" data-range="month">本月</div>
+        <div class="tb-nav-item ${activeRange === "year" ? "active" : ""}" data-range="year">本年</div>
+        <div class="tb-nav-item ${activeRange === "all" ? "active" : ""}" data-range="all">全部</div>
+      </div>
+      <div class="tb-summary">
+        <div class="tb-summary-total">
+          <span class="tb-summary-label">总消耗</span>
+          <span class="tb-summary-value">${formatTokenCount(totalUsage.total)}</span>
+        </div>
+        <div class="tb-summary-breakdown">
+          <span class="tb-summary-item">输入: ${formatTokenCount(totalUsage.prompt)}</span>
+          <span class="tb-summary-item">输出: ${formatTokenCount(totalUsage.completion)}</span>
+        </div>
+      </div>
+      <div class="tb-expert-list">
+        ${expertStats.length > 0
+          ? expertStats
+              .map(
+                (s) => `
+          <div class="tb-expert-item">
+            <div class="tb-expert-info">
+              <span class="tb-expert-name">${s.expert.name}</span>
+              <span class="tb-expert-title">${s.expert.title}</span>
+            </div>
+            <div class="tb-expert-usage">
+              <span class="tb-expert-tokens">${formatTokenCount(s.total)}</span>
+              ${s.quota !== null
+                ? `
+                <div class="tb-expert-quota-bar">
+                  <div class="tb-quota-fill" style="width: ${Math.min(100, (s.total / s.quota) * 100)}%"></div>
+                </div>
+                <span class="tb-expert-quota-text">${Math.round((s.total / s.quota) * 100)}%</span>
+              `
+                : ""}
+            </div>
+          </div>
+        `
+              )
+              .join("")
+          : '<div class="tb-expert-empty">暂无数据</div>'}
+      </div>
+    `;
+
+    // 绑定时间导航点击事件
+    container.querySelectorAll(".tb-nav-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const range = (item as HTMLElement).dataset.range as TimeRange;
+        renderTimeManager(range, currentTokenSource);
+        if (typeof (window as unknown as Record<string, unknown>).renderTokenDashboard === "function") {
+          ((window as unknown as Record<string, unknown>).renderTokenDashboard as (range: TimeRange, source: "project" | "user") => void)(range, currentTokenSource);
+        }
+      });
+    });
+  }
+
+  function enterTokenMode() {
+    if (isTokenMode) return;
+    // 退出其他互斥模式
+    exitDraftMode();
+    exitWikiMode();
+
+    isTokenMode = true;
+
+    // 隐藏主界面元素
+    if (canvasContainer) canvasContainer.style.visibility = "hidden";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+
+    // 显示中央仪表盘卡片
+    const tokenPanel = document.getElementById("token-panel");
+    if (tokenPanel) {
+      tokenPanel.style.display = "flex";
+      tokenPanel.classList.add("active");
+      // 默认重置为项目级页签
+      currentTokenSource = "project";
+      tokenPanel.querySelectorAll(".token-tab").forEach((tab) => tab.classList.remove("active"));
+      tokenPanel.querySelector('.token-tab[data-tab="project"]')?.classList.add("active");
+      renderTokenDashboard("today", "project");
+    }
+    // 显示右侧时间导航卡片
+    const tokenBrowser = document.getElementById("token-browser");
+    if (tokenBrowser) {
+      tokenBrowser.style.display = "flex";
+      tokenBrowser.classList.add("active");
+      renderTimeManager("today", "project");
+    }
+
+    // 隐藏文件预览面板
+    const fileBrowserCard = document.getElementById("file-browser-card");
+    const filePreviewCard = document.getElementById("file-preview-card");
+    if (fileBrowserCard) { fileBrowserCard.classList.remove("active"); fileBrowserCard.style.display = "none"; }
+    if (filePreviewCard) { filePreviewCard.classList.remove("active"); filePreviewCard.style.display = "none"; }
+
+    // 更新按钮active状态
+    document.querySelectorAll("#floating-actions .floating-btn").forEach((btn) => btn.classList.remove("active"));
+    document.getElementById("btn-token")?.classList.add("active");
+
+    log("INFO", "进入词元模式");
+  }
+
+  function exitTokenMode() {
+    if (!isTokenMode) return;
+    isTokenMode = false;
+
+    // 隐藏仪表盘和时间导航
+    const tokenPanel = document.getElementById("token-panel");
+    const tokenBrowser = document.getElementById("token-browser");
+    if (tokenPanel) tokenPanel.style.display = "none";
+    if (tokenBrowser) tokenBrowser.style.display = "none";
+
+    // 恢复主界面元素
+    if (canvasContainer) canvasContainer.style.visibility = "visible";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+
+    // 恢复默认按钮active（目录按钮）
+    document.getElementById("btn-token")?.classList.remove("active");
+    document.getElementById("btn-directory")?.classList.add("active");
+
+    log("INFO", "退出词元模式");
+  }
+
+  // 词元面板页签切换
+  document.querySelectorAll(".token-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = (tab as HTMLElement).dataset.tab as "project" | "user";
+      if (!target || target === currentTokenSource) return;
+      currentTokenSource = target;
+      document.querySelectorAll(".token-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      renderTokenDashboard("today", target);
+      renderTimeManager("today", target);
+    });
+  });
+
+  // btn-token 进入/退出词元模式
+  document.getElementById("btn-token")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isTokenMode) {
+      exitTokenMode();
+    } else {
+      enterTokenMode();
+    }
+  });
+
   // btn-draft 进入草稿模式
   document.getElementById("btn-draft")?.addEventListener("click", (e) => {
     e.stopPropagation();
+    exitTokenMode();
     enterDraftMode();
   });
 
   // btn-repo 进入 Wiki 模式（覆盖悬浮按钮的通用点击行为）
   document.getElementById("btn-repo")?.addEventListener("click", (e) => {
     e.stopPropagation();
+    exitTokenMode();
     exitDraftMode();
     enterWikiMode();
   });
 
-  // btn-directory 退出 Wiki/草稿模式
+  // btn-directory 退出 Wiki/草稿/词元模式
   document.getElementById("btn-directory")?.addEventListener("click", () => {
     exitDraftMode();
     exitWikiMode();
+    exitTokenMode();
   });
 
   wikiBack?.addEventListener("click", () => exitWikiMode());

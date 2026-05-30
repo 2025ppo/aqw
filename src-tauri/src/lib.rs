@@ -13,6 +13,12 @@ mod code_chunker;
 mod tfidf;
 mod code_graph;
 mod repo_wiki;
+mod memory;
+mod deliverables;
+mod health_score;
+mod code_retention;
+mod rbac;
+mod experience;
 
 /// 全局数据库连接池（应用级共享）
 struct AppState {
@@ -106,11 +112,19 @@ pub struct DeepSeekMessage {
 #[derive(Deserialize, Debug)]
 pub struct DeepSeekResponse {
     pub choices: Vec<DeepSeekChoice>,
+    pub usage: Option<DeepSeekUsage>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct DeepSeekChoice {
     pub message: DeepSeekMessage,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DeepSeekUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
 }
 
 /// 测试 API 密钥是否有效
@@ -224,22 +238,70 @@ const SYSTEM_PROMPT: &str = r#"你是一个AI专家团助手，帮助用户管�
 4. 动作标记放在回复的最后"#;
 
 /// 发送消息到 DeepSeek API
+/// 返回 JSON 字符串，包含 content 和 usage
 #[tauri::command]
 async fn chat_with_deepseek(messages: Vec<DeepSeekMessage>, api_key: String) -> Result<String, String> {
     call_llm(SYSTEM_PROMPT.to_string(), messages, api_key).await
 }
 
 /// 使用自定义 system prompt 调用 LLM（供专家团路由使用）
+/// 返回 JSON 字符串，包含 content 和 usage
 #[tauri::command]
 async fn chat_with_expert(
     messages: Vec<DeepSeekMessage>,
     api_key: String,
     system_prompt: String,
 ) -> Result<String, String> {
-    call_llm(system_prompt, messages, api_key).await
+    let client = reqwest::Client::new();
+
+    let mut full_messages = vec![DeepSeekMessage {
+        role: "system".to_string(),
+        content: system_prompt,
+    }];
+    full_messages.extend(messages);
+
+    let request_body = DeepSeekRequest {
+        model: "deepseek-v4-flash".to_string(),
+        messages: full_messages,
+        stream: false,
+    };
+
+    let response = client
+        .post(DEEPSEEK_API_URL)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("API 错误 ({}): {}", status, text));
+    }
+
+    let result: DeepSeekResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let content = if let Some(choice) = result.choices.first() {
+        choice.message.content.clone()
+    } else {
+        String::new()
+    };
+
+    let reply = serde_json::json!({
+        "content": content,
+        "usage": result.usage,
+    });
+
+    Ok(reply.to_string())
 }
 
 /// 内部通用 LLM 调用函数
+/// 返回 JSON 字符串，包含 content 和 usage
 async fn call_llm(
     system_prompt: String,
     messages: Vec<DeepSeekMessage>,
@@ -279,11 +341,18 @@ async fn call_llm(
         .await
         .map_err(|e| format!("解析响应失败: {}", e))?;
 
-    if let Some(choice) = result.choices.first() {
-        Ok(choice.message.content.clone())
+    let content = if let Some(choice) = result.choices.first() {
+        choice.message.content.clone()
     } else {
-        Err("API 返回空内容".to_string())
-    }
+        String::new()
+    };
+
+    let reply = serde_json::json!({
+        "content": content,
+        "usage": result.usage,
+    });
+
+    Ok(reply.to_string())
 }
 
 /// 获取应用数据目录
@@ -975,6 +1044,39 @@ struct TreeEntry {
     children: Option<Vec<TreeEntry>>,
 }
 
+/// 词元使用记录
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TokenUsageRecord {
+    id: String,
+    expert_id: String,
+    expert_name: String,
+    model: String,
+    key_id: String,
+    timestamp: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+}
+
+/// 词元配额配置
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TokenAllocation {
+    expert_id: String,
+    daily_limit: Option<u64>,
+    monthly_limit: Option<u64>,
+    yearly_limit: Option<u64>,
+}
+
+/// 词元数据（记录 + 配额）
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TokenData {
+    records: Vec<TokenUsageRecord>,
+    allocations: Vec<TokenAllocation>,
+    last_reset_daily: String,
+    last_reset_monthly: String,
+    last_reset_yearly: String,
+}
+
 /// 沙箱：列出目录内容
 #[tauri::command]
 fn sandbox_list_dir(
@@ -1299,6 +1401,108 @@ fn load_chat_sessions(
     Ok(content)
 }
 
+/// 保存词元数据到 .xt/token_data.json
+#[tauri::command]
+fn save_token_data(
+    project_name: String,
+    data: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let token_file = base_dir
+        .join("workspaces")
+        .join(&project_name)
+        .join(".xt")
+        .join("token_data.json");
+
+    if let Some(parent) = token_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    fs::write(&token_file, data).map_err(|e| format!("写入词元数据失败: {}", e))?;
+    Ok(())
+}
+
+/// 从 .xt/token_data.json 加载词元数据
+#[tauri::command]
+fn load_token_data(
+    project_name: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let token_file = base_dir
+        .join("workspaces")
+        .join(&project_name)
+        .join(".xt")
+        .join("token_data.json");
+
+    if !token_file.exists() {
+        let default = TokenData {
+            records: vec![],
+            allocations: vec![],
+            last_reset_daily: String::new(),
+            last_reset_monthly: String::new(),
+            last_reset_yearly: String::new(),
+        };
+        return Ok(serde_json::to_string(&default).map_err(|e| e.to_string())?);
+    }
+
+    let content = fs::read_to_string(&token_file).map_err(|e| format!("读取词元数据失败: {}", e))?;
+    Ok(content)
+}
+
+/// 保存用户级词元数据到 app_data_dir/user_token_data.json
+#[tauri::command]
+fn save_user_token_data(
+    data: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let token_file = base_dir.join("user_token_data.json");
+
+    if let Some(parent) = token_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    fs::write(&token_file, data).map_err(|e| format!("写入用户词元数据失败: {}", e))?;
+    Ok(())
+}
+
+/// 从 app_data_dir/user_token_data.json 加载用户级词元数据
+#[tauri::command]
+fn load_user_token_data(
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let token_file = base_dir.join("user_token_data.json");
+
+    if !token_file.exists() {
+        let default = TokenData {
+            records: vec![],
+            allocations: vec![],
+            last_reset_daily: String::new(),
+            last_reset_monthly: String::new(),
+            last_reset_yearly: String::new(),
+        };
+        return Ok(serde_json::to_string(&default).map_err(|e| e.to_string())?);
+    }
+
+    let content = fs::read_to_string(&token_file).map_err(|e| format!("读取用户词元数据失败: {}", e))?;
+    Ok(content)
+}
+
 /// 从数据库加载项目的所有会话和消息
 #[tauri::command]
 async fn db_load_project_data(
@@ -1388,6 +1592,75 @@ async fn db_load_state(
     } else {
         Ok("".to_string())
     }
+}
+
+/// ========== 记忆系统命令 ==========
+
+#[derive(Serialize, Deserialize)]
+struct MemorySaveRequest {
+    project_name: String,
+    entry: memory::MemoryEntry,
+}
+
+#[tauri::command]
+fn memory_save(req: MemorySaveRequest, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let project_dir = get_project_dir(&req.project_name, &app_handle)?;
+    memory::save_memory(&project_dir, &req.entry)
+}
+
+#[derive(Serialize, Deserialize)]
+struct MemorySearchRequest {
+    project_name: String,
+    query: memory::MemoryQuery,
+}
+
+#[tauri::command]
+fn memory_search(req: MemorySearchRequest, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&req.project_name, &app_handle)?;
+    let results = memory::search_memories(&project_dir, &req.query)?;
+    serde_json::to_string(&results).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn memory_delete(
+    project_name: String,
+    memory_type: String,
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<bool, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    memory::delete_memory(&project_dir, &memory_type, &id)
+}
+
+#[tauri::command]
+fn memory_clear_type(
+    project_name: String,
+    memory_type: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    memory::clear_memory_type(&project_dir, &memory_type)
+}
+
+#[tauri::command]
+fn memory_run_lifecycle(project_name: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    memory::run_memory_lifecycle(&project_dir)
+}
+
+#[tauri::command]
+fn memory_get_stats(project_name: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let ephemeral = memory::load_memory_entries(&project_dir, "ephemeral")?.len();
+    let working = memory::load_memory_entries(&project_dir, "working")?.len();
+    let longterm = memory::load_memory_entries(&project_dir, "longterm")?.len();
+    let stats = serde_json::json!({
+        "ephemeral": ephemeral,
+        "working": working,
+        "longterm": longterm,
+        "total": ephemeral + working + longterm,
+    });
+    serde_json::to_string(&stats).map_err(|e| e.to_string())
 }
 
 /// 解析项目目录：优先使用 DB 中的 workspace_path（支持外部项目），否则 fallback 到 workspaces/
@@ -1542,6 +1815,129 @@ async fn repo_incremental_update(project_name: String, api_key: String, app_hand
     repo_wiki::incremental_update(&project_dir, &api_key).await
 }
 
+// ========== 交付清单命令 ==========
+
+#[derive(Serialize, Deserialize)]
+struct GenerateDeliverableRequest {
+    project_name: String,
+    task_id: String,
+    task_description: String,
+    expert_outputs: Vec<ExpertOutputItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExpertOutputItem {
+    expert_id: String,
+    expert_name: String,
+    status: String,
+    output: String,
+}
+
+#[tauri::command]
+fn generate_deliverable(req: GenerateDeliverableRequest, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&req.project_name, &app_handle)?;
+
+    let outputs: Vec<(String, String, String, String)> = req.expert_outputs
+        .into_iter()
+        .map(|item| (item.expert_id, item.expert_name, item.status, item.output))
+        .collect();
+
+    let deliverable = deliverables::generate_deliverable(&req.task_id, &req.task_description, &outputs);
+    deliverables::save_deliverable(&project_dir, &deliverable)?;
+
+    serde_json::to_string(&deliverable).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_deliverables(project_name: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let list = deliverables::list_deliverables(&project_dir)?;
+    serde_json::to_string(&list).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_deliverable(project_name: String, task_id: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    match deliverables::load_deliverable(&project_dir, &task_id)? {
+        Some(d) => serde_json::to_string(&d).map_err(|e| e.to_string()),
+        None => Ok("null".to_string()),
+    }
+}
+
+// ---- 健康度评分命令 ----
+
+#[tauri::command]
+fn evaluate_project_health(project_path: String) -> Result<String, String> {
+    let score = health_score::evaluate_health(&project_path);
+    serde_json::to_string(&score).map_err(|e| e.to_string())
+}
+
+// ---- 代码保留率命令 ----
+
+#[tauri::command]
+fn evaluate_code_retention(project_name: String, project_path: String) -> Result<String, String> {
+    let report = code_retention::evaluate_retention(&project_name, &project_path)?;
+    serde_json::to_string(&report).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn register_generated_snippet(
+    project_name: String,
+    expert_id: String,
+    expert_name: String,
+    file_path: String,
+    content: String,
+) -> Result<String, String> {
+    let id = code_retention::register_generated_code(&project_name, &expert_id, &expert_name, &file_path, &content)?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn list_retention_snippets(project_name: String) -> Result<String, String> {
+    let snippets = code_retention::list_snippets(&project_name)?;
+    serde_json::to_string(&snippets).map_err(|e| e.to_string())
+}
+
+// ---- RBAC 权限命令 ----
+
+#[tauri::command]
+fn check_expert_permission(expert_id: String, permission: String) -> Result<String, String> {
+    let perm = match permission.as_str() {
+        "ReadFiles" => rbac::Permission::ReadFiles,
+        "WriteFiles" => rbac::Permission::WriteFiles,
+        "DeleteFiles" => rbac::Permission::DeleteFiles,
+        "ExecuteCode" => rbac::Permission::ExecuteCode,
+        "CallExternalApi" => rbac::Permission::CallExternalApi,
+        "AccessMemory" => rbac::Permission::AccessMemory,
+        "ModifyMemory" => rbac::Permission::ModifyMemory,
+        "AccessTokenData" => rbac::Permission::AccessTokenData,
+        "SupervisorOverride" => rbac::Permission::SupervisorOverride,
+        _ => return Err(format!("未知权限: {}", permission)),
+    };
+    let decision = rbac::check_permission(&expert_id, perm);
+    serde_json::to_string(&decision).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn check_expert_path_access(expert_id: String, path: String) -> Result<String, String> {
+    let decision = rbac::check_path_access(&expert_id, &path);
+    serde_json::to_string(&decision).map_err(|e| e.to_string())
+}
+
+// ---- 经验沉淀命令 ----
+
+#[tauri::command]
+fn get_experience_沉淀(expert_id: String, expert_name: String) -> Result<String, String> {
+    // 简化版：返回基于专家ID的默认经验沉淀
+    let exp = experience::generate_experience_沉淀(
+        &expert_id,
+        &expert_name,
+        &[],
+        &[],
+    );
+    serde_json::to_string(&exp).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1615,7 +2011,27 @@ pub fn run() {
             repo_synthesize_wiki,
             repo_incremental_update,
             save_draft,
-            load_draft
+            load_draft,
+            save_token_data,
+            load_token_data,
+            save_user_token_data,
+            load_user_token_data,
+            memory_save,
+            memory_search,
+            memory_delete,
+            memory_clear_type,
+            memory_run_lifecycle,
+            memory_get_stats,
+            generate_deliverable,
+            list_deliverables,
+            load_deliverable,
+            evaluate_project_health,
+            evaluate_code_retention,
+            register_generated_snippet,
+            list_retention_snippets,
+            check_expert_permission,
+            check_expert_path_access,
+            get_experience_沉淀,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -29,4 +29,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 tauri-plugin-dialog = "2.7.1"
 base64 = "0.22"
 dunce = "1"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
 

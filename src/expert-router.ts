@@ -1,4 +1,307 @@
 import { invoke } from "@tauri-apps/api/core";
+import { tokenData, type TokenUsageRecord, experts, type Expert } from "./main";
+import {
+  buildMemoryContext,
+  saveExpertMemory,
+} from "./memory-store";
+
+// ========== 用户级词元数据 ==========
+
+import type { TokenData } from "./main";
+
+export let userTokenData: TokenData = {
+  records: [],
+  allocations: [],
+  lastResetDaily: new Date().toISOString().split("T")[0],
+  lastResetMonthly: new Date().toISOString().slice(0, 7),
+  lastResetYearly: new Date().getFullYear().toString(),
+};
+
+/** 获取当前数据源 */
+function getDataSource(source: "project" | "user"): TokenData {
+  return source === "user" ? userTokenData : tokenData;
+}
+
+// ========== 配额校验模块 ==========
+
+/** 豁免配额限制的核心角色 */
+const QUOTA_EXEMPT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
+
+/** 检查专家配额是否允许继续调用 */
+export function checkQuota(expertId: string): { allowed: boolean; reason?: string } {
+  // 1. 豁免角色直接放行
+  if (QUOTA_EXEMPT_IDS.includes(expertId)) {
+    return { allowed: true };
+  }
+
+  // 2. 获取专家配额配置
+  const expert = experts.find((e: Expert) => e.id === expertId);
+  if (!expert || !expert.tokenAllocation) {
+    return { allowed: true }; // 未配置配额 = 不限制
+  }
+
+  const allocation = expert.tokenAllocation;
+  const now = new Date();
+
+  // 3. 检查日配额
+  if (allocation.dailyLimit !== null && allocation.dailyLimit !== undefined) {
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const todayUsage = tokenData.records
+      .filter((r) => r.expertId === expertId && r.timestamp >= todayStart)
+      .reduce((sum, r) => sum + r.totalTokens, 0);
+    if (todayUsage >= allocation.dailyLimit) {
+      return {
+        allowed: false,
+        reason: `专家 ${expert.name} 的日词元配额已耗尽（已用 ${todayUsage.toLocaleString()} / 上限 ${allocation.dailyLimit.toLocaleString()}），请在设置中调整配额或等待明日重置`,
+      };
+    }
+  }
+
+  // 4. 检查月配额
+  if (allocation.monthlyLimit !== null && allocation.monthlyLimit !== undefined) {
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const monthUsage = tokenData.records
+      .filter((r) => r.expertId === expertId && r.timestamp >= monthStart)
+      .reduce((sum, r) => sum + r.totalTokens, 0);
+    if (monthUsage >= allocation.monthlyLimit) {
+      return {
+        allowed: false,
+        reason: `专家 ${expert.name} 的月词元配额已耗尽（已用 ${monthUsage.toLocaleString()} / 上限 ${allocation.monthlyLimit.toLocaleString()}），请在设置中调整配额或等待下月重置`,
+      };
+    }
+  }
+
+  // 5. 检查年配额
+  if (allocation.yearlyLimit !== null && allocation.yearlyLimit !== undefined) {
+    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+    const yearUsage = tokenData.records
+      .filter((r) => r.expertId === expertId && r.timestamp >= yearStart)
+      .reduce((sum, r) => sum + r.totalTokens, 0);
+    if (yearUsage >= allocation.yearlyLimit) {
+      return {
+        allowed: false,
+        reason: `专家 ${expert.name} 的年词元配额已耗尽（已用 ${yearUsage.toLocaleString()} / 上限 ${allocation.yearlyLimit.toLocaleString()}），请在设置中调整配额或等待明年重置`,
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/** 在对话区显示配额阻断系统消息 */
+export function displayQuotaBlockMessage(reason: string): void {
+  const messagesContainer = document.getElementById("chat-messages");
+  if (!messagesContainer) return;
+
+  const msgDiv = document.createElement("div");
+  msgDiv.className = "chat-message system-message quota-blocked";
+  msgDiv.innerHTML = `
+    <div class="message-content" style="
+      color: #ef4444;
+      background: rgba(239,68,68,0.1);
+      padding: 12px;
+      border-radius: 8px;
+      border-left: 3px solid #ef4444;
+      margin: 8px 0;
+      font-size: 13px;
+    ">⚠️ ${reason}</div>
+  `;
+  messagesContainer.appendChild(msgDiv);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// ========== 词元跟踪模块 ==========
+
+/** 时间范围类型 */
+export type TimeRange = "today" | "week" | "month" | "year" | "all";
+
+/** 生成唯一ID */
+function generateTokenId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+/** 获取当前项目名（从 sidebar 全局实例获取） */
+function getCurrentProjectName(): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sb = (window as any).sidebar;
+  if (sb && typeof sb.getActiveChat === "function") {
+    const chat = sb.getActiveChat();
+    return chat?.name || null;
+  }
+  return null;
+}
+
+/** 记录词元使用 */
+export async function recordTokenUsage(
+  expertId: string,
+  expertName: string,
+  model: string,
+  keyId: string,
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+): Promise<void> {
+  const record: TokenUsageRecord = {
+    id: generateTokenId(),
+    expertId,
+    expertName,
+    model,
+    keyId,
+    timestamp: Date.now(),
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+  };
+  tokenData.records.push(record);
+  userTokenData.records.push({ ...record });
+  // 异步持久化，不阻塞主流程
+  saveTokenData().catch(console.error);
+  saveUserTokenData().catch(console.error);
+}
+
+/** 获取时间范围起始时间戳 */
+function getTimeRangeStart(range: TimeRange): number {
+  const now = new Date();
+  switch (range) {
+    case "today":
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    case "week": {
+      const day = now.getDay() || 7;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+      return monday.getTime();
+    }
+    case "month":
+      return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    case "year":
+      return new Date(now.getFullYear(), 0, 1).getTime();
+    case "all":
+      return 0;
+  }
+}
+
+/** 按专家查询词元使用 */
+export function getTokenUsageByExpert(
+  expertId: string,
+  timeRange: TimeRange = "all",
+  dataSource: "project" | "user" = "project"
+): TokenUsageRecord[] {
+  const start = getTimeRangeStart(timeRange);
+  const data = getDataSource(dataSource);
+  return data.records.filter((r) => r.expertId === expertId && r.timestamp >= start);
+}
+
+/** 获取总使用量 */
+export function getTotalUsage(
+  timeRange: TimeRange = "all",
+  dataSource: "project" | "user" = "project"
+): { prompt: number; completion: number; total: number } {
+  const start = getTimeRangeStart(timeRange);
+  const data = getDataSource(dataSource);
+  const filtered = data.records.filter((r) => r.timestamp >= start);
+  return filtered.reduce(
+    (acc, r) => ({
+      prompt: acc.prompt + r.promptTokens,
+      completion: acc.completion + r.completionTokens,
+      total: acc.total + r.totalTokens,
+    }),
+    { prompt: 0, completion: 0, total: 0 }
+  );
+}
+
+/** 计算专家表现统计 */
+export function getExpertPerformance(
+  expertId?: string,
+  dataSource: "project" | "user" = "project"
+): ExpertPerformance[] {
+  const start = getTimeRangeStart("all");
+  const data = getDataSource(dataSource);
+  const records = data.records.filter((r) => r.timestamp >= start);
+
+  const grouped = new Map<string, TokenUsageRecord[]>();
+  for (const r of records) {
+    if (expertId && r.expertId !== expertId) continue;
+    const list = grouped.get(r.expertId) || [];
+    list.push(r);
+    grouped.set(r.expertId, list);
+  }
+
+  const results: ExpertPerformance[] = [];
+  for (const [eid, list] of grouped) {
+    const totalCalls = list.length;
+    const totalTokens = list.reduce((s, r) => s + r.totalTokens, 0);
+    results.push({
+      expertId: eid,
+      expertName: list[0]?.expertName || eid,
+      totalCalls,
+      successCalls: totalCalls,
+      errorCalls: 0,
+      avgResponseTimeMs: 0,
+      totalTokensUsed: totalTokens,
+      avgTokensPerCall: totalCalls > 0 ? Math.round(totalTokens / totalCalls) : 0,
+      successRate: 100,
+    });
+  }
+  return results;
+}
+
+/** 持久化 token 数据（项目级） */
+export async function saveTokenData(): Promise<void> {
+  try {
+    const projectName = getCurrentProjectName();
+    if (!projectName) return;
+    await invoke("save_token_data", {
+      projectName,
+      data: JSON.stringify(tokenData),
+    });
+  } catch (e) {
+    console.error("Failed to save token data:", e);
+  }
+}
+
+/** 加载 token 数据（项目级） */
+export async function loadTokenData(): Promise<void> {
+  try {
+    const projectName = getCurrentProjectName();
+    if (!projectName) return;
+    const raw = (await invoke("load_token_data", { projectName })) as string;
+    if (raw) {
+      const parsed = JSON.parse(raw) as typeof tokenData;
+      tokenData.records = parsed.records || [];
+      tokenData.allocations = parsed.allocations || [];
+      tokenData.lastResetDaily = parsed.lastResetDaily || new Date().toISOString().split("T")[0];
+      tokenData.lastResetMonthly = parsed.lastResetMonthly || new Date().toISOString().slice(0, 7);
+      tokenData.lastResetYearly = parsed.lastResetYearly || new Date().getFullYear().toString();
+    }
+  } catch (e) {
+    console.error("Failed to load token data:", e);
+  }
+}
+
+/** 持久化用户级词元数据 */
+export async function saveUserTokenData(): Promise<void> {
+  try {
+    await invoke("save_user_token_data", {
+      data: JSON.stringify(userTokenData),
+    });
+  } catch (e) {
+    console.error("Failed to save user token data:", e);
+  }
+}
+
+/** 加载用户级词元数据 */
+export async function loadUserTokenData(): Promise<void> {
+  try {
+    const raw = (await invoke("load_user_token_data")) as string;
+    if (raw) {
+      const parsed = JSON.parse(raw) as typeof userTokenData;
+      userTokenData.records = parsed.records || [];
+      userTokenData.allocations = parsed.allocations || [];
+      userTokenData.lastResetDaily = parsed.lastResetDaily || new Date().toISOString().split("T")[0];
+      userTokenData.lastResetMonthly = parsed.lastResetMonthly || new Date().toISOString().slice(0, 7);
+      userTokenData.lastResetYearly = parsed.lastResetYearly || new Date().getFullYear().toString();
+    }
+  } catch (e) {
+    console.error("Failed to load user token data:", e);
+  }
+}
 
 // ========== 类型定义 ==========
 
@@ -39,6 +342,20 @@ export interface ExpertTask {
   error?: string;
   startTime?: number;
   endTime?: number;
+  tokensUsed?: number;
+}
+
+/** 专家表现统计 */
+export interface ExpertPerformance {
+  expertId: string;
+  expertName: string;
+  totalCalls: number;
+  successCalls: number;
+  errorCalls: number;
+  avgResponseTimeMs: number;
+  totalTokensUsed: number;
+  avgTokensPerCall: number;
+  successRate: number;
 }
 
 /** 主管的调度计划 */
@@ -260,6 +577,7 @@ const PIPELINES: Pipeline[] = [
 
 let activeExpertTasks: ExpertTask[] = [];
 let taskCounter = 0;
+let currentPipelineId = "";
 
 /** 任务更新回调（供 UI 监听进度） */
 let taskUpdateCallback: ((tasks: ExpertTask[]) => void) | null = null;
@@ -316,10 +634,32 @@ async function callExpert(
   taskDescription: string,
   previousResults: { name: string; title: string; output: string }[],
   apiKey: string,
-  onUpdate?: (task: ExpertTask) => void
+  keyId: string,
+  onUpdate?: (task: ExpertTask) => void,
+  projectName?: string,
+  projectId?: number
 ): Promise<ExpertTask> {
   const expert = ROUTER_EXPERTS.find((e) => e.id === expertId);
   if (!expert) throw new Error(`专家 ${expertId} 未注册`);
+
+  // === 配额前置校验 ===
+  const quotaCheck = checkQuota(expertId);
+  if (!quotaCheck.allowed) {
+    displayQuotaBlockMessage(quotaCheck.reason!);
+    const blockTask: ExpertTask = {
+      id: `task-${++taskCounter}`,
+      expertId,
+      expertName: expert.name,
+      expertTitle: expert.title,
+      status: "error",
+      input: taskDescription,
+      error: quotaCheck.reason,
+      startTime: Date.now(),
+      endTime: Date.now(),
+    };
+    onUpdate?.(blockTask);
+    return blockTask;
+  }
 
   const task: ExpertTask = {
     id: `task-${++taskCounter}`,
@@ -333,7 +673,38 @@ async function callExpert(
   onUpdate?.(task);
 
   try {
-    // 构建消息：先前专家结果 + 当前任务描述
+    // ===== 上下文增强：感知索引 + 记忆系统 =====
+    let perceptualContext = "";
+    let memoryContext = "";
+
+    if (projectName && projectId !== undefined) {
+      // 1. 感知索引检索相关代码段
+      try {
+        const indexResults = await invoke<string>("perceptual_index_search", {
+          projectName,
+          query: taskDescription,
+        });
+        if (indexResults && indexResults !== "(未找到相关代码段)") {
+          perceptualContext = `\n【项目代码参考】\n${indexResults}\n`;
+        }
+      } catch {
+        // 索引未构建时静默忽略
+      }
+
+      // 2. 记忆系统检索相关历史记忆
+      try {
+        memoryContext = await buildMemoryContext(
+          projectName,
+          projectId,
+          expertId,
+          taskDescription
+        );
+      } catch {
+        // 记忆检索失败时静默忽略
+      }
+    }
+
+    // 构建消息：先前专家结果 + 上下文增强 + 当前任务描述
     const messages: { role: string; content: string }[] = [];
 
     if (previousResults.length > 0) {
@@ -346,13 +717,43 @@ async function callExpert(
       });
     }
 
-    messages.push({ role: "user", content: taskDescription });
+    // 注入感知索引和记忆上下文
+    const enhancedTask = `${taskDescription}${perceptualContext}${memoryContext}`;
+    messages.push({ role: "user", content: enhancedTask });
 
-    const reply = await invoke<string>("chat_with_expert", {
+    const rawReply = await invoke<string>("chat_with_expert", {
       messages,
       apiKey,
       systemPrompt: expert.systemPrompt,
     });
+
+    // 解析后端返回的 JSON（包含 content 和 usage）
+    let reply = rawReply;
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+    try {
+      const parsed = JSON.parse(rawReply);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.content === "string") {
+          reply = parsed.content;
+        }
+        if (parsed.usage && typeof parsed.usage === "object") {
+          usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+        }
+      }
+    } catch {
+      // 不是 JSON 则直接使用原始文本
+    }
+
+    // 记录词元使用（fire-and-forget）
+    if (usage) {
+      recordTokenUsage(expertId, expert.name, "deepseek-v4-flash", keyId, usage).catch(console.error);
+      task.tokensUsed = usage.total_tokens;
+    }
+
+    // 保存专家输出到记忆系统
+    if (projectName && projectId !== undefined && task.status !== "error") {
+      saveExpertMemory(projectName, projectId, expertId, expert.name, taskDescription, reply).catch(console.error);
+    }
 
     task.output = reply;
     task.status = "done";
@@ -374,11 +775,14 @@ async function callExpert(
 export async function executePipeline(
   plan: DispatchPlan,
   apiKeyResolver: (expertId: string) => string | null,
-  onProgress: (tasks: ExpertTask[]) => void
-): Promise<ExpertTask[]> {
+  onProgress: (tasks: ExpertTask[]) => void,
+  projectName?: string,
+  projectId?: number
+): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
   const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
-  if (!pipeline) return [];
+  if (!pipeline) return { tasks: [], pipelineId: "" };
 
+  currentPipelineId = `pipeline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   activeExpertTasks = [];
   const allResults: ExpertTask[] = [];
   const completedResults: { name: string; title: string; output: string }[] = [];
@@ -428,7 +832,7 @@ export async function executePipeline(
         continue;
       }
 
-      const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey);
+      const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, expertId, undefined, projectName, projectId);
       allResults.push(task);
       activeExpertTasks.push(task);
       onProgress([...activeExpertTasks]);
@@ -459,7 +863,7 @@ export async function executePipeline(
           };
           return errTask;
         }
-        return callExpert(expertId, plan.taskDescription, completedResults, apiKey);
+        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, expertId, undefined, projectName, projectId);
       });
 
       const results = await Promise.all(parallelPromises);
@@ -478,7 +882,7 @@ export async function executePipeline(
     }
   }
 
-  return allResults;
+  return { tasks: allResults, pipelineId: currentPipelineId };
 }
 
 // ========== 主管审核 ==========
@@ -487,7 +891,8 @@ export async function executePipeline(
 export async function supervisorReview(
   taskDescription: string,
   expertResults: ExpertTask[],
-  apiKey: string
+  apiKey: string,
+  keyId: string = "supervisor"
 ): Promise<string> {
   const reviewPrompt = `你是「江星图」，项目主管。你的专家团已完成任务，请审核结果并综合为给用户的最终回复。
 
@@ -515,12 +920,43 @@ export async function supervisorReview(
     { role: "user", content: `专家工作结果：\n\n${summary}\n\n请审核并综合为最终回复。` },
   ];
 
+  // === 配额前置校验（主管）===
+  const quotaCheck = checkQuota("supervisor");
+  if (!quotaCheck.allowed) {
+    displayQuotaBlockMessage(quotaCheck.reason!);
+    return `专家团已执行完毕，但主管审核被配额阻断：${quotaCheck.reason}\n\n各专家结果：\n${summary}`;
+  }
+
   try {
-    return await invoke<string>("chat_with_expert", {
+    const rawReply = await invoke<string>("chat_with_expert", {
       messages,
       apiKey,
       systemPrompt: reviewPrompt,
     });
+
+    // 解析后端返回的 JSON（包含 content 和 usage）
+    let reply = rawReply;
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+    try {
+      const parsed = JSON.parse(rawReply);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.content === "string") {
+          reply = parsed.content;
+        }
+        if (parsed.usage && typeof parsed.usage === "object") {
+          usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+        }
+      }
+    } catch {
+      // 不是 JSON 则直接使用原始文本
+    }
+
+    // 记录词元使用（fire-and-forget）
+    if (usage) {
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+    }
+
+    return reply;
   } catch (e) {
     return `专家团已执行完毕，但主管审核时遇到问题：${e}\n\n各专家结果：\n${summary}`;
   }
@@ -573,7 +1009,8 @@ export async function supervisorAnalyze(
   userMessage: string,
   conversationHistory: { role: string; content: string }[],
   availableExperts: ExpertInfo[],
-  supervisorApiKey: string
+  supervisorApiKey: string,
+  keyId: string = "supervisor"
 ): Promise<DispatchPlan> {
   const systemPrompt = buildSupervisorPrompt(availableExperts);
 
@@ -593,12 +1030,42 @@ export async function supervisorAnalyze(
     content: `请分析以下需求并输出调度计划（仅输出 JSON）：\n${userMessage}`,
   });
 
+  // === 配额前置校验（主管）===
+  const quotaCheck = checkQuota("supervisor");
+  if (!quotaCheck.allowed) {
+    displayQuotaBlockMessage(quotaCheck.reason!);
+    return { scene: "quick-answer", taskDescription: userMessage, expertIds: [] };
+  }
+
   try {
-    const reply = await invoke<string>("chat_with_expert", {
+    const rawReply = await invoke<string>("chat_with_expert", {
       messages,
       apiKey: supervisorApiKey,
       systemPrompt,
     });
+
+    // 解析后端返回的 JSON（包含 content 和 usage）
+    let reply = rawReply;
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+    try {
+      const parsed = JSON.parse(rawReply);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.content === "string") {
+          reply = parsed.content;
+        }
+        if (parsed.usage && typeof parsed.usage === "object") {
+          usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+        }
+      }
+    } catch {
+      // 不是 JSON 则直接使用原始文本
+    }
+
+    // 记录词元使用（fire-and-forget）
+    if (usage) {
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+    }
+
     return parseDispatchPlan(reply);
   } catch {
     return { scene: "quick-answer", taskDescription: userMessage, expertIds: [] };
@@ -611,7 +1078,8 @@ export async function supervisorAnalyze(
 export async function analyzeFollowupIntent(
   followupMessage: string,
   currentPlan: DispatchPlan,
-  supervisorApiKey: string
+  supervisorApiKey: string,
+  keyId: string = "supervisor"
 ): Promise<{ action: "append" | "new-plan"; plan?: DispatchPlan }> {
   const prompt = `你是项目主管。当前正在执行任务：
 场景：${currentPlan.scene}
@@ -625,12 +1093,42 @@ export async function analyzeFollowupIntent(
 
 仅输出 JSON。`;
 
+  // === 配额前置校验（主管）===
+  const quotaCheck = checkQuota("supervisor");
+  if (!quotaCheck.allowed) {
+    displayQuotaBlockMessage(quotaCheck.reason!);
+    return { action: "append" };
+  }
+
   try {
-    const reply = await invoke<string>("chat_with_expert", {
+    const rawReply = await invoke<string>("chat_with_expert", {
       messages: [{ role: "user", content: followupMessage }],
       apiKey: supervisorApiKey,
       systemPrompt: prompt,
     });
+
+    // 解析后端返回的 JSON（包含 content 和 usage）
+    let reply = rawReply;
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+    try {
+      const parsed = JSON.parse(rawReply);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.content === "string") {
+          reply = parsed.content;
+        }
+        if (parsed.usage && typeof parsed.usage === "object") {
+          usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+        }
+      }
+    } catch {
+      // 不是 JSON 则直接使用原始文本
+    }
+
+    // 记录词元使用（fire-and-forget）
+    if (usage) {
+      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage).catch(console.error);
+    }
+
     const parsed = extractJson(reply);
     if (parsed.action === "new-plan") {
       return { action: "new-plan", plan: parseDispatchPlan(reply) };

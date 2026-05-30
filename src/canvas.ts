@@ -197,6 +197,25 @@ export class InfiniteCanvas {
     }));
   }
 
+  // 公共：相对偏移平移（供草稿模式右键拖动调用）
+  public panBy(dx: number, dy: number) {
+    this.view.x += dx;
+    this.view.y += dy;
+    this.updateTransform();
+  }
+
+  // 公共：以屏幕坐标为锚点缩放（供草稿模式滚轮调用）
+  public zoomAt(clientX: number, clientY: number, factor: number) {
+    const rect = this.svg.getBoundingClientRect();
+    const mouseX = clientX - rect.left;
+    const mouseY = clientY - rect.top;
+    const newScale = Math.max(0.1, Math.min(5, this.view.scale * factor));
+    this.view.x = mouseX - (mouseX - this.view.x) * (newScale / this.view.scale);
+    this.view.y = mouseY - (mouseY - this.view.y) * (newScale / this.view.scale);
+    this.view.scale = newScale;
+    this.updateTransform();
+  }
+
   // 设置数据并渲染
   setData(nodes: CanvasNode[], edges: CanvasEdge[]) {
     this.nodes = nodes;
