@@ -339,13 +339,14 @@ Knowledge Cards：
 pub async fn generate_cards(
     project_dir: &Path,
     api_key: &str,
+    model: &str,
 ) -> Result<Vec<KnowledgeCard>, String> {
     ensure_repo_dirs(project_dir)?;
 
     let signals = collect_signals(project_dir)?;
     let prompt = generate_cards_prompt(&signals);
 
-    let response_text = call_ai(api_key, &prompt).await?;
+    let response_text = call_ai(api_key, model, &prompt).await?;
 
     // 提取 JSON 数组
     let json_text = extract_json_array(&response_text);
@@ -384,12 +385,13 @@ pub async fn generate_cards(
 pub async fn synthesize_wiki(
     project_dir: &Path,
     api_key: &str,
+    model: &str,
     name: &str,
 ) -> Result<WikiArticle, String> {
     let cards = read_cards(project_dir)?;
     let cards = if cards.is_empty() {
         // 无卡片时自动生成（初始化阶段）
-        let generated = generate_cards(project_dir, api_key).await?;
+        let generated = generate_cards(project_dir, api_key, model).await?;
         if generated.is_empty() {
             return Err("项目中没有可分析的文件，请先添加代码文件".to_string());
         }
@@ -402,7 +404,7 @@ pub async fn synthesize_wiki(
         .map_err(|e| format!("序列化卡片失败: {}", e))?;
     let prompt = generate_wiki_prompt(&cards_json);
 
-    let response_text = call_ai(api_key, &prompt).await?;
+    let response_text = call_ai(api_key, model, &prompt).await?;
 
     // 提取 Markdown（去除可能的代码块包裹）
     let markdown = extract_markdown(&response_text);
@@ -428,14 +430,15 @@ pub async fn synthesize_wiki(
 pub async fn incremental_update(
     project_dir: &Path,
     api_key: &str,
+    model: &str,
 ) -> Result<String, String> {
     let existing_cards = read_cards(project_dir).unwrap_or_default();
     let signals = collect_signals(project_dir)?;
 
     if existing_cards.is_empty() {
         // 全量生成
-        let cards = generate_cards(project_dir, api_key).await?;
-        let _wiki = synthesize_wiki(project_dir, api_key, "index").await?;
+        let cards = generate_cards(project_dir, api_key, model).await?;
+        let _wiki = synthesize_wiki(project_dir, api_key, model, "index").await?;
         return Ok(format!(
             "全量生成完成：{} 张知识卡片，Wiki 文章已更新。",
             cards.len()
@@ -464,7 +467,7 @@ pub async fn incremental_update(
         existing_json, signals_json
     );
 
-    let response_text = call_ai(api_key, &prompt).await?;
+    let response_text = call_ai(api_key, model, &prompt).await?;
     let json_text = extract_json_array(&response_text);
     let updated_cards: Vec<KnowledgeCard> = serde_json::from_str(&json_text)
         .map_err(|e| format!("解析增量更新结果失败: {}", e))?;
@@ -495,7 +498,7 @@ pub async fn incremental_update(
     }
 
     // 重新合成 Wiki
-    let _wiki = synthesize_wiki(project_dir, api_key, "index").await?;
+    let _wiki = synthesize_wiki(project_dir, api_key, model, "index").await?;
 
     Ok(format!(
         "增量更新完成：{} 张卡片变更，共 {} 张卡片，Wiki 已刷新。",
@@ -506,11 +509,11 @@ pub async fn incremental_update(
 
 // ========== AI 调用 ==========
 
-pub async fn call_ai(api_key: &str, prompt: &str) -> Result<String, String> {
+pub async fn call_ai(api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
 
     let request_body = DeepSeekRequest {
-        model: "deepseek-v4-flash".to_string(),
+        model: model.to_string(),
         messages: vec![DeepSeekMessage {
             role: "user".to_string(),
             content: prompt.to_string(),

@@ -736,6 +736,10 @@ body {
   color: #999;
 }
 
+.loading-label {
+  margin-right: 4px;
+}
+
 .loading-dots span {
   animation: blink 1.4s infinite both;
 }

@@ -436,6 +436,14 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 执行规范：
 - 创建文件：[ACTION:CREATE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
 - 写入文件：[ACTION:WRITE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
+- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
+  \`\`\`search
+  待替换的旧文本（必须与文件中内容完全一致）
+  \`\`\`
+  \`\`\`replace
+  替换后的新文本
+  \`\`\`
+  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
 - 创建目录：[ACTION:CREATE_FOLDER:相对路径]
 
 注意：
@@ -457,8 +465,22 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 4. 遵循项目前端架构和组件规范
 
 执行规范：
-- 创建文件：[ACTION:CREATE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
-- 写入文件：[ACTION:WRITE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
+- 创建文件：[ACTION:CREATE_FILE:相对路径]
+\`\`\`
+内容
+\`\`\`
+- 写入文件：[ACTION:WRITE_FILE:相对路径]
+\`\`\`
+内容
+\`\`\`
+- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
+  \`\`\`search
+  待替换的旧文本（必须与文件中内容完全一致）
+  \`\`\`
+  \`\`\`replace
+  替换后的新文本
+  \`\`\`
+  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
 
 注意：
 - 严格遵循项目已有的 UI 规范和样式变量
@@ -481,6 +503,14 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 执行规范：
 - 创建文件：[ACTION:CREATE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
 - 写入文件：[ACTION:WRITE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
+- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
+  \`\`\`search
+  待替换的旧文本（必须与文件中内容完全一致）
+  \`\`\`
+  \`\`\`replace
+  替换后的新文本
+  \`\`\`
+  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
 
 注意：
 - 严格遵循项目后端技术栈和架构模式
@@ -641,6 +671,7 @@ async function callExpert(
   taskDescription: string,
   previousResults: { name: string; title: string; output: string }[],
   apiKey: string,
+  model: string,
   keyId: string,
   onUpdate?: (task: ExpertTask) => void,
   projectName?: string,
@@ -732,6 +763,7 @@ async function callExpert(
       messages,
       apiKey,
       systemPrompt: expert.systemPrompt,
+      model,
     });
 
     // 解析后端返回的 JSON（包含 content 和 usage）
@@ -753,7 +785,7 @@ async function callExpert(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage(expertId, expert.name, "deepseek-v4-flash", keyId, usage, expert.title).catch(console.error);
+      recordTokenUsage(expertId, expert.name, model, keyId, usage, expert.title).catch(console.error);
       task.tokensUsed = usage.total_tokens;
     }
 
@@ -778,13 +810,18 @@ async function callExpert(
 
 // ========== 流水线执行 ==========
 
-/** 执行流水线（专家依次/并行执行） */
+/** 执行流水线（专家依次/并行执行），每步完成后由主管中途检查 */
 export async function executePipeline(
   plan: DispatchPlan,
   apiKeyResolver: (expertId: string) => string | null,
+  modelResolver: (expertId: string) => string,
   onProgress: (tasks: ExpertTask[]) => void,
   projectName?: string,
-  projectId?: number
+  projectId?: number,
+  supervisorApiKey?: string,
+  supervisorModel?: string,
+  pendingFollowups?: string[],
+  onSupervisorDecision?: (action: string, reason?: string) => void
 ): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
   const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
   if (!pipeline) return { tasks: [], pipelineId: "" };
@@ -815,7 +852,22 @@ export async function executePipeline(
     steps.push({ expertIds: ids, optional: step.optional });
   }
 
-  for (const step of steps) {
+  // 构建剩余步骤描述列表（供主管中途检查用）
+  const buildRemainingDescs = (currentIdx: number): string[] => {
+    return steps.slice(currentIdx + 1).map((s) => {
+      const names = s.expertIds.map((id) => {
+        const e = ROUTER_EXPERTS.find((r) => r.id === id);
+        return e ? `${e.name}（${e.title}）` : id;
+      });
+      return names.join(" + ");
+    });
+  };
+
+  let stepIdx = 0;
+  while (stepIdx < steps.length) {
+    const step = steps[stepIdx];
+    let stepCompleted = false;
+
     if (step.expertIds.length === 1) {
       // 顺序执行
       const expertId = step.expertIds[0];
@@ -836,20 +888,21 @@ export async function executePipeline(
         allResults.push(errTask);
         activeExpertTasks.push(errTask);
         onProgress([...activeExpertTasks]);
-        continue;
-      }
+        stepCompleted = true;
+      } else {
+        const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId);
+        allResults.push(task);
+        activeExpertTasks.push(task);
+        onProgress([...activeExpertTasks]);
 
-      const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, expertId, undefined, projectName, projectId);
-      allResults.push(task);
-      activeExpertTasks.push(task);
-      onProgress([...activeExpertTasks]);
-
-      if (task.output) {
-        completedResults.push({
-          name: task.expertName,
-          title: task.expertTitle,
-          output: task.output,
-        });
+        if (task.output) {
+          completedResults.push({
+            name: task.expertName,
+            title: task.expertTitle,
+            output: task.output,
+          });
+        }
+        stepCompleted = true;
       }
     } else {
       // 并行执行
@@ -870,7 +923,7 @@ export async function executePipeline(
           };
           return errTask;
         }
-        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, expertId, undefined, projectName, projectId);
+        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId);
       });
 
       const results = await Promise.all(parallelPromises);
@@ -886,10 +939,128 @@ export async function executePipeline(
         }
       }
       onProgress([...activeExpertTasks]);
+      stepCompleted = true;
+    }
+
+    // ===== 主管中途检查（非最后一步且有 supervisorApiKey 时调用）=====
+    if (stepCompleted && supervisorApiKey && stepIdx < steps.length - 1) {
+      const remainingDescs = buildRemainingDescs(stepIdx);
+      const decision = await supervisorMidCheck(
+        stepIdx,
+        steps.length,
+        plan.taskDescription,
+        completedResults,
+        remainingDescs,
+        pendingFollowups || [],
+        supervisorApiKey,
+        supervisorModel || "deepseek-chat"
+      );
+
+      // 通知 UI 主管的决定
+      if (onSupervisorDecision) {
+        const reasonText = decision.reason || (decision.action === "continue" ? "继续执行下一步" : "");
+        onSupervisorDecision(decision.action, reasonText);
+      }
+
+      switch (decision.action) {
+        case "continue":
+          stepIdx++;
+          break;
+        case "retry":
+          // 不递增 stepIdx，重新执行当前步骤
+          // 清除当前步骤最后一次的结果以便重新执行
+          // （保留 completedResults 中之前步骤的输出，当前步骤的输出在重试时会被新结果替代）
+          break;
+        case "skip-next":
+          stepIdx += 2; // 跳过下一个步骤
+          break;
+        case "abort":
+          stepIdx = steps.length; // 直接跳出循环
+          break;
+        default:
+          stepIdx++;
+      }
+    } else {
+      stepIdx++;
     }
   }
 
   return { tasks: allResults, pipelineId: currentPipelineId };
+}
+
+// ========== 主管中途检查 ==========
+
+/** 主管在每个流水线步骤完成后评估，决定是否调整后续步骤 */
+export async function supervisorMidCheck(
+  stepIndex: number,
+  totalSteps: number,
+  taskDescription: string,
+  currentExpertResults: { name: string; title: string; output: string }[],
+  remainingStepDescs: string[],
+  userFollowups: string[],
+  supervisorApiKey: string,
+  supervisorModel: string
+): Promise<{ action: "continue" | "retry" | "skip-next" | "abort"; reason?: string }> {
+  const followupContext = userFollowups.length > 0
+    ? `\n\n【用户中途补充要求】\n${userFollowups.join("；")}`
+    : "";
+
+  const resultsSummary = currentExpertResults
+    .map((r) => `### ${r.name}（${r.title}）\n${r.output.substring(0, 500)}${r.output.length > 500 ? "...(截断)" : ""}`)
+    .join("\n\n");
+
+  const remainingDesc = remainingStepDescs.length > 0
+    ? `\n剩余步骤：${remainingStepDescs.map((d, i) => `${i + 1}. ${d}`).join("；")}`
+    : "\n剩余步骤：无（最后一步）";
+
+  const prompt = `你是「江星图」，项目主管。你正在监督专家团流水线执行（第 ${stepIndex + 1}/${totalSteps} 步刚完成）。
+
+原始任务：「${taskDescription}」${followupContext}
+
+已完成专家的输出：
+${resultsSummary}
+${remainingDesc}
+
+请判断下一步行动（仅输出 JSON）：
+1. 如果当前步骤输出质量合格，后续步骤仍合理 → {"action":"continue"}
+2. 如果当前步骤输出有问题，需要该专家重新执行 → {"action":"retry","reason":"具体反馈"}
+3. 如果下一步不再需要（如设计方案已足够明确）→ {"action":"skip-next","reason":"原因"}
+4. 如果当前输出已完全满足需求，或出现严重问题需终止 → {"action":"abort","reason":"原因"}
+
+默认行为是 continue，仅在确有必要时选择其他操作。
+只输出 JSON，不要输出其他内容。`;
+
+  try {
+    const rawReply = await invoke<string>("chat_with_expert", {
+      messages: [{ role: "user", content: prompt }],
+      apiKey: supervisorApiKey,
+      systemPrompt: "你是项目主管，负责监督专家团执行。仅输出 JSON，不要其他内容。",
+      model: supervisorModel,
+    });
+
+    // 解析返回
+    let reply = rawReply;
+    try {
+      const parsed = JSON.parse(rawReply);
+      if (parsed && typeof parsed === "object" && typeof parsed.content === "string") {
+        reply = parsed.content;
+      }
+    } catch { /* 不是JSON包装 */ }
+
+    const decision = extractJson(reply);
+    const validActions = ["continue", "retry", "skip-next", "abort"];
+    const action = validActions.includes(decision.action as string)
+      ? (decision.action as "continue" | "retry" | "skip-next" | "abort")
+      : "continue";
+
+    return {
+      action,
+      reason: typeof decision.reason === "string" ? decision.reason : undefined,
+    };
+  } catch {
+    // 中途检查失败时默认继续，不阻塞流水线
+    return { action: "continue" };
+  }
 }
 
 // ========== 主管审核 ==========
@@ -899,25 +1070,19 @@ export async function supervisorReview(
   taskDescription: string,
   expertResults: ExpertTask[],
   apiKey: string,
-  keyId: string = "supervisor"
+  keyId: string = "supervisor",
+  model: string = "deepseek-chat"
 ): Promise<string> {
-  const reviewPrompt = `你是「江星图」，项目主管兼资质调研员。你的专家团已完成任务，请审核结果并综合为给用户的最终回复。
+  const reviewPrompt = `你是「江星图」，项目主管。专家团已完成任务，请审核结果并综合为给用户的最终回复。
 
-审核要求：
-1. 检查专家输出是否满足用户的原始需求
-2. 如有审查员参与，以其结论为主要依据
-3. 以清晰、易懂的方式向用户呈现最终结果
-
-关键规则（必须遵守）：
-- 如果专家输出中包含 [ACTION:CREATE_FILE:路径] 或 [ACTION:WRITE_FILE:路径] 等文件操作标记，必须在最终回复中完整保留这些标记，包括标记后的代码块内容。不要删除、修改或简化任何文件操作标记。
-- 文件操作标记格式示例：先写 [ACTION:CREATE_FILE:src/main.ts] 然后紧跟代码块包含文件内容
-
-注意：
-- 你是主管，呈现专家工作成果，不声称自己完成了具体工作
-- 用自然、亲切的语言与用户交流，避免过于技术化或程式化的表达
-- 如专家之间有分歧，给出你的判断和建议
-- 简洁明了，不堆砌冗余内容
-- 不需要写"工作亮点"和"改进建议"这类总结性内容，直接给出结果即可`;
+输出格式：
+1. 完整保留专家输出中的所有 [ACTION:CREATE_FILE:路径]、[ACTION:WRITE_FILE:路径]、[ACTION:CREATE_FOLDER:路径] 标记及其后的代码块，原样输出。
+2. 在文件交付之后，用自然亲切的语言给用户一个简洁的汇总。可以提及哪位专家做了什么（例如“调研员梳理了需求，工程师生成了代码”），但不需要冗长的复盘。
+3. 严禁输出以下内容：
+   - “工作亮点”、“改进建议”及其相关段落。
+   - “各位专家的处理结果已汇总到我这，经审查确认”之类的元数据过渡语。
+   - 把每个专家的工作内容逐个写成大段叙述（用列表简要罗列即可）。
+4. 整体风格：像同事汇报一样自然，不给用户造成信息压力。`;
 
   const summary = expertResults
     .map((r) => {
@@ -943,6 +1108,7 @@ export async function supervisorReview(
       messages,
       apiKey,
       systemPrompt: reviewPrompt,
+      model,
     });
 
     // 解析后端返回的 JSON（包含 content 和 usage）
@@ -964,7 +1130,7 @@ export async function supervisorReview(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
+      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     return reply;
@@ -1022,7 +1188,8 @@ export async function supervisorAnalyze(
   conversationHistory: { role: string; content: string }[],
   availableExperts: ExpertInfo[],
   supervisorApiKey: string,
-  keyId: string = "supervisor"
+  keyId: string = "supervisor",
+  model: string = "deepseek-chat"
 ): Promise<DispatchPlan> {
   const systemPrompt = buildSupervisorPrompt(availableExperts);
 
@@ -1054,6 +1221,7 @@ export async function supervisorAnalyze(
       messages,
       apiKey: supervisorApiKey,
       systemPrompt,
+      model,
     });
 
     // 解析后端返回的 JSON（包含 content 和 usage）
@@ -1075,7 +1243,7 @@ export async function supervisorAnalyze(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
+      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     return parseDispatchPlan(reply);
@@ -1091,7 +1259,8 @@ export async function analyzeFollowupIntent(
   followupMessage: string,
   currentPlan: DispatchPlan,
   supervisorApiKey: string,
-  keyId: string = "supervisor"
+  keyId: string = "supervisor",
+  model: string = "deepseek-chat"
 ): Promise<{ action: "append" | "new-plan"; plan?: DispatchPlan }> {
   const prompt = `你是项目主管。当前正在执行任务：
 场景：${currentPlan.scene}
@@ -1117,6 +1286,7 @@ export async function analyzeFollowupIntent(
       messages: [{ role: "user", content: followupMessage }],
       apiKey: supervisorApiKey,
       systemPrompt: prompt,
+      model,
     });
 
     // 解析后端返回的 JSON（包含 content 和 usage）
@@ -1138,7 +1308,7 @@ export async function analyzeFollowupIntent(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", keyId, usage, "主管").catch(console.error);
+      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     const parsed = extractJson(reply);

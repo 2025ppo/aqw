@@ -447,6 +447,35 @@ function getExpertApiKey(expertId: string): string | null {
   return resolveExpertApiKey(expertId, experts, keyPoolItems as any);
 }
 
+/** 根据专家 ID 解析其绑定的模型名称 */
+function getExpertModel(expertId: string): string {
+  return resolveExpertModel(expertId, experts, keyPoolItems as any);
+}
+
+/** 从密钥池中解析模型名称 */
+function resolveExpertModel(
+  expertId: string,
+  expertsList: Expert[],
+  keyPool: KeyPoolItem[]
+): string {
+  const expert = expertsList.find((e) => e.id === expertId);
+  if (!expert?.keyId) return "deepseek-chat";
+  const item = keyPool.find((k) => k.data.id === expert.keyId);
+  if (item?.type === "preset" || item?.type === "relay") {
+    return (item.data as PresetKey | RelayKey).model || "deepseek-chat";
+  }
+  return "deepseek-chat";
+}
+
+/** 获取当前激活密钥池项的模型名称（供 Wiki/画布等非专家调用使用） */
+function getActiveKeyModel(): string {
+  const presetKey = keyPoolItems.find((i) => i.type === "preset") as { type: "preset"; data: PresetKey } | undefined;
+  if (presetKey) return presetKey.data.model || "deepseek-chat";
+  const relayKey = keyPoolItems.find((i) => i.type === "relay") as { type: "relay"; data: RelayKey } | undefined;
+  if (relayKey) return relayKey.data.model || "deepseek-chat";
+  return "deepseek-chat";
+}
+
 // 错误提示 Toast
 function showError(msg: string) {
   const toast = document.getElementById("error-toast")!;
@@ -980,10 +1009,16 @@ window.addEventListener("chat-changed", ((e: CustomEvent) => {
 
 // ========== 聊天区域逻辑 ==========
 // 每个项目下可以有多个对话历史（对话一、对话二...）
+interface ChatMessage {
+  /** expert-tasks 表示一组专家任务卡片快照（content 为 JSON 序列化的 ExpertTask[]） */
+  role: "user" | "assistant" | "expert-tasks";
+  content: string;
+}
+
 interface ChatSession {
   id: number;
   name: string;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: ChatMessage[];
 }
 
 const projectSessions = new Map<number, ChatSession[]>();
@@ -1372,6 +1407,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // 获取主管（江星图）的 API 密钥
     const supervisorKey = getExpertApiKey("jiang-xingtu");
+    const supervisorModel = getExpertModel("jiang-xingtu");
     if (!supervisorKey) {
       showError("主管「江星图」未配置密钥，请在设置中绑定");
       session.messages.push({ role: "assistant", content: "请先为「江星图」配置 API 密钥。" });
@@ -1381,10 +1417,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // 如果流水线正在执行：将新消息作为增量提交
     if (pipelineRunning) {
-      showLoading();
+      showLoading("主管正在分析补充要求...");
       pendingFollowups.push(text);
       try {
-        await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor");
+        await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor", supervisorModel);
         const reportMsg = `已收到新消息。当前专家团执行中，我已将您的补充要求转达给相关专家。\n\n${buildProgressReport()}`;
         session.messages.push({ role: "assistant", content: reportMsg });
         await saveSessionToDb(currentSessionId, currentProjectId);
@@ -1399,7 +1435,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // === 主管意图分析 ===
-    showLoading();
+    showLoading("主管正在规划专家调度...");
     let dispatchPlan: DispatchPlan;
     try {
       // 感知索引上下文
@@ -1435,7 +1471,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         historyForSupervisor,
         availableExperts,
         supervisorKey,
-        "supervisor"
+        "supervisor",
+        supervisorModel
       );
       log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
     } catch (e) {
@@ -1457,6 +1494,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           messages: apiMessages,
           apiKey: supervisorKey,
           systemPrompt: "你是「江星图」，项目主管。现在用户有一个简单问题，请直接回答。回答要简洁明了。",
+          model: getExpertModel("jiang-xingtu"),
         });
 
         // 解析后端返回的 JSON（包含 content 和 usage）
@@ -1478,7 +1516,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // 记录词元使用（fire-and-forget）
         if (usage) {
-          recordTokenUsage("supervisor", "江星图", "deepseek-v4-flash", "supervisor", usage, "主管").catch(console.error);
+          recordTokenUsage("supervisor", "江星图", getExpertModel("jiang-xingtu"), "supervisor", usage, "主管").catch(console.error);
         }
 
         finalReply = reply;
@@ -1492,34 +1530,69 @@ document.addEventListener("DOMContentLoaded", async () => {
       pendingFollowups = [];
       hideLoading();
 
-      // 插入一条“主管调度”消息（显示分派计划）
-      const dispatchDesc = dispatchPlan.expertIds
-        .map((id) => {
-          const info = getAvailableExpertInfos().find((e) => e.id === id);
-          return info ? `${info.name}（${info.title}）` : id;
-        })
-        .join(" → ");
-      session.messages.push({
-        role: "assistant",
-        content: `派遣专家处理：${dispatchDesc}`,
+      // 立即渲染所有专家的 pending 卡片，让用户看到专家团正在加入（不写入消息历史，避免“派遣专家处理”这种元数据泄露）
+      const joiningTasks: ExpertTask[] = dispatchPlan.expertIds.map((id) => {
+        const info = getAvailableExpertInfos().find((e) => e.id === id);
+        return {
+          id: `joining-${id}`,
+          expertId: id,
+          expertName: info?.name || id,
+          expertTitle: info?.title || "未知",
+          status: "pending" as const,
+          input: dispatchPlan.taskDescription,
+        };
       });
-      renderMessages();
+      window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: joiningTasks } }));
 
       try {
-        // 执行流水线（onProgress 回调实时更新 UI）
+        // 执行流水线（onProgress 回调实时更新 UI，主管中途检查）
         const activeProjectForPipeline = sidebar.getActiveChat();
         const pipelineResult = await executePipeline(
           dispatchPlan,
           getExpertApiKey,
+          getExpertModel,
           (tasks: ExpertTask[]) => {
             // 实时渲染专家任务卡片（通过全局事件）
             window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks } }));
           },
           activeProjectForPipeline?.name,
-          activeProjectForPipeline?.id
+          activeProjectForPipeline?.id,
+          supervisorKey,
+          supervisorModel,
+          pendingFollowups,
+          (action: string, reason?: string) => {
+            // 主管中途决策：作为状态说明展示给用户
+            const actionLabels: Record<string, string> = {
+              "continue": "继续执行下一步",
+              "retry": "要求重新执行当前步骤",
+              "skip-next": "跳过下一步",
+              "abort": "终止流水线",
+            };
+            const label = actionLabels[action] || action;
+            const reasonText = reason ? `：${reason}` : "";
+            session.messages.push({
+              role: "assistant",
+              content: `[主管中途检查] ${label}${reasonText}`,
+            });
+          }
         );
         const expertResults = pipelineResult.tasks;
         const pipelineId = pipelineResult.pipelineId;
+
+        // 将专家卡片快照作为消息推入会话历史（作为对话的一部分永久保留）
+        session.messages.push({
+          role: "expert-tasks",
+          content: JSON.stringify(expertResults.map((t) => ({
+            id: t.id,
+            expertId: t.expertId,
+            expertName: t.expertName,
+            expertTitle: t.expertTitle,
+            status: t.status,
+            input: t.input,
+            output: t.output,
+            error: t.error,
+          }))),
+        });
 
         // 检查是否有补充消息需传递给审核阶段
         const followupContext = pendingFollowups.length > 0
@@ -1527,12 +1600,13 @@ document.addEventListener("DOMContentLoaded", async () => {
           : "";
 
         // 主管审核所有专家结果
-        showLoading();
+        showLoading("主管正在审核专家成果...");
         finalReply = await supervisorReview(
           dispatchPlan.taskDescription + followupContext,
           expertResults,
           supervisorKey,
-          "supervisor"
+          "supervisor",
+          supervisorModel
         );
 
         // 生成交付清单（fire-and-forget）
@@ -1547,7 +1621,6 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
         }
 
-        // 流水线结束后保留专家任务卡片（不主动清除），由新对话或页面切换时自然清理
       } catch (e) {
         log("ERROR", `流水线执行失败: ${e}`);
         finalReply = `专家团执行出错：${e}`;
@@ -1557,24 +1630,31 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
+    // 主管最终回复极简化：保留 ACTION 标记，仅保留最后一句简短交付语，剔除任何冗余汇总文字
+    const sanitizedReply = sanitizeSupervisorReply(finalReply);
+
     // 将最终回复推入会话
-    session.messages.push({ role: "assistant", content: finalReply });
+    session.messages.push({ role: "assistant", content: sanitizedReply });
 
     // 保存到数据库
     await saveSessionToDb(currentSessionId, currentProjectId);
 
-    // 解析并执行 Agent 动作
-    await executeAgentActions(finalReply);
-
     hideLoading();
+    // 移除运行中的实时卡片占位（已通过 expert-tasks 消息持久化）
+    document.getElementById("chat-messages")?.querySelector('.expert-tasks-group[data-live="true"]')?.remove();
     renderMessages();
+
+    // 解析并执行 Agent 动作（仍基于原始 finalReply 以保留所有 ACTION 标记）
+    await executeAgentActions(finalReply);
   }
 
   // ========== Agent 动作解析与执行 ==========
   interface AgentAction {
-    type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH";
+    type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "EDIT_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH";
     path: string;
     content?: string;
+    searchText?: string;
+    replaceText?: string;
   }
 
   /** 解析 AI 返回中的动作标记 */
@@ -1595,6 +1675,18 @@ document.addEventListener("DOMContentLoaded", async () => {
         type: "CREATE_FILE",
         path: match[1].trim(),
         content: match[2].trimEnd(),
+      });
+    }
+
+    // 匹配 [ACTION:EDIT_FILE:相对路径]
+    // ```search\n旧文本\n```\n```replace\n新文本\n```
+    const editRegex = /\[ACTION:EDIT_FILE:([^\]]+)\]\s*```search\n?([\s\S]*?)```\s*```replace\n?([\s\S]*?)```/g;
+    while ((match = editRegex.exec(content)) !== null) {
+      actions.push({
+        type: "EDIT_FILE",
+        path: match[1].trim(),
+        searchText: match[2].trimEnd(),
+        replaceText: match[3].trimEnd(),
       });
     }
 
@@ -1637,6 +1729,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) return;
 
+    // 检查是否有文件生成操作，显示反馈
+    const hasFileActions = actions.some((a) => a.type === "CREATE_FILE" || a.type === "WRITE_FILE" || a.type === "EDIT_FILE" || a.type === "CREATE_FOLDER");
+    if (hasFileActions) {
+      showLoading("正在生成文件...");
+    }
+
     for (const action of actions) {
       try {
         switch (action.type) {
@@ -1654,6 +1752,15 @@ document.addEventListener("DOMContentLoaded", async () => {
               content: action.content || "",
             });
             log("INFO", `Agent: 创建文件 ${action.path}`);
+            break;
+          case "EDIT_FILE":
+            await invoke("sandbox_edit_file", {
+              projectName: activeProject.name,
+              relativePath: action.path,
+              searchText: action.searchText || "",
+              replaceText: action.replaceText || "",
+            });
+            log("INFO", `Agent: 编辑文件 ${action.path}`);
             break;
           case "WRITE_FILE":
             await invoke("sandbox_write_file", {
@@ -1702,6 +1809,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
+    // 文件操作完成后隐藏加载状态
+    if (hasFileActions) {
+      hideLoading();
+    }
+
     // 文件变更后标记目录为"需要更新"（不自动生成）
     if (activeProject) {
       updateDirectoryStatus("needs-update");
@@ -1719,14 +1831,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // 显示加载指示器
-  function showLoading() {
+  function showLoading(text?: string) {
     if (!chatMessages) return;
+    hideLoading(); // 确保不会有重复的 loading 元素
+    const label = text || "思考中";
     const loadingEl = document.createElement("div");
     loadingEl.id = "chat-loading";
     loadingEl.className = "chat-message assistant loading";
     loadingEl.innerHTML = `
       <div class="message-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="8" x2="12" y2="8"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
-      <div class="message-content"><span class="loading-dots">思考中<span>.</span><span>.</span><span>.</span></span></div>
+      <div class="message-content"><span class="loading-label">${escapeHtml(label)}</span><span class="loading-dots"><span>.</span><span>.</span><span>.</span></span></div>
     `;
     chatMessages.appendChild(loadingEl);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1777,6 +1891,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     chatMessages.innerHTML = "";
     session.messages.forEach((msg) => {
+      // 专家卡片快照消息：作为对话历史的一部分按顺序渲染
+      if (msg.role === "expert-tasks") {
+        try {
+          const tasks: ExpertTask[] = JSON.parse(msg.content);
+          if (tasks.length > 0) {
+            const groupEl = buildTasksGroupEl(tasks);
+            chatMessages!.appendChild(groupEl);
+          }
+        } catch (e) {
+          log("WARN", `专家卡片消息解析失败: ${e}`);
+        }
+        return;
+      }
+
       const msgEl = document.createElement("div");
       msgEl.className = `chat-message ${msg.role}`;
 
@@ -1789,7 +1917,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         // AI 消息：无头像、无背景、流式布局，解析 Artifact 卡片
         msgEl.innerHTML = renderAiMessage(msg.content);
       }
-      chatMessages.appendChild(msgEl);
+      chatMessages!.appendChild(msgEl);
     });
 
     // 绑定 Artifact 卡片点击事件
@@ -1881,14 +2009,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     return blocks;
   }
 
-  /** 行内 Markdown 格式化（粗体、斜体、行内代码、标题等） */
+  /** 行内 Markdown 格式化（粗体、斜体、行内代码、标题、列表等） */
   function formatInlineMarkdown(html: string): string {
-    // 标题（# ## ### ####）
+    // 标题（# ## ### ####）—— 必须在 \n → <br> 之前，^ 才生效
     html = html.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
     html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
     html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
     html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-    // 将换行转为 <br>（保留段落结构，但跳过已渲染的标题行）
+    // 列表项 —— 必须在 \n → <br> 之前，否则 ^ 只匹配字符串开头
+    html = html.replace(/^-\s+(.+)$/gm, "• $1");
+    // 将换行转为 <br>（保留段落结构，但跳过已渲染的标签行）
     html = html.replace(/\n/g, "<br>");
     // **粗体**
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
@@ -1896,8 +2026,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
     // `行内代码`
     html = html.replace(/`([^`]+)`/g, "<code class=\"inline-code\">$1</code>");
-    // - 列表项
-    html = html.replace(/^-\s+(.+)$/gm, "• $1");
     return html;
   }
 
@@ -1943,18 +2071,41 @@ document.addEventListener("DOMContentLoaded", async () => {
     return div.innerHTML;
   }
 
+  /**
+   * 主管最终回复裁剪：
+   * - 完整保留所有 [ACTION:...] 标记及其后的代码块（交付物）
+   * - 过滤掉“工作亮点”、“改进建议”这类冗余段落
+   * - 保留有意义的汇总、列表和专家名号（按场景自然呈现）
+   */
+  function sanitizeSupervisorReply(reply: string): string {
+    if (!reply) return "文档已就绪，可直接使用，如有需要随时找我。";
+
+    // 提取所有 [ACTION:CREATE_FILE:xxx]```...``` 、 [ACTION:WRITE_FILE:xxx]```...``` 、 [ACTION:CREATE_FOLDER:xxx]
+    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE):[^\]]+\]\s*(?:```search[\s\S]*?```\s*```replace[\s\S]*?```|```[\s\S]*?```)|\[ACTION:CREATE_FOLDER:[^\]]+\]/g;
+    const actionBlocks: string[] = [];
+    let textPart = reply.replace(actionRegex, (m) => {
+      actionBlocks.push(m);
+      return "\u0000";
+    });
+
+    // 过滤文字部分：仅剔除“工作亮点/改进建议”段落（含标题到下一节之间的内容）
+    textPart = textPart.replace(/###?\s*工作亮点[\s\S]*?(?=###|$)/g, "");
+    textPart = textPart.replace(/###?\s*改进建议[\s\S]*?(?=###|$)/g, "");
+    // 剔除“各位专家的处理结果已汇总到我这”、“经审查确认”这类不必要的过渡语
+    textPart = textPart.replace(/各位专家的处理结果已汇总到我这[，,。]?[\s]*经审查确认[^。]*。/g, "");
+    textPart = textPart.replace(/已汇总[^。]*。/g, "");
+    // 清理占位符和多余空白
+    textPart = textPart.replace(/\u0000+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+
+    // 重建：ACTION 块原始顺序 + 过滤后的文字
+    const out = actionBlocks.join("\n\n") + (actionBlocks.length > 0 && textPart ? "\n\n" : "") + textPart;
+    return out.trim() || "文档已就绪，可直接使用，如有需要随时找我。";
+  }
+
   // ========== 专家任务卡片渲染 ==========
 
-  /** 渲染专家任务卡片组（实时插入到 chatMessages 尾部） */
-  function renderExpertTaskCards(tasks: ExpertTask[]) {
-    if (!chatMessages) return;
-
-    // 移除旧的卡片容器
-    const oldGroup = chatMessages.querySelector(".expert-tasks-group");
-    if (oldGroup) oldGroup.remove();
-
-    if (tasks.length === 0) return;
-
+  /** 构建一组专家卡片元素（不插入 DOM，返回可复用的容器） */
+  function buildTasksGroupEl(tasks: ExpertTask[]): HTMLElement {
     const groupEl = document.createElement("div");
     groupEl.className = "expert-tasks-group";
 
@@ -1996,9 +2147,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       groupEl.insertAdjacentHTML("beforeend", cardHtml);
     });
 
-    chatMessages.appendChild(groupEl);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-
     // 绑定折叠按钮
     groupEl.querySelectorAll(".expert-call-output-toggle").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -2008,6 +2156,24 @@ document.addEventListener("DOMContentLoaded", async () => {
         content.classList.toggle("expanded");
       });
     });
+
+    return groupEl;
+  }
+
+  /** 渲染运行中的专家任务卡片组（仅替换 data-live 标记的实时占位，不影响历史卡片组） */
+  function renderExpertTaskCards(tasks: ExpertTask[]) {
+    if (!chatMessages) return;
+
+    // 仅移除实时占位组，保留历史中已持久化的卡片组
+    const oldLive = chatMessages.querySelector('.expert-tasks-group[data-live="true"]');
+    if (oldLive) oldLive.remove();
+
+    if (tasks.length === 0) return;
+
+    const groupEl = buildTasksGroupEl(tasks);
+    groupEl.dataset.live = "true";
+    chatMessages.appendChild(groupEl);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
   // 监听专家任务更新事件
@@ -2143,6 +2309,31 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ========== 目录卡片模式（structure/logic） ==========
   let directoryMode: "structure" | "logic" = "structure";
 
+  /**
+   * 把后端返回的 canvasDirectory 数据归一化成 { structure?, logic? } 形式。
+   * 同时兼容三种历史格式：
+   * 1) 新格式：{ structure: {...}, logic: {...} }
+   * 2) 旧扁平格式：{ mode, nodes, edges, ... }
+   * 3) 混合格式：新旧字段同时存在（旧版升级时 rust 端只追加未清理）
+   * 优先使用新格式子字段，旧扁平字段仅作为兜底。
+   */
+  function normalizeCachedDirectory(parsed: any): { structure?: any; logic?: any } {
+    const result: { structure?: any; logic?: any } = {};
+    if (!parsed || typeof parsed !== "object") return result;
+    if (parsed.structure && Array.isArray(parsed.structure.nodes) && parsed.structure.nodes.length > 0) {
+      result.structure = parsed.structure;
+    }
+    if (parsed.logic && Array.isArray(parsed.logic.nodes) && parsed.logic.nodes.length > 0) {
+      result.logic = parsed.logic;
+    }
+    // 旧扁平格式兜底
+    if (parsed.mode && Array.isArray(parsed.nodes) && parsed.nodes.length > 0) {
+      if (parsed.mode === "logic" && !result.logic) result.logic = parsed;
+      else if (parsed.mode === "structure" && !result.structure) result.structure = parsed;
+    }
+    return result;
+  }
+
   /** 生成仅含项目根节点的最小画布数据（用作任何失败场景的兑底） */
   function makeRootOnlyResult(projectName: string): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
     return {
@@ -2270,20 +2461,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (cached && cached !== "null") {
         const parsed = JSON.parse(cached);
-        // 兼容旧格式（直接是单模式数据对象）
-        if (parsed.mode) {
-          allCachedData = {};
-          if (parsed.mode === "logic") {
-            allCachedData.logic = parsed;
-            directoryMode = "logic";
-          } else {
-            allCachedData.structure = parsed;
-            directoryMode = "structure";
-          }
+        // 统一归一化为 { structure?, logic? }，优先新格式、兼容旧格式
+        allCachedData = normalizeCachedDirectory(parsed);
+        // 默认优先 structure；若仅有 logic 才回退到 logic
+        if (allCachedData.structure) {
+          directoryMode = "structure";
+        } else if (allCachedData.logic) {
+          directoryMode = "logic";
         } else {
-          // 新格式：包含 structure/logic 子字段
-          allCachedData = parsed;
-          // 默认优先 structure 模式
           directoryMode = "structure";
         }
         updateTabActive();
@@ -2350,6 +2535,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await invoke<string>("analyze_project_dependencies", {
         projectName: project.name,
         apiKey: apiKey,
+        model: getActiveKeyModel(),
       });
 
       // 解析 DeepSeek 返回的 JSON
@@ -2560,8 +2746,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
       if (cached && cached !== "null") {
         const parsed = JSON.parse(cached);
-        // 兼容旧格式
-        const modeData = parsed.mode ? parsed : parsed.structure;
+        const modeData = normalizeCachedDirectory(parsed).structure;
         if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
           canvas.setData(modeData.nodes, modeData.edges);
           await checkDirectoryChanges(activeProject.name, modeData);
@@ -2601,8 +2786,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
       if (cached && cached !== "null") {
         const parsed = JSON.parse(cached);
-        // 新格式: parsed.logic; 旧格式: parsed.mode === "logic"
-        const modeData = parsed.logic || (parsed.mode === "logic" ? parsed : null);
+        const modeData = normalizeCachedDirectory(parsed).logic;
         if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
           canvas.setData(modeData.nodes, modeData.edges);
           await checkDirectoryChanges(activeProject.name, modeData);
@@ -2930,6 +3114,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       await invoke("repo_synthesize_wiki", {
         projectName: activeProject.name,
         apiKey,
+        model: getActiveKeyModel(),
         name: "index",
       });
 
@@ -2969,6 +3154,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await invoke<string>("repo_incremental_update", {
         projectName: activeProject.name,
         apiKey,
+        model: getActiveKeyModel(),
       });
       log("INFO", `Wiki 增量更新: ${result}`);
       setIterationStatus("自迭代完成", "done");
