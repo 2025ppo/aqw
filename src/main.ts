@@ -26,7 +26,7 @@ import {
   type TimeRange,
   type ExpertPerformance,
 } from "./expert-router";
-import { saveUserIntentMemory } from "./memory-store";
+import { saveUserIntentMemory, searchMemory, deleteMemory, getMemoryStats } from "./memory-store";
 
 // 引用以避免 TS6133 未使用警告（专家表现面板后续将使用）
 void getExpertPerformance;
@@ -306,6 +306,8 @@ const normalUIElements = [
   "file-browser-card",
   "wiki-panel",
   "repo-browser",
+  "git-panel",
+  "git-browser",
   "token-panel",
   "time-manager",
 ];
@@ -1026,6 +1028,19 @@ let currentProjectId: number | null = null;
 let currentSessionId: number | null = null;
 let nextSessionId = 1;
 
+// ========== DB 就绪检测 ==========
+async function waitForDbReady(maxRetries = 10, interval = 300): Promise<boolean> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await invoke("db_load_projects");
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  return false;
+}
+
 // ========== 感知索引状态 ==========
 let perceptualIndexReady = false;
 let perceptualIndexBuilding = false;
@@ -1049,6 +1064,56 @@ document.addEventListener("DOMContentLoaded", async () => {
   const chatMessages = document.getElementById("chat-messages");
   const chatInput = document.getElementById("chat-input") as HTMLTextAreaElement;
   const chatSendBtn = document.getElementById("chat-send-btn");
+
+  // === 启动时恢复上次活跃项目的对话 ===
+  // 解决 sidebar.loadProjects() 中 setActiveChat() 触发的 chat-changed 事件
+  // 可能早于本 DOMContentLoaded 注册监听器导致的时序竞态问题
+
+  // 等待 DB 就绪，避免后端未初始化时静默失败
+  const dbReady = await waitForDbReady();
+  if (!dbReady) {
+    log("ERROR", "数据库初始化超时，无法加载对话记录");
+    if (chatMessages) {
+      const errorNotice = document.createElement("div");
+      errorNotice.className = "system-notice error-notice";
+      errorNotice.textContent = "数据库初始化超时，无法加载对话记录，请重启应用";
+      errorNotice.style.cssText = "color: #e74c3c; padding: 8px 12px; margin: 8px; border-radius: 4px; background: rgba(231,76,60,0.1); font-size: 13px;";
+      chatMessages.appendChild(errorNotice);
+    }
+  }
+
+  const activeChat = sidebar.getActiveChat();
+  if (activeChat) {
+    currentProjectId = activeChat.id;
+    log("INFO", `启动恢复：检测到上次活跃项目 [${activeChat.name}]，加载对话记录`);
+    await loadSessionsFromDb(activeChat.id);
+    const sessions = getSessions(activeChat.id);
+    if (sessions.length > 0) {
+      currentSessionId = sessions[0].id;
+      renderMessages();
+      log("INFO", `启动恢复：已加载 ${sessions.length} 个会话，当前会话 [${sessions[0].name}]`);
+    }
+    updateHistoryDisplay();
+  } else {
+    // 尝试从项目列表获取第一个可用项目
+    const allChats = sidebar.getChats();
+    if (allChats && allChats.length > 0) {
+      const firstProject = allChats[0];
+      log("INFO", `启动恢复：无上次活跃项目，尝试加载第一个项目: ${firstProject.name}`);
+      sidebar.setActiveChat(firstProject.id);
+      currentProjectId = firstProject.id;
+      await loadSessionsFromDb(firstProject.id);
+      const sessions = getSessions(firstProject.id);
+      if (sessions.length > 0) {
+        currentSessionId = sessions[0].id;
+        renderMessages();
+        log("INFO", `启动恢复：已加载 ${sessions.length} 个会话，当前会话 [${sessions[0].name}]`);
+      }
+      updateHistoryDisplay();
+    } else {
+      log("INFO", "启动恢复：无任何项目，跳过对话恢复");
+    }
+  }
 
   // 从数据库加载项目的会话数据
   async function loadSessionsFromDb(projectId: number): Promise<void> {
@@ -1091,6 +1156,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     } catch (e) {
       log("ERROR", `加载会话数据失败: ${e}`);
+      // 增加用户可见的错误提示
+      const messagesEl = document.getElementById("chat-messages");
+      if (messagesEl) {
+        const errorNotice = document.createElement("div");
+        errorNotice.className = "system-notice error-notice";
+        errorNotice.textContent = `对话记录加载失败: ${e}`;
+        errorNotice.style.cssText = "color: #e74c3c; padding: 8px 12px; margin: 8px; border-radius: 4px; background: rgba(231,76,60,0.1); font-size: 13px;";
+        messagesEl.appendChild(errorNotice);
+      }
     }
   }
 
@@ -1547,12 +1621,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       try {
         // 执行流水线（onProgress 回调实时更新 UI，主管中途检查）
         const activeProjectForPipeline = sidebar.getActiveChat();
+        let currentPipelineTasks: ExpertTask[] = [];
         const pipelineResult = await executePipeline(
           dispatchPlan,
           getExpertApiKey,
           getExpertModel,
           (tasks: ExpertTask[]) => {
             // 实时渲染专家任务卡片（通过全局事件）
+            currentPipelineTasks = tasks;
             window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks } }));
           },
           activeProjectForPipeline?.name,
@@ -1574,6 +1650,14 @@ document.addEventListener("DOMContentLoaded", async () => {
               role: "assistant",
               content: `[主管中途检查] ${label}${reasonText}`,
             });
+          },
+          (progress: { expertId: string; phase: string; detail: string }) => {
+            const task = currentPipelineTasks.find(t => t.expertId === progress.expertId);
+            if (task) {
+              task.phase = progress.phase;
+              task.phaseDetail = progress.detail;
+              window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: [...currentPipelineTasks] } }));
+            }
           }
         );
         const expertResults = pipelineResult.tasks;
@@ -1630,7 +1714,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
-    // 主管最终回复极简化：保留 ACTION 标记，仅保留最后一句简短交付语，剔除任何冗余汇总文字
+    // 主管最终回复极简化：剥离代码块与元数据，仅保留 ACTION 标记 + 最后一句交付语
     const sanitizedReply = sanitizeSupervisorReply(finalReply);
 
     // 将最终回复推入会话
@@ -1951,7 +2035,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           </div>
         `;
       }
-      return `<div class="msg-text">${formatInlineMarkdown(escapeHtml(block.content))}</div>`;
+      return `<div class="msg-text">${renderTextWithThink(block.content)}</div>`;
     }).join("");
   }
 
@@ -2029,6 +2113,45 @@ document.addEventListener("DOMContentLoaded", async () => {
     return html;
   }
 
+  /** 将 <think>...</think> 标签转换为可折叠的深度思考 HTML 块 */
+  function processThinkTags(content: string): string {
+    // 处理 <think>...</think> 标签，转换为折叠块
+    return content.replace(/<think>([\s\S]*?)<\/think>/g, (_, thinkContent) => {
+      const escaped = thinkContent.trim()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>');
+      return `<details class="deep-thinking"><summary><span class="thinking-icon">💭</span> 深度思考</summary><div class="thinking-content">${escaped}</div></details>`;
+    });
+  }
+
+  /** 渲染含 think 标签的文本块：用占位符保护 think 生成的 HTML 不被 escapeHtml 破坏 */
+  function renderTextWithThink(content: string): string {
+    const markers: string[] = [];
+    const protectedContent = content.replace(/<think>([\s\S]*?)<\/think>/g, (match) => {
+      const idx = markers.length;
+      markers.push(processThinkTags(match));
+      return `__THINK_${idx}__`;
+    });
+    let result = formatInlineMarkdown(escapeHtml(protectedContent));
+    result = result.replace(/__THINK_(\d+)__/g, (_, i) => markers[parseInt(i)]);
+    return result;
+  }
+
+  /** 转义含 think 标签的内容（无 Markdown 格式化，用于专家输出等场景） */
+  function escapeHtmlWithThink(content: string): string {
+    const markers: string[] = [];
+    const protectedContent = content.replace(/<think>([\s\S]*?)<\/think>/g, (match) => {
+      const idx = markers.length;
+      markers.push(processThinkTags(match));
+      return `__THINK_${idx}__`;
+    });
+    let result = escapeHtml(protectedContent);
+    result = result.replace(/__THINK_(\d+)__/g, (_, i) => markers[parseInt(i)]);
+    return result;
+  }
+
   /** 绑定 Artifact 卡片点击事件 */
   function bindArtifactClicks() {
     chatMessages?.querySelectorAll(".msg-artifact").forEach((el) => {
@@ -2073,54 +2196,103 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /**
    * 主管最终回复裁剪：
-   * - 完整保留所有 [ACTION:...] 标记及其后的代码块（交付物）
-   * - 过滤掉“工作亮点”、“改进建议”这类冗余段落
-   * - 保留有意义的汇总、列表和专家名号（按场景自然呈现）
+   * - 提取所有 ACTION 块（用于显示），executeAgentActions 仍基于原始 finalReply
+   * - 剥离代码块后逐句过滤元数据关键词
+   * - 仅保留最后一句交付语（上限80字）
    */
   function sanitizeSupervisorReply(reply: string): string {
     if (!reply) return "文档已就绪，可直接使用，如有需要随时找我。";
-
-    // 提取所有 [ACTION:CREATE_FILE:xxx]```...``` 、 [ACTION:WRITE_FILE:xxx]```...``` 、 [ACTION:CREATE_FOLDER:xxx]
-    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE):[^\]]+\]\s*(?:```search[\s\S]*?```\s*```replace[\s\S]*?```|```[\s\S]*?```)|\[ACTION:CREATE_FOLDER:[^\]]+\]/g;
-    const actionBlocks: string[] = [];
-    let textPart = reply.replace(actionRegex, (m) => {
-      actionBlocks.push(m);
-      return "\u0000";
-    });
-
-    // 过滤文字部分：仅剔除“工作亮点/改进建议”段落（含标题到下一节之间的内容）
+  
+    // 1. 提取所有 ACTION 块（包含完整代码块，用于后续 executeAgentActions）
+    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER):[^\]]*\](?:\s*```[\s\S]*?```)?/g;
+    const actions = reply.match(actionRegex) || [];
+  
+    // 2. 移除所有 ACTION 块和 markdown 代码块，得到纯文字部分
+    let textPart = reply.replace(actionRegex, "");
+    textPart = textPart.replace(/```[\s\S]*?```/g, ""); // 剥离残余代码块
+  
+    // 3. 删除元数据段落
     textPart = textPart.replace(/###?\s*工作亮点[\s\S]*?(?=###|$)/g, "");
     textPart = textPart.replace(/###?\s*改进建议[\s\S]*?(?=###|$)/g, "");
-    // 剔除“各位专家的处理结果已汇总到我这”、“经审查确认”这类不必要的过渡语
-    textPart = textPart.replace(/各位专家的处理结果已汇总到我这[，,。]?[\s]*经审查确认[^。]*。/g, "");
-    textPart = textPart.replace(/已汇总[^。]*。/g, "");
-    // 清理占位符和多余空白
-    textPart = textPart.replace(/\u0000+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-
-    // 重建：ACTION 块原始顺序 + 过滤后的文字
-    const out = actionBlocks.join("\n\n") + (actionBlocks.length > 0 && textPart ? "\n\n" : "") + textPart;
-    return out.trim() || "文档已就绪，可直接使用，如有需要随时找我。";
+    textPart = textPart.replace(/###?\s*(?:修改|变更|代码)(?:总结|摘要|概览)[\s\S]*?(?=###|$)/g, "");
+  
+    // 4. 逐句过滤含元数据关键词的句子
+    const sentences = textPart.split(/[。！\n]+/).filter(s => s.trim());
+    const filtered = sentences.filter(s => {
+      const metaKeywords = /专家|审查|汇总|各位|经审查确认|工作亮点|改进建议|调研员|设计师|工程师|已完成.*处理|处理结果|以下是.*代码|代码如下|具体实现|实现如下/;
+      return !metaKeywords.test(s);
+    });
+  
+    // 5. 取最后一段非空句作为交付语（上限80字）
+    let deliveryLine = filtered.length > 0 ? filtered[filtered.length - 1].trim() : "任务已完成。";
+    if (deliveryLine.length > 80) {
+      deliveryLine = deliveryLine.substring(0, 77) + "...";
+    }
+  
+    // 6. 重建：ACTION块 + 交付语
+    const actionPart = actions.join("\n\n");
+    return actionPart ? `${actionPart}\n\n${deliveryLine}` : deliveryLine;
   }
 
   // ========== 专家任务卡片渲染 ==========
 
   /** 构建一组专家卡片元素（不插入 DOM，返回可复用的容器） */
-  function buildTasksGroupEl(tasks: ExpertTask[]): HTMLElement {
+  function buildTasksGroupEl(tasks: ExpertTask[], isLive = false): HTMLElement {
+    const EXPERT_PHASE_LABELS: Record<string, string> = {
+      'searching-repo': '🔍 仓库检索中...',
+      'searching-vector': '📡 向量检索中...',
+      'searching-memory': '💾 记忆检索中...',
+      'reading-code': '📖 查看代码...',
+      'analyzing': '🧠 分析中...',
+      'writing-code': '✍️ 编写代码...',
+      'reviewing': '🔎 审查中...',
+      'completed': '✅ 已完成'
+    };
+
+    function extractSummary(output: string): string {
+      const match = output.match(/\[SUMMARY:(.*?)\]/);
+      if (match) return match[1].trim();
+      const clean = output.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      return clean.substring(0, 50) + (clean.length > 50 ? '...' : '');
+    }
     const groupEl = document.createElement("div");
     groupEl.className = "expert-tasks-group";
 
     tasks.forEach((task) => {
-      const statusLabel = task.status === "done" ? "已完成"
-        : task.status === "running" ? "执行中"
-        : task.status === "error" ? "失败" : "等待中";
+      const phase = task.phase || '';
+      const phaseLabel = EXPERT_PHASE_LABELS[phase] || '';
 
-      const descText = task.status === "error"
-        ? (task.error || "执行出错")
-        : task.status === "done"
-        ? (task.output ? task.output.substring(0, 80) + (task.output.length > 80 ? "..." : "") : "已完成")
-        : task.input.substring(0, 80) + (task.input.length > 80 ? "..." : "");
+      if (isLive) {
+        // 实时卡片：显示阶段状态词 + 加载动画
+        const cardHtml = `
+        <div class="expert-call-card" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}" data-phase="${escapeAttr(phase)}">
+          <div class="expert-call-accent"></div>
+          <div class="expert-call-body">
+            <div class="expert-call-header">
+              <span class="expert-call-name">${escapeHtml(task.expertName)}</span>
+              <span class="expert-call-title">${escapeHtml(task.expertTitle)}</span>
+            </div>
+            <div class="expert-call-phase">
+              <span class="phase-indicator"></span>
+              <span class="phase-text">${escapeHtml(phaseLabel || (task.status === 'pending' ? '⏳ 等待中...' : task.status === 'error' ? '❌ 失败' : '🔄 执行中...'))}</span>
+            </div>
+          </div>
+        </div>
+      `;
+        groupEl.insertAdjacentHTML("beforeend", cardHtml);
+      } else {
+        // 历史卡片：显示摘要 + 折叠输出
+        const statusLabel = task.status === "done" ? "已完成"
+          : task.status === "running" ? "执行中"
+          : task.status === "error" ? "失败" : "等待中";
 
-      const cardHtml = `
+        const summaryText = task.status === "error"
+          ? (task.error || "执行出错")
+          : task.status === "done"
+          ? (task.output ? extractSummary(task.output) : "已完成")
+          : task.input.substring(0, 80) + (task.input.length > 80 ? "..." : "");
+
+        const cardHtml = `
         <div class="expert-call-card" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}">
           <div class="expert-call-accent"></div>
           <div class="expert-call-body">
@@ -2129,7 +2301,7 @@ document.addEventListener("DOMContentLoaded", async () => {
               <span class="expert-call-title">${escapeHtml(task.expertTitle)}</span>
               <span class="expert-call-status ${task.status}">${statusLabel}</span>
             </div>
-            <div class="expert-call-desc">${escapeHtml(descText)}</div>
+            <div class="expert-call-summary">${escapeHtml(summaryText)}</div>
             ${task.status === "done" && task.output ? `
               <div class="expert-call-output">
                 <button class="expert-call-output-toggle" type="button">
@@ -2138,13 +2310,14 @@ document.addEventListener("DOMContentLoaded", async () => {
                   </svg>
                   查看完整输出
                 </button>
-                <div class="expert-call-output-content">${escapeHtml(task.output)}</div>
+                <div class="expert-call-output-content">${escapeHtmlWithThink(task.output)}</div>
               </div>
             ` : ""}
           </div>
         </div>
       `;
-      groupEl.insertAdjacentHTML("beforeend", cardHtml);
+        groupEl.insertAdjacentHTML("beforeend", cardHtml);
+      }
     });
 
     // 绑定折叠按钮
@@ -2170,7 +2343,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (tasks.length === 0) return;
 
-    const groupEl = buildTasksGroupEl(tasks);
+    const groupEl = buildTasksGroupEl(tasks, true);
     groupEl.dataset.live = "true";
     chatMessages.appendChild(groupEl);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -2924,6 +3097,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   /** 进入 Wiki 模式 */
   async function enterWikiMode() {
     exitTokenMode();
+    exitGitMode();
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
       log("WARN", "Wiki: 没有活跃项目");
@@ -3039,7 +3213,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }
     } catch (e) {
-      repoBrowserList.innerHTML = `<div style="padding:8px;color:#999;font-size:12px;">无法加载仓库</div>`;
+      repoBrowserList.innerHTML = `<div style="padding:8px;color:rgba(255,255,255,0.4);font-size:12px;">无法加载仓库</div>`;
       log("ERROR", `加载仓库失败: ${e}`);
     }
   }
@@ -3193,6 +3367,114 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Wiki 事件绑定
 
+  // ========== 仓库管理器 Tab 切换 ==========
+
+  function initRepoTabs() {
+    const tabs = document.querySelectorAll('.repo-tab-btn');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const target = tab.getAttribute('data-tab');
+        document.querySelector('.repo-tab-content-wiki')?.classList.toggle('hidden', target !== 'wiki');
+        document.querySelector('.repo-tab-content-memory')?.classList.toggle('hidden', target !== 'memory');
+        if (target === 'memory') loadMemoryPanel();
+      });
+    });
+  }
+
+  /** 相对时间格式化 */
+  function relativeTime(ts: number): string {
+    const now = Math.floor(Date.now() / 1000);
+    const diff = now - ts;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+    if (diff < 2592000) return `${Math.floor(diff / 86400)}天前`;
+    return new Date(ts * 1000).toLocaleDateString();
+  }
+
+  async function loadMemoryPanel() {
+    const activeProject = sidebar.getActiveChat();
+    if (!activeProject || !currentProjectId) return;
+    const projectName = activeProject.name;
+
+    try {
+      const stats = await getMemoryStats(projectName);
+
+      // 渲染统计栏 —— 只显示长期记忆
+      const statsEl = document.querySelector('.memory-stats');
+      if (statsEl) {
+        statsEl.innerHTML = `
+          <span class="memory-stat-item longterm">长期记忆 ${stats.longterm}</span>
+        `;
+      }
+
+      // 筛选器：只展示长期记忆，不需要筛选按钮
+      const filterEl = document.querySelector('.memory-filter') as HTMLElement | null;
+      if (filterEl) {
+        filterEl.innerHTML = '';
+        filterEl.style.display = 'none';
+      }
+
+      // 检索记忆并只保留长期记忆
+      const results = await searchMemory(projectName, {
+        project_id: currentProjectId,
+        query_text: '',
+        limit: 1000,
+      });
+      const filtered = results.filter(r => r.entry.memory_type === 'longterm');
+
+      // 渲染列表
+      const listEl = document.querySelector('.memory-list');
+      if (listEl) {
+        if (filtered.length === 0) {
+          listEl.innerHTML = `<div style="padding:20px;text-align:center;color:rgba(255,255,255,0.3);font-size:12px;">暂无长期记忆</div>`;
+        } else {
+          listEl.innerHTML = filtered.map(r => {
+            const m = r.entry;
+            const kw = m.keywords?.length
+              ? m.keywords.slice(0, 5).join(', ')
+              : m.content?.substring(0, 40) || '';
+            return `
+              <div class="memory-item" data-id="${m.id}" data-type="${m.memory_type}">
+                <span class="memory-keywords">${escapeHtml(kw)}</span>
+                <span class="memory-time">${relativeTime(m.created_at)}</span>
+                <button class="memory-delete-btn" title="删除">×</button>
+              </div>`;
+          }).join('');
+
+          // 绑定删除事件
+          listEl.querySelectorAll('.memory-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              const item = (e.target as HTMLElement).closest('.memory-item');
+              const id = item?.getAttribute('data-id');
+              const type = item?.getAttribute('data-type');
+              if (id && type && projectName) {
+                try {
+                  await deleteMemory(projectName, type, id);
+                  loadMemoryPanel();
+                } catch (err) {
+                  log('ERROR', `删除记忆失败: ${err}`);
+                }
+              }
+            });
+          });
+        }
+      }
+    } catch (e) {
+      log('ERROR', `加载记忆面板失败: ${e}`);
+      const listEl = document.querySelector('.memory-list');
+      if (listEl) {
+        listEl.innerHTML = `<div style="padding:20px;text-align:center;color:rgba(255,255,255,0.3);font-size:12px;">加载失败</div>`;
+      }
+    }
+  }
+
+  // 初始化 Tab 切换
+  initRepoTabs();
+
   // ========== 草稿模式 ==========
   const draftCanvas = new DraftCanvas();
   const draftToolbox = new DraftToolbox();
@@ -3225,6 +3507,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function enterDraftMode() {
     if (isDraftMode) return;
     exitTokenMode();
+    exitGitMode();
     isDraftMode = true;
 
     // 更新浮动按钮状态
@@ -3793,6 +4076,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 退出其他互斥模式
     exitDraftMode();
     exitWikiMode();
+    exitGitMode();
 
     isTokenMode = true;
 
@@ -3853,6 +4137,266 @@ document.addEventListener("DOMContentLoaded", async () => {
     log("INFO", "退出词元模式");
   }
 
+  // ========== Git 模式状态 ==========
+  let isGitMode = false;
+  interface GitConfig {
+    repoUrl: string;
+    token: string;
+    commitMsg: string;
+    autoPush: boolean;
+  }
+  let gitConfig: GitConfig = { repoUrl: "", token: "", commitMsg: "更新项目文件", autoPush: false };
+  let gitSelectedFiles: Set<string> = new Set();
+  let gitAllFiles: string[] = [];
+
+  async function loadGitConfig(projectName: string) {
+    try {
+      const data = await invoke<string>("load_git_config", { projectName });
+      if (data && data !== "null") {
+        const parsed = JSON.parse(data);
+        gitConfig = {
+          repoUrl: parsed.repoUrl || "",
+          token: parsed.token || "",
+          commitMsg: parsed.commitMsg || "更新项目文件",
+          autoPush: parsed.autoPush || false,
+        };
+        gitSelectedFiles = new Set(parsed.selectedFiles || []);
+        return;
+      }
+    } catch (e) {
+      log("WARN", `加载Git配置失败: ${e}`);
+    }
+    gitConfig = { repoUrl: "", token: "", commitMsg: "更新项目文件", autoPush: false };
+    gitSelectedFiles = new Set();
+  }
+
+  async function saveGitConfig(projectName: string) {
+    try {
+      await invoke("save_git_config", {
+        projectName,
+        data: JSON.stringify({
+          repoUrl: gitConfig.repoUrl,
+          token: gitConfig.token,
+          commitMsg: gitConfig.commitMsg,
+          autoPush: gitConfig.autoPush,
+          selectedFiles: Array.from(gitSelectedFiles),
+        }),
+      });
+    } catch (e) {
+      log("ERROR", `保存Git配置失败: ${e}`);
+    }
+  }
+
+  async function refreshGitFileList(projectName: string) {
+    try {
+      const filesJson = await invoke<string>("list_project_files_all", { projectName });
+      gitAllFiles = JSON.parse(filesJson);
+      // 移除已不在项目中的文件
+      const validFiles = new Set(gitAllFiles);
+      gitSelectedFiles = new Set([...gitSelectedFiles].filter((f) => validFiles.has(f)));
+      renderGitFileList();
+    } catch (e) {
+      log("ERROR", `刷新Git文件列表失败: ${e}`);
+      gitAllFiles = [];
+      renderGitFileList();
+    }
+  }
+
+  function renderGitFileList() {
+    const list = document.getElementById("git-browser-list");
+    if (!list) return;
+
+    list.innerHTML = "";
+    if (gitAllFiles.length === 0) {
+      list.innerHTML = '<div style="padding:16px;color:rgba(255,255,255,0.3);font-size:11px;text-align:center;">暂无文件</div>';
+      return;
+    }
+
+    for (const file of gitAllFiles) {
+      const item = document.createElement("label");
+      item.className = "git-file-item";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = gitSelectedFiles.has(file);
+      cb.addEventListener("change", () => {
+        if (cb.checked) {
+          gitSelectedFiles.add(file);
+        } else {
+          gitSelectedFiles.delete(file);
+        }
+        const activeProject = sidebar.getActiveChat();
+        if (activeProject) saveGitConfig(activeProject.name);
+      });
+
+      const name = document.createElement("span");
+      name.className = "git-file-name";
+      name.textContent = file;
+      name.title = file;
+
+      item.appendChild(cb);
+      item.appendChild(name);
+      list.appendChild(item);
+    }
+  }
+
+  function setGitStatus(msg: string, cls: string) {
+    const el = document.getElementById("git-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.className = "git-status " + cls;
+  }
+
+  function syncGitFormToConfig() {
+    const repoUrlEl = document.getElementById("git-repo-url") as HTMLInputElement;
+    const tokenEl = document.getElementById("git-token") as HTMLInputElement;
+    const commitMsgEl = document.getElementById("git-commit-msg") as HTMLInputElement;
+    const autoPushEl = document.getElementById("git-auto-push") as HTMLInputElement;
+    if (repoUrlEl) gitConfig.repoUrl = repoUrlEl.value.trim();
+    if (tokenEl) gitConfig.token = tokenEl.value;
+    if (commitMsgEl) gitConfig.commitMsg = commitMsgEl.value.trim() || "更新项目文件";
+    if (autoPushEl) gitConfig.autoPush = autoPushEl.checked;
+  }
+
+  function syncGitConfigToForm() {
+    const repoUrlEl = document.getElementById("git-repo-url") as HTMLInputElement;
+    const tokenEl = document.getElementById("git-token") as HTMLInputElement;
+    const commitMsgEl = document.getElementById("git-commit-msg") as HTMLInputElement;
+    const autoPushEl = document.getElementById("git-auto-push") as HTMLInputElement;
+    if (repoUrlEl) repoUrlEl.value = gitConfig.repoUrl;
+    if (tokenEl) tokenEl.value = gitConfig.token;
+    if (commitMsgEl) commitMsgEl.value = gitConfig.commitMsg;
+    if (autoPushEl) autoPushEl.checked = gitConfig.autoPush;
+  }
+
+  async function enterGitMode() {
+    if (isGitMode) return;
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+
+    const activeProject = sidebar.getActiveChat();
+    if (!activeProject) {
+      log("WARN", "Git: 没有活跃项目");
+      return;
+    }
+
+    isGitMode = true;
+
+    // 更新浮动按钮状态
+    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.getElementById("btn-git")?.classList.add("active");
+
+    // 隐藏画布
+    if (canvasContainer) canvasContainer.style.visibility = "hidden";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+
+    // 显示 Git 面板
+    const gitPanel = document.getElementById("git-panel");
+    if (gitPanel) {
+      gitPanel.style.display = "flex";
+      gitPanel.classList.add("active");
+    }
+    const gitBrowser = document.getElementById("git-browser");
+    if (gitBrowser) {
+      gitBrowser.style.display = "flex";
+      gitBrowser.classList.add("active");
+    }
+
+    // 隐藏文件预览面板
+    const fileBrowserCard = document.getElementById("file-browser-card");
+    const filePreviewCard = document.getElementById("file-preview-card");
+    const previewChatCard = document.getElementById("preview-chat-card");
+    if (fileBrowserCard) { fileBrowserCard.classList.remove("active"); fileBrowserCard.style.display = "none"; }
+    if (filePreviewCard) { filePreviewCard.classList.remove("active"); filePreviewCard.style.display = "none"; }
+    if (previewChatCard) { previewChatCard.style.display = "none"; }
+
+    // 加载 Git 配置
+    await loadGitConfig(activeProject.name);
+    syncGitConfigToForm();
+
+    // 加载文件列表
+    await refreshGitFileList(activeProject.name);
+
+    setGitStatus("", "");
+
+    log("INFO", "进入 Git 模式");
+  }
+
+  function exitGitMode() {
+    if (!isGitMode) return;
+    isGitMode = false;
+
+    // 保存当前配置
+    syncGitFormToConfig();
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject) saveGitConfig(activeProject.name);
+
+    // 隐藏 Git 面板和文件列表
+    const gitPanel = document.getElementById("git-panel");
+    const gitBrowser = document.getElementById("git-browser");
+    if (gitPanel) { gitPanel.classList.remove("active"); gitPanel.style.display = "none"; }
+    if (gitBrowser) { gitBrowser.classList.remove("active"); gitBrowser.style.display = "none"; }
+
+    // 恢复画布
+    if (canvasContainer) canvasContainer.style.visibility = "visible";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+
+    // 恢复按钮
+    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+
+    log("INFO", "退出 Git 模式");
+  }
+
+  async function doGitPush() {
+    syncGitFormToConfig();
+    const activeProject = sidebar.getActiveChat();
+    if (!activeProject) {
+      setGitStatus("没有活跃项目", "error");
+      return;
+    }
+
+    if (!gitConfig.repoUrl) {
+      setGitStatus("请填写仓库地址", "error");
+      return;
+    }
+    if (!gitConfig.token) {
+      setGitStatus("请填写访问令牌", "error");
+      return;
+    }
+
+    const selectedFiles = Array.from(gitSelectedFiles);
+    if (selectedFiles.length === 0) {
+      setGitStatus("请选择要上传的文件", "error");
+      return;
+    }
+
+    const commitMsgEl = document.getElementById("git-commit-msg") as HTMLInputElement;
+    const commitMsg = commitMsgEl?.value?.trim() || "更新项目文件";
+
+    // 保存配置
+    await saveGitConfig(activeProject.name);
+
+    setGitStatus("推送中...", "running");
+    const pushBtn = document.getElementById("git-push-btn") as HTMLButtonElement;
+    if (pushBtn) pushBtn.disabled = true;
+
+    try {
+      const result = await invoke<string>("git_push", {
+        projectName: activeProject.name,
+        repoUrl: gitConfig.repoUrl,
+        token: gitConfig.token,
+        commitMessage: commitMsg,
+        files: selectedFiles,
+      });
+      setGitStatus(result, "success");
+    } catch (e) {
+      setGitStatus(`推送失败: ${e}`, "error");
+    } finally {
+      if (pushBtn) pushBtn.disabled = false;
+    }
+  }
+
   // 词元面板页签切换
   document.querySelectorAll(".token-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -3872,6 +4416,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (isTokenMode) {
       exitTokenMode();
     } else {
+      exitGitMode();
       enterTokenMode();
     }
   });
@@ -3885,6 +4430,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-draft")?.addEventListener("click", (e) => {
     e.stopPropagation();
     exitTokenMode();
+    exitGitMode();
     enterDraftMode();
   });
 
@@ -3893,14 +4439,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.stopPropagation();
     exitTokenMode();
     exitDraftMode();
+    exitGitMode();
     enterWikiMode();
   });
 
-  // btn-directory 退出 Wiki/草稿/词元模式
+  // btn-git 进入 Git 模式
+  document.getElementById("btn-git")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isGitMode) {
+      exitGitMode();
+    } else {
+      exitTokenMode();
+      exitDraftMode();
+      exitWikiMode();
+      enterGitMode();
+    }
+  });
+
+  // btn-directory 退出 Wiki/草稿/词元/Git 模式
   document.getElementById("btn-directory")?.addEventListener("click", () => {
     exitDraftMode();
     exitWikiMode();
     exitTokenMode();
+    exitGitMode();
   });
 
   wikiBack?.addEventListener("click", () => exitWikiMode());
@@ -3918,6 +4479,63 @@ document.addEventListener("DOMContentLoaded", async () => {
       stopAutoIteration();
       setIterationStatus("就绪", "");
     }
+  });
+
+  // ========== Git 面板事件 ==========
+  // 返回按钮
+  document.getElementById("git-panel-back")?.addEventListener("click", () => exitGitMode());
+
+  // 刷新文件列表
+  document.getElementById("git-refresh-files")?.addEventListener("click", async () => {
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject) {
+      await refreshGitFileList(activeProject.name);
+    }
+  });
+
+  // 手动上传
+  document.getElementById("git-push-btn")?.addEventListener("click", () => doGitPush());
+
+  // 全选
+  document.getElementById("git-select-all")?.addEventListener("click", () => {
+    gitSelectedFiles = new Set(gitAllFiles);
+    renderGitFileList();
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject) saveGitConfig(activeProject.name);
+  });
+
+  // 取消全选
+  document.getElementById("git-deselect-all")?.addEventListener("click", () => {
+    gitSelectedFiles = new Set();
+    renderGitFileList();
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject) saveGitConfig(activeProject.name);
+  });
+
+  // 配置输入变更时自动保存
+  const gitRepoUrlEl = document.getElementById("git-repo-url");
+  const gitTokenEl = document.getElementById("git-token");
+  const gitCommitMsgEl = document.getElementById("git-commit-msg");
+  const gitAutoPushEl = document.getElementById("git-auto-push");
+  function gitConfigAutoSave() {
+    syncGitFormToConfig();
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject) saveGitConfig(activeProject.name);
+  }
+  let gitSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function gitDebouncedSave() {
+    if (gitSaveTimer) clearTimeout(gitSaveTimer);
+    gitSaveTimer = setTimeout(gitConfigAutoSave, 800);
+  }
+  gitRepoUrlEl?.addEventListener("input", gitDebouncedSave);
+  gitTokenEl?.addEventListener("input", gitDebouncedSave);
+  gitCommitMsgEl?.addEventListener("input", gitDebouncedSave);
+  gitAutoPushEl?.addEventListener("change", gitConfigAutoSave);
+
+  // 页面卸载前清理计时器并强制保存
+  window.addEventListener("beforeunload", () => {
+    if (gitSaveTimer) clearTimeout(gitSaveTimer);
+    gitConfigAutoSave();
   });
 
   // ========== 文件预览模式 ==========

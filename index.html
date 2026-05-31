@@ -264,13 +264,6 @@
           </svg>
           <span>目录</span>
         </button>
-        <button class="floating-btn" id="btn-draft" title="草稿" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 20h9"/>
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-          </svg>
-          <span>草稿</span>
-        </button>
         <button class="floating-btn" id="btn-repo" title="仓库" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"/>
@@ -278,6 +271,16 @@
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
           </svg>
           <span>仓库</span>
+        </button>
+        <button class="floating-btn" id="btn-git" title="Git" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"/>
+            <circle cx="6" cy="18" r="3"/>
+            <path d="M12 6v12"/>
+            <path d="M12 12h6"/>
+            <circle cx="18" cy="12" r="2"/>
+          </svg>
+          <span>Git</span>
         </button>
         <button class="floating-btn" id="btn-token" title="词元" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -287,6 +290,13 @@
             <path d="M9 13h6"/>
           </svg>
           <span>词元</span>
+        </button>
+        <button class="floating-btn" id="btn-draft" title="草稿" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"/>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          </svg>
+          <span>草稿</span>
         </button>
       </div>
       <!-- AI 对话卡片 -->
@@ -702,12 +712,83 @@
 
       <!-- 仓库模式：右侧仓库管理器 -->
       <div id="repo-browser" style="display:none;">
-        <div class="repo-browser-header">
-          <span class="repo-browser-title">仓库管理器</span>
+        <div class="repo-tabs">
+          <button class="repo-tab-btn active" data-tab="wiki">Wiki</button>
+          <button class="repo-tab-btn" data-tab="memory">记忆</button>
         </div>
-        <div class="repo-browser-divider"></div>
-        <div class="repo-browser-list" id="repo-browser-list">
-          <!-- 动态渲染，默认选中 Wiki -->
+        <div class="repo-tab-content-wiki">
+          <div class="repo-browser-header">
+            <span class="repo-browser-title">仓库管理器</span>
+          </div>
+          <div class="repo-browser-divider"></div>
+          <div class="repo-browser-list" id="repo-browser-list">
+            <!-- 动态渲染，默认选中 Wiki -->
+          </div>
+        </div>
+        <div class="repo-tab-content-memory hidden">
+          <div class="memory-stats"></div>
+          <div class="memory-filter"></div>
+          <div class="memory-list"></div>
+        </div>
+      </div>
+
+      <!-- Git 模式：中央配置面板 -->
+      <div id="git-panel" style="display:none;">
+        <div class="git-panel-header">
+          <button class="git-panel-back" id="git-panel-back" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            <span>返回</span>
+          </button>
+          <span class="git-panel-title">Git 版本控制</span>
+        </div>
+        <div class="git-panel-divider"></div>
+        <div class="git-panel-body">
+          <!-- 仓库地址 -->
+          <div class="git-field">
+            <label class="git-label">仓库地址</label>
+            <input type="text" class="git-input" id="git-repo-url" placeholder="https://github.com/user/repo.git" spellcheck="false" />
+          </div>
+          <!-- 访问令牌 -->
+          <div class="git-field">
+            <label class="git-label">访问令牌</label>
+            <input type="password" class="git-input" id="git-token" placeholder="ghp_... 或 glpat-..." spellcheck="false" />
+          </div>
+          <!-- 提交信息 -->
+          <div class="git-field">
+            <label class="git-label">提交信息</label>
+            <input type="text" class="git-input" id="git-commit-msg" placeholder="更新项目文件" spellcheck="false" />
+          </div>
+          <!-- 操作按钮行 -->
+          <div class="git-actions">
+            <button class="git-btn git-btn-secondary" id="git-refresh-files" type="button">刷新文件列表</button>
+            <button class="git-btn git-btn-primary" id="git-push-btn" type="button">手动上传</button>
+          </div>
+          <!-- 自动更新开关 -->
+          <div class="git-auto-row">
+            <label class="git-auto-label">
+              <input type="checkbox" id="git-auto-push" />
+              <span>文件变更时自动推送</span>
+            </label>
+          </div>
+          <!-- 推送状态 -->
+          <div class="git-status" id="git-status"></div>
+        </div>
+      </div>
+
+      <!-- Git 模式：右侧文件列表 -->
+      <div id="git-browser" style="display:none;">
+        <div class="git-browser-header">
+          <span class="git-browser-title">上传文件列表</span>
+          <div class="git-browser-actions">
+            <button class="git-browser-action-btn" id="git-select-all" title="全选" type="button">全选</button>
+            <button class="git-browser-action-btn" id="git-deselect-all" title="取消全选" type="button">取消</button>
+          </div>
+        </div>
+        <div class="git-browser-divider"></div>
+        <div class="git-browser-list" id="git-browser-list">
+          <!-- 动态渲染文件复选框列表 -->
         </div>
       </div>
 

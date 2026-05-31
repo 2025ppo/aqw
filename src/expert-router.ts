@@ -350,6 +350,8 @@ export interface ExpertTask {
   startTime?: number;
   endTime?: number;
   tokensUsed?: number;
+  phase?: string;
+  phaseDetail?: string;
 }
 
 /** 专家表现统计 */
@@ -675,7 +677,8 @@ async function callExpert(
   keyId: string,
   onUpdate?: (task: ExpertTask) => void,
   projectName?: string,
-  projectId?: number
+  projectId?: number,
+  onProgress?: (progress: { expertId: string; phase: string; detail: string }) => void
 ): Promise<ExpertTask> {
   const expert = ROUTER_EXPERTS.find((e) => e.id === expertId);
   if (!expert) throw new Error(`专家 ${expertId} 未注册`);
@@ -711,35 +714,66 @@ async function callExpert(
   onUpdate?.(task);
 
   try {
-    // ===== 上下文增强：感知索引 + 记忆系统 =====
-    let perceptualContext = "";
-    let memoryContext = "";
+    // === 三重分级检索 ===
+    let retrievalContext = "";
+    const negativeIndex: string[] = []; // 负向索引：记录盲区
 
-    if (projectName && projectId !== undefined) {
-      // 1. 感知索引检索相关代码段
+    // --- 一级索引：仓库知识卡片（搜索限定） ---
+    if (projectName) {
+      if (onProgress) onProgress({ expertId, phase: 'searching-repo', detail: '仓库检索中...' });
       try {
-        const indexResults = await invoke<string>("perceptual_index_search", {
+        const cards = await invoke<string>("repo_read_cards", { projectName });
+        if (cards && cards !== "[]") {
+          retrievalContext += `\n【一级索引 · 仓库知识概览】\n${cards}\n`;
+        } else {
+          negativeIndex.push("仓库知识卡片为空，项目结构认知不完整");
+        }
+      } catch {
+        negativeIndex.push("仓库知识检索失败，无法获取项目全局视图");
+      }
+    }
+
+    // --- 二级索引：向量检索（精确定位） ---
+    if (projectName && projectId !== undefined) {
+      if (onProgress) onProgress({ expertId, phase: 'searching-vector', detail: '向量检索中...' });
+      try {
+        const searchResult = await invoke<string>("perceptual_index_search", {
           projectName,
           query: taskDescription,
         });
-        if (indexResults && indexResults !== "(未找到相关代码段)") {
-          perceptualContext = `\n【项目代码参考】\n${indexResults}\n`;
+        if (searchResult && searchResult !== "(未找到相关代码段)") {
+          retrievalContext += `\n【二级索引 · 代码定位】\n${searchResult}\n`;
+        } else {
+          negativeIndex.push("向量检索未命中相关代码段，可能存在索引覆盖盲区");
         }
       } catch {
-        // 索引未构建时静默忽略
+        negativeIndex.push("向量检索执行失败");
       }
+    }
 
-      // 2. 记忆系统检索相关历史记忆
+    // --- 三级：记忆检索（历史经验） ---
+    if (projectName && projectId !== undefined) {
+      if (onProgress) onProgress({ expertId, phase: 'searching-memory', detail: '记忆检索中...' });
       try {
-        memoryContext = await buildMemoryContext(
+        const memContext = await buildMemoryContext(
           projectName,
           projectId,
           expertId,
           taskDescription
         );
+        if (memContext) {
+          retrievalContext += `\n${memContext}\n`;
+        } else {
+          negativeIndex.push("无相关历史记忆，当前任务缺乏历史经验参照");
+        }
       } catch {
-        // 记忆检索失败时静默忽略
+        negativeIndex.push("记忆检索失败");
       }
+    }
+
+    // --- 负向索引注入（让专家知道系统的认知盲区） ---
+    if (negativeIndex.length > 0) {
+      retrievalContext += `\n【系统认知盲区（负向索引）】\n${negativeIndex.map(n => `- ${n}`).join('\n')}\n注意：以上标注为系统检索的已知局限，相关信息可能不完整或过时，请在执行时自行验证。\n`;
     }
 
     // 构建消息：先前专家结果 + 上下文增强 + 当前任务描述
@@ -755,9 +789,12 @@ async function callExpert(
       });
     }
 
-    // 注入感知索引和记忆上下文
-    const enhancedTask = `${taskDescription}${perceptualContext}${memoryContext}`;
+    // 组装最终任务描述（含三级检索上下文）
+    const enhancedTask = `${taskDescription}${retrievalContext}`;
     messages.push({ role: "user", content: enhancedTask });
+
+    // AI 调用开始
+    if (onProgress) onProgress({ expertId, phase: 'analyzing', detail: '分析中...' });
 
     const rawReply = await invoke<string>("chat_with_expert", {
       messages,
@@ -795,8 +832,31 @@ async function callExpert(
     }
 
     task.output = reply;
+
+    // 检测专家是否在编写代码（输出中包含 ACTION 标记）
+    if (onProgress) {
+      const hasAction = /\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER)/i.test(reply);
+      if (hasAction) {
+        onProgress({ expertId, phase: 'writing-code', detail: '编写代码...' });
+      }
+      onProgress({ expertId, phase: 'completed', detail: '已完成' });
+    }
+
     task.status = "done";
     task.endTime = Date.now();
+
+    // 检查专家是否要求修订索引
+    if (projectName && apiKey) {
+      const feedbackMatch = reply.match(/\[INDEX_FEEDBACK:([\s\S]*?)\]/);
+      if (feedbackMatch) {
+        try {
+          await invoke("repo_incremental_update", { projectName, apiKey, model });
+        } catch (e) {
+          console.warn("索引修订触发失败:", e);
+        }
+      }
+    }
+
     onUpdate?.(task);
     return task;
   } catch (e) {
@@ -821,7 +881,8 @@ export async function executePipeline(
   supervisorApiKey?: string,
   supervisorModel?: string,
   pendingFollowups?: string[],
-  onSupervisorDecision?: (action: string, reason?: string) => void
+  onSupervisorDecision?: (action: string, reason?: string) => void,
+  onExpertProgress?: (progress: { expertId: string; phase: string; detail: string }) => void
 ): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
   const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
   if (!pipeline) return { tasks: [], pipelineId: "" };
@@ -890,7 +951,7 @@ export async function executePipeline(
         onProgress([...activeExpertTasks]);
         stepCompleted = true;
       } else {
-        const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId);
+        const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId, onExpertProgress);
         allResults.push(task);
         activeExpertTasks.push(task);
         onProgress([...activeExpertTasks]);
@@ -923,7 +984,7 @@ export async function executePipeline(
           };
           return errTask;
         }
-        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId);
+        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId, onExpertProgress);
       });
 
       const results = await Promise.all(parallelPromises);
@@ -1073,16 +1134,23 @@ export async function supervisorReview(
   keyId: string = "supervisor",
   model: string = "deepseek-chat"
 ): Promise<string> {
-  const reviewPrompt = `你是「江星图」，项目主管。专家团已完成任务，请审核结果并综合为给用户的最终回复。
+  const reviewPrompt = `你是「江星图」，项目主管。专家团已完成任务，现在向用户交付结果。
 
-输出格式：
-1. 完整保留专家输出中的所有 [ACTION:CREATE_FILE:路径]、[ACTION:WRITE_FILE:路径]、[ACTION:CREATE_FOLDER:路径] 标记及其后的代码块，原样输出。
-2. 在文件交付之后，用自然亲切的语言给用户一个简洁的汇总。可以提及哪位专家做了什么（例如“调研员梳理了需求，工程师生成了代码”），但不需要冗长的复盘。
-3. 严禁输出以下内容：
-   - “工作亮点”、“改进建议”及其相关段落。
-   - “各位专家的处理结果已汇总到我这，经审查确认”之类的元数据过渡语。
-   - 把每个专家的工作内容逐个写成大段叙述（用列表简要罗列即可）。
-4. 整体风格：像同事汇报一样自然，不给用户造成信息压力。`;
+## 严格输出规则
+
+1. **仅输出一句不超过50字的自然语言交付语**，描述完成了什么（如"已完成登录页面的重构，修复了3处bug"）。这句话放在最后，不附带任何前缀标题。
+
+2. **完整保留所有 [ACTION:CREATE_FILE/WRITE_FILE/EDIT_FILE/CREATE_FOLDER] 标记及其后的代码块**，原样输出。这些是系统执行的指令，不是给用户看的内容，必须一字不差地保留。
+
+3. **严禁以下行为：**
+   - 复述、重复、摘要化任何专家已输出的代码内容
+   - 输出"工作亮点"、"改进建议"及其相关段落
+   - 输出"各位专家已汇总"、"经审查确认"、"调研员…工程师…"等元数据过渡语
+   - 对代码内容做任何形式的总结、罗列或逐文件说明
+   - 提及任何专家的名字、头衔或分工
+   - 输出任何以 ### 开头的章节标题
+
+4. **最终输出结构：** ACTION 标记块（如有）→ 一句交付语（≤50字）。中间不留冗长段落。`;
 
   const summary = expertResults
     .map((r) => {

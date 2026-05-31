@@ -1945,6 +1945,254 @@ fn get_experience_沉淀(expert_id: String, expert_name: String) -> Result<Strin
     serde_json::to_string(&exp).map_err(|e| e.to_string())
 }
 
+// ========== Git 集成命令 ==========
+
+/// 保存 Git 配置到 .xt/git_config.json
+#[tauri::command]
+fn save_git_config(
+    project_name: String,
+    data: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let config_file = base_dir
+        .join("workspaces")
+        .join(&project_name)
+        .join(".xt")
+        .join("git_config.json");
+
+    if let Some(parent) = config_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    fs::write(&config_file, &data).map_err(|e| format!("写入Git配置失败: {}", e))?;
+    Ok(())
+}
+
+/// 从 .xt/git_config.json 加载 Git 配置
+#[tauri::command]
+fn load_git_config(
+    project_name: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let config_file = base_dir
+        .join("workspaces")
+        .join(&project_name)
+        .join(".xt")
+        .join("git_config.json");
+
+    if !config_file.exists() {
+        return Ok("null".to_string());
+    }
+
+    let content = fs::read_to_string(&config_file).map_err(|e| format!("读取Git配置失败: {}", e))?;
+    Ok(content)
+}
+
+/// 列出项目中所有可上传文件（排除隐藏目录和常见忽略目录）
+/// 最大扫描条目数
+const MAX_LIST_ENTRIES: usize = 20_000;
+
+#[tauri::command]
+fn list_project_files_all(
+    project_name: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+
+    let mut files: Vec<String> = vec![];
+    list_files_recursive(&project_dir, &project_dir, &mut files, &mut 0usize)?;
+    // 按路径排序
+    files.sort();
+    Ok(serde_json::to_string(&files).map_err(|e| e.to_string())?)
+}
+
+fn list_files_recursive(
+    base: &std::path::Path,
+    current: &std::path::Path,
+    result: &mut Vec<String>,
+    counter: &mut usize,
+) -> Result<(), String> {
+    let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
+
+    for entry in entries {
+        // 上限保护，防止大项目栈溢出或内存耗尽
+        if *counter >= MAX_LIST_ENTRIES {
+            return Ok(());
+        }
+        *counter += 1;
+
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // 跳过所有隐藏文件/目录（包括 .git、.xt 等）
+        if name.starts_with('.') {
+            continue;
+        }
+
+        let is_dir = path.is_dir();
+
+        // 跳过符号链接和常见忽略目录
+        if is_dir && (path.is_symlink() || SCAN_SKIP_DIRS.contains(&name.as_str())) {
+            continue;
+        }
+
+        if is_dir {
+            list_files_recursive(base, &path, result, counter)?;
+        } else {
+            let relative = path.strip_prefix(base)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string()
+                .replace("\\", "/");
+            result.push(relative);
+        }
+    }
+
+    Ok(())
+}
+
+/// 执行 Git 推送：初始化/设置远程仓库、暂存文件、提交和推送
+/// 使用 GIT_ASKPASS 环境变量传递凭证，避免 token 写入 .git/config
+#[tauri::command]
+async fn git_push(
+    project_name: String,
+    repo_url: String,
+    token: String,
+    commit_message: String,
+    files: Vec<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+
+    // 防御性检查
+    if files.is_empty() {
+        return Err("没有选择任何文件".to_string());
+    }
+    let commit_msg = if commit_message.trim().is_empty() {
+        "更新项目文件".to_string()
+    } else {
+        commit_message.trim().to_string()
+    };
+
+    let project_dir_str = project_dir.to_string_lossy().to_string();
+
+    // 验证 repo_url 协议
+    if !repo_url.starts_with("https://") && !repo_url.starts_with("http://") {
+        return Err("仓库地址必须以 http:// 或 https:// 开头".to_string());
+    }
+
+    // 辅助函数：在项目目录下执行 git 命令
+    let run_git = |args: &[&str]| -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&project_dir)
+            .output()
+            .map_err(|e| format!("无法执行 git 命令: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            let err_msg = if stderr.is_empty() { stdout } else { stderr };
+            // 识别常见推送失败原因
+            if err_msg.contains("rejected") || err_msg.contains("non-fast-forward") {
+                return Err(format!("推送被拒绝：远程仓库有更新的提交，请先拉取远程变更后再推送"));
+            }
+            return Err(format!("Git 命令失败: {}", err_msg));
+        }
+        Ok(stdout)
+    };
+
+    // 1. 初始化 Git 仓库（如果尚未初始化）
+    let git_dir = project_dir.join(".git");
+    if !git_dir.exists() {
+        run_git(&["init"])?;
+        eprintln!("[GIT] 初始化仓库: {}", project_dir_str);
+    }
+
+    // 确保本地 git 用户身份已配置（commit 必需）
+    run_git(&["config", "user.name", "星图专家团"])?;
+    run_git(&["config", "user.email", "expert@starchart.dev"])?;
+
+    // 2. 设置或更新远程仓库（不嵌入 token）
+    let remote_check = run_git(&["remote", "get-url", "origin"]);
+    match remote_check {
+        Ok(_) => {
+            run_git(&["remote", "set-url", "origin", &repo_url])?;
+            eprintln!("[GIT] 更新远程仓库 URL");
+        }
+        Err(_) => {
+            run_git(&["remote", "add", "origin", &repo_url])?;
+            eprintln!("[GIT] 添加远程仓库 origin");
+        }
+    }
+
+    // 3. 暂存指定文件（带沙箱路径校验）
+    for file in &files {
+        let target = project_dir.join(file);
+        validate_sandbox_path(&project_dir, &target)?;
+    }
+    let mut add_args: Vec<&str> = vec!["add"];
+    for file in &files {
+        add_args.push(file.as_str());
+    }
+    run_git(&add_args)?;
+    eprintln!("[GIT] 暂存 {} 个文件", files.len());
+
+    // 4. 提交
+    let status = run_git(&["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Ok("没有需要提交的变更".to_string());
+    }
+    run_git(&["commit", "-m", &commit_msg])?;
+    eprintln!("[GIT] 提交: {}", commit_msg);
+
+    // 5. 推送 — 使用 GIT_ASKPASS 环境变量传递凭证，不写入 .git/config
+    let branch = run_git(&["branch", "--show-current"])?
+        .trim()
+        .to_string();
+    let branch = if branch.is_empty() { "master" } else { &branch };
+
+    // 通过环境变量传递 token，git 需要认证时读取 GIT_PASSWORD
+    let push_output = std::process::Command::new("git")
+        .args(&["push", "-u", "origin", branch])
+        .current_dir(&project_dir)
+        .env("GIT_ASKPASS", "echo")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_USERNAME", "oauth2")
+        .env("GIT_PASSWORD", &token)
+        .output()
+        .map_err(|e| format!("无法执行 git push: {}", e))?;
+
+    if !push_output.status.success() {
+        let stderr = String::from_utf8_lossy(&push_output.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&push_output.stdout).to_string();
+        let err_msg = if stderr.is_empty() { stdout } else { stderr };
+        if err_msg.contains("rejected") || err_msg.contains("non-fast-forward") {
+            return Err(format!("推送被拒绝：远程仓库有更新的提交，请先拉取远程变更后再推送"));
+        }
+        return Err(format!("推送失败: {}", err_msg));
+    }
+
+    eprintln!("[GIT] 推送成功到 {}", branch);
+    Ok(format!("推送成功！已上传 {} 个文件到 {}", files.len(), branch))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1953,8 +2201,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            // 使用spawn非阻塞初始化数据库，避免卡住主线程
-            tauri::async_runtime::spawn(async move {
+            // 使用block_on阻塞初始化数据库，确保前端调用前DB已就绪
+            tauri::async_runtime::block_on(async move {
                 match init_db_pool(&handle).await {
                     Ok(pool) => {
                         handle.manage(Arc::new(AppState { db: pool }));
@@ -2040,6 +2288,10 @@ pub fn run() {
             check_expert_permission,
             check_expert_path_access,
             get_experience_沉淀,
+            save_git_config,
+            load_git_config,
+            list_project_files_all,
+            git_push,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
