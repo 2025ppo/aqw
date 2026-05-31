@@ -318,7 +318,14 @@ export type SceneType =
   | "code-review"
   | "technical-research"
   | "design"
-  | "quick-answer";
+  | "quick-answer"
+  | "translation"
+  | "writing"
+  | "office"
+  | "data-analysis"
+  | "document-processing"
+  | "media-creation"
+  | "research-with-search";
 
 /** 路由器中的专家定义（含 system prompt） */
 export interface RouterExpert {
@@ -420,7 +427,14 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 你只负责调研和分析，不编写代码，不做设计
 - 如需读取文件了解现状，使用 [ACTION:READ_FILE:相对路径]
-- 输出结构清晰，便于后续专家快速理解`,
+- 输出结构清晰，便于后续专家快速理解
+
+## 网络搜索能力
+当需要获取最新信息、验证事实或收集外部资料时，你可以使用网络搜索：
+- 输出 [ACTION:WEB_SEARCH query="搜索关键词"] 触发网络搜索
+- 搜索结果将自动注入你的后续推理上下文
+- 合理使用搜索：先判断是否真的需要外部信息，避免不必要的搜索
+- 搜索关键词要精准，使用最相关的关键词组合`,
   },
   {
     id: "jiang-qinglan",
@@ -576,6 +590,95 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 问题描述要具体，修改建议要可操作
 - 如发现问题严重，明确标注「不通过」并说明原因`,
   },
+  {
+    id: "jiang-lingyu",
+    name: "江灵语",
+    title: "翻译官",
+    description: "多语言互译专家，精通中英日韩法德等主流语言，保持原文语境与风格",
+    systemPrompt: `你是江灵语，星图专家团的翻译官。你的职责是：
+1. 精确翻译用户指定的内容，保持原文的语境、风格和语气
+2. 支持中英日韩法德西俄等主流语言互译
+3. 对于专业术语，提供翻译+原文标注
+4. 对于文学性内容，注重信达雅
+5. 若原文有歧义，提供多种翻译版本并说明差异
+
+输出格式：直接输出翻译结果，必要时附注说明。`,
+  },
+  {
+    id: "jiang-moxian",
+    name: "江墨弦",
+    title: "写作家",
+    description: "创意写作与文案策划专家，擅长各类文体的撰写与润色",
+    systemPrompt: `你是江墨弦，星图专家团的写作家。你的职责是：
+1. 根据用户需求进行创意写作（小说、诗歌、散文、剧本等）
+2. 撰写商业文案（广告语、品牌故事、营销文案）
+3. 撰写正式报告（工作报告、调研报告、分析报告）
+4. 润色和改写已有文本，提升表达质量
+5. 根据目标受众调整文风和语调
+
+输出格式：直接输出写作成果。对于长文，先给出大纲再展开。`,
+  },
+  {
+    id: "jiang-wenshu",
+    name: "江文舒",
+    title: "办公秘书",
+    description: "日常办公事务处理专家，擅长邮件撰写、日程管理、会议纪要等",
+    systemPrompt: `你是江文舒，星图专家团的办公秘书。你的职责是：
+1. 撰写各类商务邮件（感谢信、邀请函、通知、回复等）
+2. 整理和生成会议纪要、工作总结
+3. 制定日程安排和待办事项清单
+4. 起草通知、公告、备忘录等办公文档
+5. 协助整理信息、归纳要点
+
+输出格式：使用规范的商务格式，层次清晰，要点突出。`,
+  },
+  {
+    id: "jiang-shuyan",
+    name: "江数衍",
+    title: "数据分析师",
+    description: "数据分析与可视化专家，擅长数据解读、统计分析和图表生成",
+    systemPrompt: `你是江数衍，星图专家团的数据分析师。你的职责是：
+1. 分析用户提供的数据（CSV、Excel等），发现趋势和规律
+2. 进行统计分析（均值、方差、相关性、回归等）
+3. 生成数据可视化图表（使用 ECharts，输出为 HTML）
+4. 撰写数据分析报告（Markdown格式）
+5. 提供数据驱动的决策建议
+
+当需要生成图表时，使用 [ACTION:CREATE_FILE] 创建包含 ECharts 的 HTML 文件。
+报告默认使用 Markdown 格式输出。
+分析结果保存到项目根目录的 /analysis/ 文件夹。`,
+  },
+  {
+    id: "jiang-zhilan",
+    name: "江纸澜",
+    title: "文档专员",
+    description: "文档处理专家，擅长各种格式文档的读取、转换、整理和生成",
+    systemPrompt: `你是江纸澜，星图专家团的文档专员。你的职责是：
+1. 读取和解析各种格式的文档（PDF、DOCX、XLSX、CSV、TXT、MD）
+2. 文档格式转换（如 DOCX→MD、CSV→表格等）
+3. 文档内容提取和摘要
+4. 根据需求生成新文档
+5. 文档排版整理和格式优化
+
+使用 [ACTION:READ_DOCUMENT] 读取文档，使用 [ACTION:WRITE_DOCUMENT] 写入文档。
+保持文档的结构完整性和格式规范性。`,
+  },
+  {
+    id: "jiang-huaying",
+    name: "江画影",
+    title: "媒体专家",
+    description: "多媒体处理专家，擅长图像生成/编辑、视频处理、音频处理",
+    systemPrompt: `你是江画影，星图专家团的媒体专家。你的职责是：
+1. 根据描述生成图像（使用 [ACTION:GENERATE_IMAGE]）
+2. 对已有图像进行编辑和修改（局部重绘、风格转换等）
+3. 视频片段的生成和编排
+4. 音频处理（语音合成、音频转写）
+5. 多媒体素材的管理和组合
+
+操作图像画布时使用 [ACTION:CANVAS_ADD_NODE] 和 [ACTION:CANVAS_CONNECT]。
+操作视频时间轴时使用 [ACTION:TIMELINE_ADD] 和 [ACTION:TIMELINE_CUT]。
+所有媒体文件默认导出到项目根目录。`,
+  },
 ];
 
 // ========== Pipeline 定义 ==========
@@ -610,6 +713,47 @@ const PIPELINES: Pipeline[] = [
     description: "设计方案：调研 → 设计",
   },
   // quick-answer 无流水线，主管直接回答
+  {
+    scene: "translation",
+    steps: [{ expertIds: ["jiang-lingyu"] }],
+    description: "多语言翻译任务",
+  },
+  {
+    scene: "writing",
+    steps: [
+      { expertIds: ["jiang-ruoxi"] },
+      { expertIds: ["jiang-moxian"] },
+    ],
+    description: "创意写作、文案策划、报告撰写",
+  },
+  {
+    scene: "office",
+    steps: [{ expertIds: ["jiang-wenshu"] }],
+    description: "邮件、会议纪要、日程等办公事务",
+  },
+  {
+    scene: "data-analysis",
+    steps: [
+      { expertIds: ["jiang-ruoxi"] },
+      { expertIds: ["jiang-shuyan"] },
+    ],
+    description: "数据分析、可视化和报告生成",
+  },
+  {
+    scene: "document-processing",
+    steps: [{ expertIds: ["jiang-zhilan"] }],
+    description: "文档读取、转换和生成",
+  },
+  {
+    scene: "media-creation",
+    steps: [{ expertIds: ["jiang-huaying"] }],
+    description: "图像生成/编辑、视频处理、音频处理",
+  },
+  {
+    scene: "research-with-search",
+    steps: [{ expertIds: ["jiang-ruoxi"] }],
+    description: "需要网络搜索的深度调研",
+  },
 ];
 
 // ========== 活跃任务管理 ==========
@@ -820,6 +964,55 @@ async function callExpert(
       // 不是 JSON 则直接使用原始文本
     }
 
+    // ========== WEB_SEARCH 拦截：检测专家输出中的搜索请求 ==========
+    const webSearchRegex = /\[ACTION:WEB_SEARCH\s+query="([^"]*)"\]/g;
+    let searchMatch;
+    const searchQueries: string[] = [];
+    while ((searchMatch = webSearchRegex.exec(reply)) !== null) {
+      searchQueries.push(searchMatch[1]);
+    }
+    if (searchQueries.length > 0) {
+      if (onProgress) onProgress({ expertId, phase: 'web-searching', detail: '网络搜索中...' });
+      let searchContext = "";
+      for (const sq of searchQueries) {
+        try {
+          const results = await invoke<string>("web_search_query", { query: sq, maxResults: 5 });
+          searchContext += `\n\n[搜索结果: "${sq}"]\n${results}\n`;
+        } catch (e) {
+          searchContext += `\n\n[搜索失败: "${sq}"] ${e}\n`;
+        }
+      }
+      // 将搜索结果注入上下文，重新调用专家
+      if (onProgress) onProgress({ expertId, phase: 'analyzing', detail: '结合搜索结果分析中...' });
+      messages.push({ role: "assistant", content: reply });
+      messages.push({ role: "user", content: `以下是你请求的网络搜索结果，请基于这些信息继续完成你的分析：${searchContext}` });
+      const rawReply2 = await invoke<string>("chat_with_expert", {
+        messages,
+        apiKey,
+        systemPrompt: expert.systemPrompt,
+        model,
+      });
+      // 解析第二次返回
+      try {
+        const parsed2 = JSON.parse(rawReply2);
+        if (parsed2 && typeof parsed2 === "object") {
+          if (typeof parsed2.content === "string") reply = parsed2.content;
+          if (parsed2.usage && typeof parsed2.usage === "object") {
+            const usage2 = parsed2.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+            if (usage) {
+              usage.prompt_tokens += usage2.prompt_tokens;
+              usage.completion_tokens += usage2.completion_tokens;
+              usage.total_tokens += usage2.total_tokens;
+            } else {
+              usage = usage2;
+            }
+          }
+        }
+      } catch {
+        reply = rawReply2;
+      }
+    }
+
     // 记录词元使用（fire-and-forget）
     if (usage) {
       recordTokenUsage(expertId, expert.name, model, keyId, usage, expert.title).catch(console.error);
@@ -835,7 +1028,7 @@ async function callExpert(
 
     // 检测专家是否在编写代码（输出中包含 ACTION 标记）
     if (onProgress) {
-      const hasAction = /\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER)/i.test(reply);
+      const hasAction = /\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|EXECUTE_CMD|WRITE_DOCUMENT|GENERATE_IMAGE|READ_DOCUMENT|OPEN_BROWSER|CANVAS_ADD_NODE|CANVAS_CONNECT|TIMELINE_ADD|TIMELINE_CUT|SWITCH_VIEW)/i.test(reply);
       if (hasAction) {
         onProgress({ expertId, phase: 'writing-code', detail: '编写代码...' });
       }
@@ -1246,6 +1439,27 @@ ${expertList}
 5. quick-answer（简单问题/闲聊）
    - 无需专家：expertIds: []
 
+6. translation（翻译任务）
+   - 将内容翻译成其他语言：expertIds: ["jiang-lingyu"]
+
+7. writing（写作任务）
+   - 创意写作、文案、报告撰写、文本润色：expertIds: ["jiang-ruoxi", "jiang-moxian"]
+
+8. office（办公事务）
+   - 邮件撰写、会议纪要、日程管理、通知公告：expertIds: ["jiang-wenshu"]
+
+9. data-analysis（数据分析）
+   - 数据解读、统计分析、图表生成、数据报告：expertIds: ["jiang-ruoxi", "jiang-shuyan"]
+
+10. document-processing（文档处理）
+    - 读取/转换/生成文档文件：expertIds: ["jiang-zhilan"]
+
+11. media-creation（媒体创作）
+    - 图像生成/编辑、视频制作、音频处理：expertIds: ["jiang-huaying"]
+
+12. research-with-search（需要网络搜索的调研）
+    - 需获取最新外部信息时：expertIds: ["jiang-ruoxi"]
+
 【输出格式】（必须是合法 JSON，不要输出其他内容）
 {"scene":"场景名","taskDescription":"具体任务描述","expertIds":["专家ID1","专家ID2"],"requiresDesign":false}`;
 }
@@ -1448,6 +1662,7 @@ function parseDispatchPlan(raw: string): DispatchPlan {
   const scene = (parsed.scene as SceneType) || "quick-answer";
   const validScenes: SceneType[] = [
     "code-development", "code-review", "technical-research", "design", "quick-answer",
+    "translation", "writing", "office", "data-analysis", "document-processing", "media-creation", "research-with-search",
   ];
   return {
     scene: validScenes.includes(scene) ? scene : "quick-answer",

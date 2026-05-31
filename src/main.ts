@@ -27,6 +27,9 @@ import {
   type ExpertPerformance,
 } from "./expert-router";
 import { saveUserIntentMemory, searchMemory, deleteMemory, getMemoryStats } from "./memory-store";
+import "./video-canvas";
+import "./data-analysis";
+import "./image-canvas";
 
 // 引用以避免 TS6133 未使用警告（专家表现面板后续将使用）
 void getExpertPerformance;
@@ -309,7 +312,9 @@ const normalUIElements = [
   "git-panel",
   "git-browser",
   "token-panel",
-  "time-manager",
+  "token-browser",
+  "image-browser",
+  "data-browser",
 ];
 
 // 保存打开设置前的 display 状态，以便关闭时正确恢复
@@ -330,8 +335,16 @@ async function openSettings() {
   if (themeToggle) themeToggle.checked = isDarkMode;
 
   // 加载密钥池和专家团数据（先密钥池后专家团，避免竞态）
-  await loadKeyPool();
-  await loadExperts();
+  try {
+    await loadKeyPool();
+  } catch (e) {
+    log("ERROR", `加载密钥池失败: ${e}`);
+  }
+  try {
+    await loadExperts();
+  } catch (e) {
+    log("ERROR", `加载专家团失败: ${e}`);
+  }
 
   log("INFO", "settings opened");
 }
@@ -389,6 +402,8 @@ document.getElementById("settings-theme-toggle")?.addEventListener("change", (e)
 });
 
 // ========== 密钥池配置 ==========
+type Modality = "text" | "image" | "video" | "audio";
+
 interface PresetProvider {
   id: string;
   name: string;
@@ -401,6 +416,8 @@ interface PresetKey {
   model: string;
   apiKey: string;
   label: string;
+  inputModalities: Modality[];
+  outputModalities: Modality[];
 }
 
 interface RelayKey {
@@ -410,6 +427,8 @@ interface RelayKey {
   endpoint: string;
   apiKey: string;
   label: string;
+  inputModalities: Modality[];
+  outputModalities: Modality[];
 }
 
 interface CustomCodeKey {
@@ -432,6 +451,26 @@ const PRESET_PROVIDERS: PresetProvider[] = [
   { id: "tencent", name: "腾讯云", models: ["hunyuan-pro", "hunyuan-standard", "hunyuan-lite"] },
 ];
 
+/** 预设模型的默认模态能力配置 */
+const MODEL_DEFAULT_MODALITIES: Record<string, { input: Modality[], output: Modality[] }> = {
+  "deepseek-v4-flash": { input: ["text"], output: ["text"] },
+  "deepseek-chat": { input: ["text"], output: ["text"] },
+  "deepseek-coder": { input: ["text"], output: ["text"] },
+  "gpt-4o": { input: ["text", "image"], output: ["text", "image"] },
+  "gpt-4o-mini": { input: ["text", "image"], output: ["text"] },
+  "gpt-4-turbo": { input: ["text", "image"], output: ["text"] },
+  "gpt-3.5-turbo": { input: ["text"], output: ["text"] },
+  "claude-3-5-sonnet": { input: ["text", "image"], output: ["text"] },
+  "claude-3-opus": { input: ["text", "image"], output: ["text"] },
+  "claude-3-haiku": { input: ["text", "image"], output: ["text"] },
+  "qwen-max": { input: ["text"], output: ["text"] },
+  "qwen-plus": { input: ["text"], output: ["text"] },
+  "qwen-turbo": { input: ["text"], output: ["text"] },
+  "hunyuan-pro": { input: ["text"], output: ["text"] },
+  "hunyuan-standard": { input: ["text"], output: ["text"] },
+  "hunyuan-lite": { input: ["text"], output: ["text"] },
+};
+
 let keyPoolItems: KeyPoolItem[] = [];
 let keyPoolCounter = 1;
 
@@ -447,6 +486,32 @@ function getActiveApiKey(): string | null {
 /** 根据专家 ID 解析其绑定的 API 密钥（封装 resolveExpertApiKey） */
 function getExpertApiKey(expertId: string): string | null {
   return resolveExpertApiKey(expertId, experts, keyPoolItems as any);
+}
+
+/** 查询密钥的多模态能力 */
+function getKeyModalities(keyId: string): { input: Modality[], output: Modality[] } {
+  const item = keyPoolItems.find(k => {
+    if (k.type === "preset") return k.data.id === keyId;
+    if (k.type === "relay") return k.data.id === keyId;
+    if (k.type === "custom") return k.data.id === keyId;
+    return false;
+  });
+  if (!item) return { input: ["text"], output: ["text"] };
+  if (item.type === "preset") return { input: item.data.inputModalities || ["text"], output: item.data.outputModalities || ["text"] };
+  if (item.type === "relay") return { input: item.data.inputModalities || ["text"], output: item.data.outputModalities || ["text"] };
+  return { input: ["text"], output: ["text"] };
+}
+
+/** 按模态能力筛选密钥 */
+export function findKeysByModality(required: { input?: Modality[], output?: Modality[] }): typeof keyPoolItems {
+  return keyPoolItems.filter(item => {
+    const modalities = getKeyModalities(
+      item.type === "preset" ? item.data.id : item.type === "relay" ? item.data.id : item.data.id
+    );
+    if (required.input && !required.input.every(m => modalities.input.includes(m))) return false;
+    if (required.output && !required.output.every(m => modalities.output.includes(m))) return false;
+    return true;
+  });
 }
 
 /** 根据专家 ID 解析其绑定的模型名称 */
@@ -501,7 +566,14 @@ async function loadKeyPool() {
     const json = await invoke<string>("load_key_pool");
     const parsed = JSON.parse(json || "[]");
     const raw = parsed.items || parsed;
-    keyPoolItems = Array.isArray(raw) ? raw.filter((i: any) => i && i.type && i.data) : [];
+    keyPoolItems = Array.isArray(raw) ? raw.filter((i: any) => i && i.type && i.data).map((i: any) => {
+      // 兼容旧数据：补充默认模态能力
+      if ((i.type === "preset" || i.type === "relay") && i.data) {
+        if (!i.data.inputModalities) i.data.inputModalities = ["text"];
+        if (!i.data.outputModalities) i.data.outputModalities = ["text"];
+      }
+      return i;
+    }) : [];
     keyPoolCounter = parsed.counter || (keyPoolItems.length > 0 ? keyPoolItems.length + 1 : 1);
   } catch {
     keyPoolItems = [];
@@ -529,16 +601,32 @@ function renderKeyPool() {
     modelSelect.innerHTML = (provider?.models || [])
       .map((m) => `<option value="${m}">${m}</option>`)
       .join("");
+
+    // 根据选中模型自动同步默认模态能力复选框
+    const selectedModel = modelSelect.value;
+    const defaults = MODEL_DEFAULT_MODALITIES[selectedModel] || { input: ["text"], output: ["text"] };
+    const presetConfig = document.getElementById("preset-modality-config");
+    if (presetConfig) {
+      presetConfig.querySelectorAll<HTMLInputElement>("input[name='input-modality']").forEach(cb => {
+        cb.checked = defaults.input.includes(cb.value as Modality);
+      });
+      presetConfig.querySelectorAll<HTMLInputElement>("input[name='output-modality']").forEach(cb => {
+        cb.checked = defaults.output.includes(cb.value as Modality);
+      });
+    }
   }
 
   /** 构建单个密钥项的 HTML（预设/中转/自定义共用） */
-  const keypoolItemHtml = (id: string, label: string, metaHtml: string) => `
+  const keypoolItemHtml = (id: string, label: string, metaHtml: string, hasModality: boolean) => `
     <div class="keypool-item" data-id="${id}">
       <div class="keypool-item-info">
         <span class="keypool-item-name">${label}</span>
         <span class="keypool-item-meta">${metaHtml}</span>
       </div>
       <div class="keypool-item-actions">
+        ${hasModality ? `<button class="keypool-item-edit" data-id="${id}" type="button" title="编辑模态能力">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>` : ""}
         <button class="keypool-item-delete" data-id="${id}" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -554,6 +642,7 @@ function renderKeyPool() {
         item.data.id,
         item.data.label,
         `${provider?.name || item.data.providerId} / ${item.data.model} &middot; ${item.data.apiKey.slice(0, 8)}****`,
+        true,
       );
     })
     .join("");
@@ -565,6 +654,7 @@ function renderKeyPool() {
       item.data.id,
       item.data.label,
       `${item.data.name} / ${item.data.model} &middot; ${item.data.endpoint}`,
+      true,
     ))
     .join("");
 
@@ -575,6 +665,7 @@ function renderKeyPool() {
       item.data.id,
       item.data.label,
       `${item.data.name} &middot; 自定义代码接口`,
+      false,
     ))
     .join("");
 
@@ -596,6 +687,60 @@ function renderKeyPool() {
       }
     });
   });
+
+  // 绑定编辑事件（模态能力编辑）
+  document.querySelectorAll(".keypool-item-edit").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const id = (e.currentTarget as HTMLElement).dataset.id;
+      if (id) showModalityEditor(id);
+    });
+  });
+}
+
+// 模态能力编辑器
+function showModalityEditor(keyId: string) {
+  const item = keyPoolItems.find((i) => i.data.id === keyId);
+  if (!item || item.type === "custom") return;
+
+  const data = item.data as PresetKey | RelayKey;
+  const modal = document.getElementById("modality-editor-modal")!;
+  const inputCbs = modal.querySelectorAll<HTMLInputElement>("input[name='edit-input-modality']");
+  const outputCbs = modal.querySelectorAll<HTMLInputElement>("input[name='edit-output-modality']");
+
+  // 填充当前值
+  inputCbs.forEach((cb) => { cb.checked = data.inputModalities.includes(cb.value as Modality); });
+  outputCbs.forEach((cb) => { cb.checked = data.outputModalities.includes(cb.value as Modality); });
+
+  // 绑定保存
+  const saveBtn = modal.querySelector("#modality-editor-save")!;
+  const cancelBtn = modal.querySelector("#modality-editor-cancel")!;
+
+  const handler = async () => {
+    const newInput = Array.from(inputCbs).filter((cb) => cb.checked).map((cb) => cb.value as Modality);
+    const newOutput = Array.from(outputCbs).filter((cb) => cb.checked).map((cb) => cb.value as Modality);
+    if (item.type === "preset") {
+      (item.data as PresetKey).inputModalities = newInput.length > 0 ? newInput : ["text"];
+      (item.data as PresetKey).outputModalities = newOutput.length > 0 ? newOutput : ["text"];
+    } else {
+      (item.data as RelayKey).inputModalities = newInput.length > 0 ? newInput : ["text"];
+      (item.data as RelayKey).outputModalities = newOutput.length > 0 ? newOutput : ["text"];
+    }
+    await saveKeyPool();
+    modal.classList.remove("active");
+    saveBtn.removeEventListener("click", handler);
+    cancelBtn.removeEventListener("click", closeHandler);
+    renderKeyPool();
+  };
+
+  const closeHandler = () => {
+    modal.classList.remove("active");
+    saveBtn.removeEventListener("click", handler);
+    cancelBtn.removeEventListener("click", closeHandler);
+  };
+
+  saveBtn.addEventListener("click", handler);
+  cancelBtn.addEventListener("click", closeHandler);
+  modal.classList.add("active");
 }
 
 // 密钥池页签切换
@@ -615,6 +760,8 @@ document.querySelectorAll("[data-keypool-tab]").forEach((tab) => {
 
 // 厂商选择变化时更新模型列表
 document.getElementById("keypool-preset-provider")?.addEventListener("change", renderKeyPool);
+// 模型选择变化时同步模态能力复选框
+document.getElementById("keypool-preset-model")?.addEventListener("change", renderKeyPool);
 
 // 设置按钮 loading 状态
 function setButtonLoading(btn: HTMLElement, isLoading: boolean) {
@@ -635,11 +782,33 @@ document.getElementById("keypool-preset-add")?.addEventListener("click", async (
   const key = (document.getElementById("keypool-preset-key") as HTMLInputElement).value.trim();
   if (!key) { showError("请输入 API 密钥"); return; }
 
+  // 读取模态能力配置
+  let inputModalities = Array.from(document.querySelectorAll<HTMLInputElement>("#preset-modality-config input[name='input-modality']:checked")).map(el => el.value as Modality);
+  let outputModalities = Array.from(document.querySelectorAll<HTMLInputElement>("#preset-modality-config input[name='output-modality']:checked")).map(el => el.value as Modality);
+
+  // 合并去重要测试的模态
+  const testModalities = [...new Set([...inputModalities, ...outputModalities])];
+
   setButtonLoading(btn, true);
   try {
-    await invoke("test_api_key", {
-      config: { type: provider, api_key: key, model },
+    const resultJson = await invoke<string>("test_api_key", {
+      config: { type: provider, api_key: key, model, modalities: testModalities },
     });
+    const result = JSON.parse(resultJson);
+
+    if (result.ok.length === 0) {
+      const errors = result.failed.map((f: any) => `${f.modality}: ${f.error}`).join("; ");
+      showError(`密钥验证失败：${errors}`);
+      return;
+    }
+
+    if (result.failed.length > 0) {
+      const failedNames = result.failed.map((f: any) => f.modality).join(", ");
+      showError(`部分模态认证失败：${failedNames}。已自动仅保留验证通过的模态能力。`);
+      // 仅保留成功的模态
+      inputModalities = inputModalities.filter(m => result.ok.includes(m));
+      outputModalities = outputModalities.filter(m => result.ok.includes(m));
+    }
 
     keyPoolItems.push({
       type: "preset",
@@ -649,6 +818,8 @@ document.getElementById("keypool-preset-add")?.addEventListener("click", async (
         model,
         apiKey: key,
         label: generateLabel(model),
+        inputModalities: inputModalities.length > 0 ? inputModalities : ["text"],
+        outputModalities: outputModalities.length > 0 ? outputModalities : ["text"],
       },
     });
     await saveKeyPool();
@@ -674,11 +845,33 @@ document.getElementById("keypool-relay-add")?.addEventListener("click", async ()
   if (!endpoint) { showError("请输入端点 URL"); return; }
   if (!key) { showError("请输入 API 密钥"); return; }
 
+  // 读取模态能力配置
+  let inputModalities = Array.from(document.querySelectorAll<HTMLInputElement>("#relay-modality-config input[name='input-modality']:checked")).map(el => el.value as Modality);
+  let outputModalities = Array.from(document.querySelectorAll<HTMLInputElement>("#relay-modality-config input[name='output-modality']:checked")).map(el => el.value as Modality);
+
+  // 合并去重要测试的模态
+  const testModalities = [...new Set([...inputModalities, ...outputModalities])];
+
   setButtonLoading(btn, true);
   try {
-    await invoke("test_api_key", {
-      config: { type: "relay", api_key: key, endpoint, model },
+    const resultJson = await invoke<string>("test_api_key", {
+      config: { type: "relay", api_key: key, endpoint, model, modalities: testModalities },
     });
+    const result = JSON.parse(resultJson);
+
+    if (result.ok.length === 0) {
+      const errors = result.failed.map((f: any) => `${f.modality}: ${f.error}`).join("; ");
+      showError(`密钥验证失败：${errors}`);
+      return;
+    }
+
+    if (result.failed.length > 0) {
+      const failedNames = result.failed.map((f: any) => f.modality).join(", ");
+      showError(`部分模态认证失败：${failedNames}。已自动仅保留验证通过的模态能力。`);
+      // 仅保留成功的模态
+      inputModalities = inputModalities.filter(m => result.ok.includes(m));
+      outputModalities = outputModalities.filter(m => result.ok.includes(m));
+    }
 
     keyPoolItems.push({
       type: "relay",
@@ -689,6 +882,8 @@ document.getElementById("keypool-relay-add")?.addEventListener("click", async ()
         endpoint,
         apiKey: key,
         label: generateLabel(model),
+        inputModalities: inputModalities.length > 0 ? inputModalities : ["text"],
+        outputModalities: outputModalities.length > 0 ? outputModalities : ["text"],
       },
     });
     await saveKeyPool();
@@ -1094,6 +1289,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       log("INFO", `启动恢复：已加载 ${sessions.length} 个会话，当前会话 [${sessions[0].name}]`);
     }
     updateHistoryDisplay();
+    // 加载可视化目录画布
+    loadProjectCanvas(activeChat.id);
   } else {
     // 尝试从项目列表获取第一个可用项目
     const allChats = sidebar.getChats();
@@ -1110,6 +1307,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         log("INFO", `启动恢复：已加载 ${sessions.length} 个会话，当前会话 [${sessions[0].name}]`);
       }
       updateHistoryDisplay();
+      // 加载可视化目录画布
+      loadProjectCanvas(firstProject.id);
     } else {
       log("INFO", "启动恢复：无任何项目，跳过对话恢复");
     }
@@ -1734,11 +1933,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ========== Agent 动作解析与执行 ==========
   interface AgentAction {
-    type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "EDIT_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH";
+    type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "EDIT_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH"
+      | "WEB_SEARCH" | "EXECUTE_CMD" | "READ_DOCUMENT" | "WRITE_DOCUMENT" | "GENERATE_IMAGE"
+      | "SWITCH_VIEW" | "OPEN_BROWSER" | "CANVAS_ADD_NODE" | "CANVAS_CONNECT" | "TIMELINE_ADD" | "TIMELINE_CUT";
     path: string;
     content?: string;
     searchText?: string;
     replaceText?: string;
+    params?: Record<string, string>;
   }
 
   /** 解析 AI 返回中的动作标记 */
@@ -1802,6 +2004,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       actions.push({ type: "INDEX_SEARCH", path: match[1].trim() });
     }
 
+    // ========== 新增 ACTION 标记解析（参数化格式） ==========
+    // 通用匹配: [ACTION:TYPE param1="val1" param2="val2" ...]
+    const paramActionRegex = /\[ACTION:([A-Z_]+)((?:\s+\w+="[^"]*")*)\]/g;
+    while ((match = paramActionRegex.exec(content)) !== null) {
+      const actionType = match[1];
+      const paramsStr = match[2];
+      // 跳过已由上方专用正则处理的旧格式
+      if (["CREATE_FILE", "WRITE_FILE", "EDIT_FILE", "CREATE_FOLDER", "DELETE"].includes(actionType)) continue;
+      const params: Record<string, string> = {};
+      const paramRegex = /(\w+)="([^"]*)"/g;
+      let paramMatch;
+      while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
+        params[paramMatch[1]] = paramMatch[2];
+      }
+      actions.push({ type: actionType as AgentAction["type"], path: params.path || "", params });
+    }
+
     return actions;
   }
 
@@ -1814,9 +2033,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!activeProject) return;
 
     // 检查是否有文件生成操作，显示反馈
-    const hasFileActions = actions.some((a) => a.type === "CREATE_FILE" || a.type === "WRITE_FILE" || a.type === "EDIT_FILE" || a.type === "CREATE_FOLDER");
+    const hasFileActions = actions.some((a) => a.type === "CREATE_FILE" || a.type === "WRITE_FILE" || a.type === "EDIT_FILE" || a.type === "CREATE_FOLDER" || a.type === "WRITE_DOCUMENT");
     if (hasFileActions) {
       showLoading("正在生成文件...");
+    }
+    const hasCmdActions = actions.some((a) => a.type === "EXECUTE_CMD" || a.type === "WEB_SEARCH");
+    if (hasCmdActions && !hasFileActions) {
+      showLoading("正在执行操作...");
     }
 
     for (const action of actions) {
@@ -1887,6 +2110,191 @@ document.addEventListener("DOMContentLoaded", async () => {
               }
             }
             break;
+
+          // ========== 新增 ACTION 执行器 ==========
+          case "WEB_SEARCH": {
+            const query = action.params?.query;
+            if (query) {
+              try {
+                const results = await invoke<string>("web_search_query", { query, maxResults: 5 });
+                log("INFO", `Agent: 网络搜索完成 "${query}"`);
+                const sessions = getSessions(activeProject.id);
+                const session = sessions.find((s) => s.id === currentSessionId);
+                if (session && results) {
+                  session.messages.push({
+                    role: "assistant",
+                    content: `[搜索结果: "${query}"]\n\n${results}`,
+                  });
+                }
+              } catch (err) {
+                log("ERROR", `Agent: 网络搜索失败: ${err}`);
+              }
+            }
+            break;
+          }
+
+          case "EXECUTE_CMD": {
+            const command = action.params?.command;
+            const dir = action.params?.dir || "";
+            if (command) {
+              try {
+                // 先检查安全性
+                const safetyCheck = await invoke<string>("check_command_safety", {
+                  command,
+                  args: [],
+                  workingDir: dir,
+                  projectDir: dir,
+                });
+                const safety = JSON.parse(safetyCheck);
+                if (safety.requires_auth) {
+                  const authorized = await showCommandAuthDialog(command, dir, safety.auth_reason || "该命令需要用户授权");
+                  if (!authorized) {
+                    log("INFO", `Agent: 用户拒绝执行命令 "${command}"`);
+                    break;
+                  }
+                }
+                const result = await invoke<string>("execute_command", { command, args: [], workingDir: dir });
+                log("INFO", `Agent: 执行命令 "${command}"`);
+                const sessions = getSessions(activeProject.id);
+                const session = sessions.find((s) => s.id === currentSessionId);
+                if (session && result) {
+                  session.messages.push({
+                    role: "assistant",
+                    content: `[命令执行结果: ${command}]\n\n${result}`,
+                  });
+                }
+              } catch (err) {
+                log("ERROR", `Agent: 命令执行失败: ${err}`);
+              }
+            }
+            break;
+          }
+
+          case "READ_DOCUMENT": {
+            const docPath = action.params?.path || action.path;
+            if (docPath) {
+              try {
+                const content = await invoke<string>("read_document", { filePath: docPath });
+                log("INFO", `Agent: 读取文档 "${docPath}"`);
+                const sessions = getSessions(activeProject.id);
+                const session = sessions.find((s) => s.id === currentSessionId);
+                if (session && content) {
+                  session.messages.push({
+                    role: "assistant",
+                    content: `[文档内容: ${docPath}]\n\n${content}`,
+                  });
+                }
+              } catch (err) {
+                log("ERROR", `Agent: 文档读取失败: ${err}`);
+              }
+            }
+            break;
+          }
+
+          case "WRITE_DOCUMENT": {
+            const docPath = action.params?.path || action.path;
+            const docContent = action.params?.content || action.content || "";
+            const format = action.params?.format || "md";
+            if (docPath) {
+              try {
+                await invoke("write_document", { filePath: docPath, content: docContent, format });
+                log("INFO", `Agent: 写入文档 "${docPath}"`);
+              } catch (err) {
+                log("ERROR", `Agent: 文档写入失败: ${err}`);
+              }
+            }
+            break;
+          }
+
+          case "GENERATE_IMAGE": {
+            const prompt = action.params?.prompt;
+            const size = action.params?.size || "1024x1024";
+            if (prompt) {
+              const imageKeys = findKeysByModality({ output: ["image"] });
+              if (imageKeys.length === 0) {
+                log("WARN", "Agent: 未配置支持图像生成的密钥");
+              } else {
+                log("INFO", `Agent: 图像生成请求已发送 prompt="${prompt}" size=${size}`);
+              }
+            }
+            break;
+          }
+
+          case "SWITCH_VIEW": {
+            const target = action.params?.target;
+            if (target && (window as any).__switchView) {
+              (window as any).__switchView(target);
+              log("INFO", `Agent: 切换视图到 ${target}`);
+            }
+            break;
+          }
+
+          case "OPEN_BROWSER": {
+            const url = action.params?.path || action.path;
+            if (url) {
+              const iframe = document.querySelector('#data-analysis-view-container iframe') as HTMLIFrameElement;
+              if (iframe) {
+                iframe.src = url;
+                if ((window as any).__switchView) {
+                  (window as any).__switchView("data-analysis");
+                }
+              }
+              log("INFO", `Agent: 打开浏览器 ${url}`);
+            }
+            break;
+          }
+
+          case "CANVAS_ADD_NODE": {
+            const nodeType = action.params?.type || "file";
+            const src = action.params?.src || "";
+            const canvasInst = getCanvas();
+            if (canvasInst) {
+              const nodeId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              canvasInst.addNode({
+                id: nodeId,
+                type: nodeType as CanvasNode["type"],
+                name: src || nodeId,
+                x: Math.random() * 400 + 50,
+                y: Math.random() * 300 + 50,
+              });
+              log("INFO", `Agent: 画布添加节点 type=${nodeType} src=${src}`);
+            }
+            break;
+          }
+
+          case "CANVAS_CONNECT": {
+            const from = action.params?.from;
+            const to = action.params?.to;
+            const canvasInst = getCanvas();
+            if (canvasInst && from && to) {
+              canvasInst.addEdge({ from, to });
+              log("INFO", `Agent: 画布连线 ${from} -> ${to}`);
+            }
+            break;
+          }
+
+          case "TIMELINE_ADD": {
+            const track = action.params?.track;
+            const src = action.params?.src;
+            const at = action.params?.at || "0";
+            const duration = action.params?.duration;
+            log("INFO", `Agent: 时间轴添加片段 track=${track} src=${src} at=${at} duration=${duration || "auto"}`);
+            // 时间轴功能待视频编辑模块实现后对接
+            if ((window as any).__videoTimeline) {
+              (window as any).__videoTimeline.addClip(track, src, parseFloat(at), duration ? parseFloat(duration) : undefined);
+            }
+            break;
+          }
+
+          case "TIMELINE_CUT": {
+            const track = action.params?.track;
+            const at = action.params?.at || "0";
+            log("INFO", `Agent: 时间轴剪切 track=${track} at=${at}`);
+            if ((window as any).__videoTimeline) {
+              (window as any).__videoTimeline.cut(track, parseFloat(at));
+            }
+            break;
+          }
         }
       } catch (e) {
         log("ERROR", `Agent 动作失败 (${action.type}:${action.path}): ${e}`);
@@ -1894,7 +2302,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // 文件操作完成后隐藏加载状态
-    if (hasFileActions) {
+    if (hasFileActions || hasCmdActions) {
       hideLoading();
     }
 
@@ -1912,6 +2320,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (activeProject && wikiIterationMode === "self") {
       runIncrementalUpdate();
     }
+  }
+
+  // ========== 命令授权弹窗 ==========
+  function showCommandAuthDialog(command: string, dir: string, reason: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'cmd-auth-overlay';
+      overlay.innerHTML = `
+        <div class="cmd-auth-dialog">
+          <h3>⚠️ 命令需要授权</h3>
+          <div class="cmd-auth-info">
+            <p><strong>命令:</strong> <code>${escapeHtml(command)}</code></p>
+            <p><strong>目录:</strong> ${escapeHtml(dir || '当前项目')}</p>
+            <p><strong>原因:</strong> ${escapeHtml(reason)}</p>
+          </div>
+          <div class="cmd-auth-buttons">
+            <button class="cmd-auth-deny">拒绝</button>
+            <button class="cmd-auth-allow">授权执行</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('.cmd-auth-deny')!.addEventListener('click', () => {
+        overlay.remove();
+        resolve(false);
+      });
+      overlay.querySelector('.cmd-auth-allow')!.addEventListener('click', () => {
+        overlay.remove();
+        resolve(true);
+      });
+    });
   }
 
   // 显示加载指示器
@@ -3098,6 +3538,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function enterWikiMode() {
     exitTokenMode();
     exitGitMode();
+    exitImageMode();
+    exitVideoMode();
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
       log("WARN", "Wiki: 没有活跃项目");
@@ -4077,6 +4519,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitDraftMode();
     exitWikiMode();
     exitGitMode();
+    exitImageMode();
+    exitVideoMode();
 
     isTokenMode = true;
 
@@ -4274,6 +4718,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitDraftMode();
     exitWikiMode();
     exitTokenMode();
+    exitImageMode();
+    exitVideoMode();
 
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
@@ -4456,13 +4902,161 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // btn-directory 退出 Wiki/草稿/词元/Git 模式
+  // btn-directory 退出所有模式，回到目录
   document.getElementById("btn-directory")?.addEventListener("click", () => {
     exitDraftMode();
     exitWikiMode();
     exitTokenMode();
     exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (dirCard) dirCard.style.display = "";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-directory")?.classList.add("active");
   });
+
+  // ============ 图像模式 ============
+  function enterImageMode(): void {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitVideoMode();
+    exitDataMode();
+    const dirCard = document.getElementById("canvas-directory-card");
+    const imgCard = document.getElementById("canvas-image-card");
+    const imgBrowser = document.getElementById("image-browser");
+    if (dirCard) dirCard.style.display = "none";
+    if (imgCard) imgCard.style.display = "flex";
+    if (imgBrowser) imgBrowser.style.display = "flex";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-image")?.classList.add("active");
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "image" } }));
+  }
+
+  function exitImageMode(): void {
+    const imgCard = document.getElementById("canvas-image-card");
+    const imgBrowser = document.getElementById("image-browser");
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (imgCard) imgCard.style.display = "none";
+    if (imgBrowser) imgBrowser.style.display = "none";
+    if (dirCard) dirCard.style.display = "";
+  }
+
+  // ============ 视频模式 ============
+  function enterVideoMode(): void {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitDataMode();
+    const dirCard = document.getElementById("canvas-directory-card");
+    const vidCard = document.getElementById("canvas-video-card");
+    const vidBrowser = document.getElementById("video-browser");
+    const vidPanel = document.getElementById("video-panel");
+    const cc = document.getElementById("canvas-container");
+    const floatingActions = document.getElementById("floating-actions");
+    if (dirCard) dirCard.style.display = "none";
+    if (vidCard) vidCard.style.display = "flex";
+    if (vidBrowser) vidBrowser.style.display = "flex";
+    if (vidPanel) {
+      vidPanel.style.display = "flex";
+      vidPanel.classList.add("active");
+    }
+    if (cc) cc.style.visibility = "hidden";
+    if (floatingActions) floatingActions.style.visibility = "hidden";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-video")?.classList.add("active");
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "video" } }));
+  }
+
+  function exitVideoMode(): void {
+    const vidCard = document.getElementById("canvas-video-card");
+    const vidBrowser = document.getElementById("video-browser");
+    const vidPanel = document.getElementById("video-panel");
+    const cc = document.getElementById("canvas-container");
+    const floatingActions = document.getElementById("floating-actions");
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (vidCard) vidCard.style.display = "none";
+    if (vidBrowser) vidBrowser.style.display = "none";
+    if (vidPanel) {
+      vidPanel.classList.remove("active");
+      vidPanel.style.display = "none";
+    }
+    if (cc) cc.style.visibility = "visible";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+    if (dirCard) dirCard.style.display = "";
+  }
+
+  // ============ 数据分析模式（隐藏画布，显示面板 - 类似wiki模式） ============
+  function enterDataMode(): void {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    const cc = document.getElementById("canvas-container");
+    const dataPanel = document.getElementById("data-panel");
+    const dataBrowser = document.getElementById("data-browser");
+    if (cc) cc.style.visibility = "hidden";
+    if (dataPanel) dataPanel.style.display = "flex";
+    if (dataBrowser) dataBrowser.style.display = "flex";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-data")?.classList.add("active");
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "data-analysis" } }));
+  }
+
+  function exitDataMode(): void {
+    const cc = document.getElementById("canvas-container");
+    const dataPanel = document.getElementById("data-panel");
+    const dataBrowser = document.getElementById("data-browser");
+    if (dataPanel) dataPanel.style.display = "none";
+    if (dataBrowser) dataBrowser.style.display = "none";
+    if (cc) cc.style.visibility = "visible";
+  }
+
+  // ============ 新按钮事件绑定 ============
+  document.getElementById("btn-image")?.addEventListener("click", () => {
+    enterImageMode();
+  });
+  document.getElementById("btn-video")?.addEventListener("click", () => {
+    enterVideoMode();
+  });
+  document.getElementById("video-back")?.addEventListener("click", () => {
+    exitVideoMode();
+    document.getElementById("canvas-directory-card")!.style.display = "";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-directory")?.classList.add("active");
+  });
+  document.getElementById("btn-data")?.addEventListener("click", () => {
+    enterDataMode();
+  });
+  document.getElementById("data-back")?.addEventListener("click", () => {
+    exitDataMode();
+    document.getElementById("canvas-directory-card")!.style.display = "";
+    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("btn-directory")?.classList.add("active");
+  });
+
+  // 保留全局API（兼宼ACTION系统）
+  (window as any).__switchView = (view: string) => {
+    if (view === "image") enterImageMode();
+    else if (view === "video") enterVideoMode();
+    else if (view === "data-analysis") enterDataMode();
+    else {
+      exitImageMode();
+      exitVideoMode();
+      exitDataMode();
+      const dirCard = document.getElementById("canvas-directory-card");
+      if (dirCard) dirCard.style.display = "";
+      document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+      document.getElementById("btn-directory")?.classList.add("active");
+    }
+  };
 
   wikiBack?.addEventListener("click", () => exitWikiMode());
 

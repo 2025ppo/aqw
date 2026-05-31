@@ -19,6 +19,9 @@ mod health_score;
 mod code_retention;
 mod rbac;
 mod experience;
+mod web_search;
+mod shell_executor;
+mod doc_processor;
 
 /// 全局数据库连接池（应用级共享）
 struct AppState {
@@ -127,6 +130,64 @@ pub struct DeepSeekUsage {
     pub total_tokens: u64,
 }
 
+// === 多模态消息结构体 ===
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ImageUrlDetail {
+    pub url: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrlDetail },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Multimodal(Vec<ContentPart>),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MultimodalMessage {
+    pub role: String,
+    pub content: MessageContent,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MultimodalRequest {
+    pub model: String,
+    pub messages: Vec<MultimodalMessage>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+// 图像生成请求/响应
+#[derive(Serialize, Debug)]
+struct ImageGenerationRequest {
+    pub model: String,
+    pub prompt: String,
+    pub n: u32,
+    pub size: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct ImageGenerationResponse {
+    pub data: Vec<ImageData>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ImageData {
+    pub url: Option<String>,
+    pub b64_json: Option<String>,
+}
+
 /// 测试 API 密钥是否有效
 #[derive(Deserialize)]
 struct TestKeyConfig {
@@ -135,10 +196,83 @@ struct TestKeyConfig {
     api_key: String,
     endpoint: Option<String>,
     model: Option<String>,
+    modalities: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct TestKeyResult {
+    ok: Vec<String>,
+    failed: Vec<ModalityError>,
+}
+
+#[derive(Serialize)]
+struct ModalityError {
+    modality: String,
+    error: String,
+}
+
+async fn test_single_modality(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    modality: &str,
+) -> Result<(), String> {
+    let prompt = match modality {
+        "text" => "hi",
+        "image" => "Describe a red apple in one sentence.",
+        "video" => "What is the most popular video format? Answer in one word.",
+        "audio" => "What is the most common audio sample rate? Answer in one number.",
+        _ => "hi",
+    };
+
+    let request_body = DeepSeekRequest {
+        model: model.to_string(),
+        messages: vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        stream: false,
+    };
+
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&request_body)
+        .send()
+        .await;
+
+    match response {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                Ok(())
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                let short_body = if body.len() > 100 { &body[..100] } else { &body };
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    Err("密钥无效或被拒绝访问".to_string())
+                } else {
+                    Err(format!("HTTP {}: {}", status.as_u16(), short_body))
+                }
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                Err("连接超时".to_string())
+            } else if e.is_connect() {
+                Err("无法连接".to_string())
+            } else {
+                Err(format!("{}", e))
+            }
+        }
+    }
 }
 
 #[tauri::command]
-async fn test_api_key(config: TestKeyConfig) -> Result<bool, String> {
+async fn test_api_key(config: TestKeyConfig) -> Result<String, String> {
     let client = reqwest::Client::new();
 
     let (url, model) = if config.key_type == "relay" {
@@ -159,54 +293,34 @@ async fn test_api_key(config: TestKeyConfig) -> Result<bool, String> {
         (url.to_string(), model)
     };
 
-    let request_body = DeepSeekRequest {
-        model,
-        messages: vec![DeepSeekMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }],
-        stream: false,
-    };
+    let modalities = config.modalities.unwrap_or_else(|| vec!["text".to_string()]);
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
-        .json(&request_body)
-        .send()
-        .await;
+    let mut ok_modalities: Vec<String> = Vec::new();
+    let mut failed_modalities: Vec<ModalityError> = Vec::new();
 
-    match response {
-        Ok(resp) => {
-            let status = resp.status();
-            if status.is_success() {
-                eprintln!("[API_TEST] 密钥验证成功: {} {}", config.key_type, url);
-                Ok(true)
-            } else {
-                let body = resp.text().await.unwrap_or_default();
-                let short_body = if body.len() > 200 { &body[..200] } else { &body };
-                eprintln!("[API_TEST] 密钥验证失败 (HTTP {}): {}", status.as_u16(), short_body);
-                if status.as_u16() == 401 || status.as_u16() == 403 {
-                    Err("密钥无效或被拒绝访问".to_string())
-                } else if status.as_u16() == 404 {
-                    Err("端点不存在 (404)".to_string())
-                } else {
-                    Err(format!("服务器返回错误 (HTTP {})", status.as_u16()))
-                }
+    for modality in &modalities {
+        match test_single_modality(&client, &url, &config.api_key, &model, modality).await {
+            Ok(()) => {
+                eprintln!("[API_TEST] 模态 {} 验证成功", modality);
+                ok_modalities.push(modality.clone());
             }
-        }
-        Err(e) => {
-            eprintln!("[API_TEST] 请求失败: {}", e);
-            if e.is_timeout() {
-                Err("连接超时，请检查网络和端点地址".to_string())
-            } else if e.is_connect() {
-                Err("无法连接到服务器，请检查端点地址".to_string())
-            } else {
-                Err(format!("请求失败: {}", e))
+            Err(e) => {
+                eprintln!("[API_TEST] 模态 {} 验证失败: {}", modality, e);
+                failed_modalities.push(ModalityError {
+                    modality: modality.clone(),
+                    error: e,
+                });
             }
         }
     }
+
+    let result = TestKeyResult {
+        ok: ok_modalities,
+        failed: failed_modalities,
+    };
+
+    let json = serde_json::to_string(&result).map_err(|e| format!("序列化失败: {}", e))?;
+    Ok(json)
 }
 
 /// 沙箱系统提示词
@@ -2193,6 +2307,215 @@ async fn git_push(
     Ok(format!("推送成功！已上传 {} 个文件到 {}", files.len(), branch))
 }
 
+#[tauri::command]
+async fn web_search_query(query: String, max_results: Option<usize>) -> Result<String, String> {
+    let results = web_search::search(&query, max_results.unwrap_or(5)).await?;
+    serde_json::to_string(&results).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn fetch_webpage_content(url: String) -> Result<String, String> {
+    web_search::fetch_page(&url).await
+}
+
+#[tauri::command]
+async fn check_command_safety(command: String, args: Vec<String>, working_dir: String, project_dir: String) -> Result<String, String> {
+    let result = shell_executor::check_safety(&command, &args, &working_dir, &project_dir);
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn execute_command(command: String, args: Vec<String>, working_dir: String) -> Result<String, String> {
+    let result = shell_executor::execute(&command, &args, &working_dir)?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn read_document(file_path: String) -> Result<String, String> {
+    let content = doc_processor::read_doc(&file_path)?;
+    serde_json::to_string(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn write_document(file_path: String, content: String, format: String) -> Result<String, String> {
+    doc_processor::write_doc(&file_path, &content, &format)
+}
+
+/// 多模态聊天（支持图文混合消息）
+#[tauri::command]
+async fn chat_multimodal(
+    messages: Vec<MultimodalMessage>,
+    api_key: String,
+    model: String,
+    endpoint: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+
+    let request_body = MultimodalRequest {
+        model: model.clone(),
+        messages,
+        stream: false,
+        max_tokens: Some(4096),
+    };
+
+    let response = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("API错误 {}: {}", status, body));
+    }
+
+    let parsed: DeepSeekResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let content = parsed.choices.first()
+        .map(|c| c.message.content.clone())
+        .unwrap_or_default();
+
+    let usage = parsed.usage;
+
+    let result = serde_json::json!({
+        "content": content,
+        "usage": usage
+    });
+
+    Ok(result.to_string())
+}
+
+/// 图像生成
+#[tauri::command]
+async fn generate_image(
+    prompt: String,
+    api_key: String,
+    model: String,
+    endpoint: String,
+    size: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+
+    let request_body = ImageGenerationRequest {
+        model,
+        prompt,
+        n: 1,
+        size: size.unwrap_or_else(|| "1024x1024".to_string()),
+    };
+
+    let response = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("API错误 {}: {}", status, body));
+    }
+
+    Ok(body)
+}
+
+/// 音频转文字
+#[tauri::command]
+async fn transcribe_audio(
+    file_path: String,
+    api_key: String,
+    model: String,
+    endpoint: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+
+    let file_bytes = std::fs::read(&file_path)
+        .map_err(|e| format!("读取音频文件失败: {}", e))?;
+
+    let file_name = std::path::Path::new(&file_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(file_name)
+        .mime_str("audio/mpeg")
+        .map_err(|e| format!("MIME错误: {}", e))?;
+
+    let form = reqwest::multipart::Form::new()
+        .text("model", model)
+        .part("file", part);
+
+    let response = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("API错误 {}: {}", status, body));
+    }
+
+    Ok(body)
+}
+
+/// 文字转语音
+#[tauri::command]
+async fn text_to_speech(
+    text: String,
+    api_key: String,
+    model: String,
+    endpoint: String,
+    voice: Option<String>,
+    output_path: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+
+    let request_body = serde_json::json!({
+        "model": model,
+        "input": text,
+        "voice": voice.unwrap_or_else(|| "alloy".to_string()),
+    });
+
+    let response = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API错误 {}: {}", status, body));
+    }
+
+    let bytes = response.bytes().await.map_err(|e| format!("读取音频数据失败: {}", e))?;
+
+    std::fs::write(&output_path, &bytes)
+        .map_err(|e| format!("保存音频文件失败: {}", e))?;
+
+    Ok(output_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2292,6 +2615,16 @@ pub fn run() {
             load_git_config,
             list_project_files_all,
             git_push,
+            web_search_query,
+            fetch_webpage_content,
+            check_command_safety,
+            execute_command,
+            read_document,
+            write_document,
+            chat_multimodal,
+            generate_image,
+            transcribe_audio,
+            text_to_speech,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
