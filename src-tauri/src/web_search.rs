@@ -11,73 +11,55 @@ pub struct SearchResult {
 /// 搜索 Bing 并返回结果
 pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
     let encoded_query = urlencode(query);
-    let url = format!(
+    let html_url = format!(
         "https://www.bing.com/search?q={}&setlang=zh-Hans",
         encoded_query
     );
+    let rss_url = format!(
+        "https://www.bing.com/search?format=rss&q={}&setlang=zh-Hans",
+        encoded_query
+    );
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&url)
-        .header(
-            "User-Agent",
+    let client = reqwest::Client::builder()
+        .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
+        .build()
+        .map_err(|e| format!("创建搜索客户端失败: {}", e))?;
+
+    let rss_response = client
+        .get(&rss_url)
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| format!("RSS 搜索请求失败: {}", e))?;
+    let rss_text = rss_response
+        .text()
+        .await
+        .map_err(|e| format!("读取 RSS 响应失败: {}", e))?;
 
+    let rss_results = parse_bing_rss_results(&rss_text, max_results);
+    if !rss_results.is_empty() {
+        return Ok(rss_results);
+    }
+
+    let response = client
+        .get(&html_url)
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .send()
+        .await
+        .map_err(|e| format!("HTML 搜索请求失败: {}", e))?;
     let html_text = response
         .text()
         .await
-        .map_err(|e| format!("读取响应失败: {}", e))?;
+        .map_err(|e| format!("读取 HTML 响应失败: {}", e))?;
 
-    let document = Html::parse_document(&html_text);
-
-    let algo_selector =
-        Selector::parse(".b_algo").map_err(|e| format!("选择器解析失败: {:?}", e))?;
-    let title_selector =
-        Selector::parse("h2 a").map_err(|e| format!("标题选择器解析失败: {:?}", e))?;
-    let snippet_selector =
-        Selector::parse(".b_caption p").map_err(|e| format!("摘要选择器解析失败: {:?}", e))?;
-
-    let mut results = Vec::new();
-
-    for element in document.select(&algo_selector) {
-        if results.len() >= max_results {
-            break;
-        }
-
-        let title = element
-            .select(&title_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
-
-        let url = element
-            .select(&title_selector)
-            .next()
-            .and_then(|el| el.value().attr("href"))
-            .unwrap_or("")
-            .to_string();
-
-        let snippet = element
-            .select(&snippet_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
-
-        if !title.is_empty() && !url.is_empty() {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
-        }
+    let html_results = parse_bing_html_results(&html_text, max_results)?;
+    if html_results.is_empty() {
+        return Err("搜索接口未返回任何结果".to_string());
     }
 
-    Ok(results)
+    Ok(html_results)
 }
 
 /// 获取网页正文内容
@@ -147,4 +129,118 @@ fn urlencode(s: &str) -> String {
         }
     }
     result
+}
+
+fn parse_bing_html_results(html_text: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+    let document = Html::parse_document(html_text);
+
+    let algo_selector =
+        Selector::parse(".b_algo").map_err(|e| format!("选择器解析失败: {:?}", e))?;
+    let title_selector =
+        Selector::parse("h2 a").map_err(|e| format!("标题选择器解析失败: {:?}", e))?;
+    let snippet_selector =
+        Selector::parse(".b_caption p").map_err(|e| format!("摘要选择器解析失败: {:?}", e))?;
+
+    let mut results = Vec::new();
+
+    for element in document.select(&algo_selector) {
+        if results.len() >= max_results {
+            break;
+        }
+
+        let title = element
+            .select(&title_selector)
+            .next()
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        let url = element
+            .select(&title_selector)
+            .next()
+            .and_then(|el| el.value().attr("href"))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let snippet = element
+            .select(&snippet_selector)
+            .next()
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        if !title.is_empty() && !url.is_empty() {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+fn parse_bing_rss_results(xml_text: &str, max_results: usize) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+
+    for item in xml_text.split("<item>").skip(1) {
+        if results.len() >= max_results {
+            break;
+        }
+
+        let Some(item_content) = item.split("</item>").next() else {
+            continue;
+        };
+
+        let title = extract_xml_tag(item_content, "title")
+            .map(|value| clean_xml_text(&value))
+            .unwrap_or_default();
+        let url = extract_xml_tag(item_content, "link")
+            .map(|value| decode_xml_entities(value.trim()))
+            .unwrap_or_default();
+        let snippet = extract_xml_tag(item_content, "description")
+            .map(|value| clean_xml_text(&value))
+            .unwrap_or_default();
+
+        if !title.is_empty() && !url.is_empty() {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+    }
+
+    results
+}
+
+fn extract_xml_tag(content: &str, tag: &str) -> Option<String> {
+    let open_tag = format!("<{}>", tag);
+    let close_tag = format!("</{}>", tag);
+    let start = content.find(&open_tag)? + open_tag.len();
+    let end = content[start..].find(&close_tag)? + start;
+    Some(content[start..end].to_string())
+}
+
+fn clean_xml_text(raw: &str) -> String {
+    let text = raw
+        .trim()
+        .strip_prefix("<![CDATA[")
+        .and_then(|value| value.strip_suffix("]]>"))
+        .unwrap_or(raw)
+        .trim();
+
+    let fragment = Html::parse_fragment(text);
+    let collected = fragment.root_element().text().collect::<String>();
+    decode_xml_entities(collected.trim())
+}
+
+fn decode_xml_entities(input: &str) -> String {
+    input
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }

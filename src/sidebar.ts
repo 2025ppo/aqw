@@ -32,6 +32,7 @@ class Sidebar {
   private activeChatId: number | null = null;
   private nextId: number = 1;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  public readonly ready: Promise<void>;
 
   constructor() {
     this.sidebarEl = document.getElementById("sidebar")!;
@@ -42,8 +43,8 @@ class Sidebar {
     this.toggleBtn.addEventListener("click", () => this.toggle());
     this.createBtn.addEventListener("click", () => this.showProjectDialog());
 
-    // 加载持久化的项目列表
-    this.loadProjects();
+    // 加载持久化的项目列表。DB 在 Tauri 启动早期可能尚未就绪，因此这里带重试。
+    this.ready = this.loadProjectsWithRetry();
   }
 
   /** 从数据库加载项目列表 */
@@ -53,6 +54,16 @@ class Sidebar {
       const projects: ChatItem[] = JSON.parse(data);
       if (projects.length > 0) {
         this.chats = projects;
+        await invoke("save_projects", {
+          projects: JSON.stringify(
+            this.chats.map((c) => ({
+              id: c.id,
+              name: c.name,
+              iconColor: c.iconColor,
+              workspacePath: c.workspacePath || null,
+            }))
+          ),
+        });
         // 恢复 nextId
         const maxId = Math.max(...projects.map((p) => p.id), 0);
         this.nextId = maxId + 1;
@@ -70,6 +81,18 @@ class Sidebar {
       }
     } catch (e) {
       console.error("[Sidebar] 加载项目失败:", e);
+      throw e;
+    }
+  }
+
+  private async loadProjectsWithRetry(maxRetries = 15, interval = 200): Promise<void> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        await this.loadProjects();
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, interval));
+      }
     }
   }
 
@@ -140,8 +163,8 @@ class Sidebar {
 
     this.chats.push(chat);
     this.renderChatList();
+    await this.saveProjects();
     this.setActiveChat(chat.id);
-    this.debouncedSave();
     return chat;
   }
 

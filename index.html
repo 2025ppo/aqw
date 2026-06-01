@@ -98,120 +98,6 @@
             <span>更新</span>
           </button>
         </div>
-        <!-- 草稿底部工具箱 -->
-        <div id="draft-toolbox">
-          <div class="draft-toolbox-tabs">
-            <button class="draft-toolbox-tab active" data-tab="tools" type="button">工具</button>
-            <button class="draft-toolbox-tab" data-tab="brush" type="button">笔画</button>
-            <button class="draft-toolbox-tab" data-tab="ui" type="button">UI</button>
-          </div>
-          <div class="draft-toolbox-panels">
-            <!-- 工具面板：选择 / 便签 / 画布 / 连接线 / 箭头 -->
-            <div class="draft-toolbox-panel active" data-panel="tools">
-              <button class="draft-tool" data-tool="select" title="选择 (V)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-7 1 3 7-3 1-3-7-4 4z"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="note" title="便签">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9"/><polyline points="14 3 14 10 21 10"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="mini-canvas" title="画布">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="line" title="连接线（用于组件间连线）">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><line x1="6.5" y1="17.5" x2="17.5" y2="6.5"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="arrow" title="箭头">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>
-              </button>
-            </div>
-            <!-- 笔画面板：圆珠笔 / 钢笔 / 橡皮擦（上拉菜单）/ 清空画布 -->
-            <div class="draft-toolbox-panel" data-panel="brush">
-              <button class="draft-tool" data-tool="ballpen" title="圆珠笔 (B)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="fountain" title="钢笔 (P)【点击放锥点，双击/Enter 结束，Esc 取消】">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l3-3 11-11-3-3-11 11-3 3z"/><path d="M14 4l3 3"/><circle cx="4.5" cy="19.5" r=".8" fill="currentColor"/></svg>
-              </button>
-              <!-- 橡皮擦按钮组：主按钮 + 上拉菜单触发器 -->
-              <div class="draft-tool-group" id="draft-eraser-group">
-                <button class="draft-tool" data-tool="eraser" title="橡皮擦 (E)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M19 13l-6 6H7l-3-3 9-9 6 6z"/></svg>
-                </button>
-                <button class="draft-tool-caret" id="draft-eraser-caret" title="橡皮擦模式" type="button">
-                  <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 4l4 4 4-4z"/></svg>
-                </button>
-              </div>
-              <button class="draft-tool draft-tool-danger" id="draft-clear-canvas" title="清空画布" type="button">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-              </button>
-            </div>
-            <!-- UI 面板：矩形 / 圆形 -->
-            <div class="draft-toolbox-panel" data-panel="ui">
-              <button class="draft-tool" data-tool="rect" title="矩形 (R)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
-              </button>
-              <button class="draft-tool" data-tool="circle" title="圆形 (O)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <!-- 草稿右侧属性栏 -->
-        <div id="draft-sidebar">
-          <div class="draft-sidebar-tabs">
-            <button class="draft-sidebar-tab active" data-tab="palette" title="调色盘">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10"/></svg>
-            </button>
-            <button class="draft-sidebar-tab" data-tab="props" title="属性">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
-          </div>
-          <div class="draft-sidebar-panels">
-            <!-- 调色盘面板 -->
-            <div class="draft-sidebar-panel active" data-panel="palette">
-              <div class="draft-palette-grid" id="draft-palette-grid">
-                <!-- JS动态渲染颜色 -->
-              </div>
-              <div class="draft-palette-custom">
-                <span class="draft-palette-label">自定义颜色</span>
-                <div class="draft-palette-input-row">
-                  <input type="color" class="draft-palette-picker" id="draft-palette-picker" value="#FF5252">
-                  <input type="text" class="draft-palette-hex" id="draft-palette-hex" value="#FF5252" maxlength="7">
-                </div>
-              </div>
-              <div class="draft-palette-opacity">
-                <span class="draft-palette-label">不透明度</span>
-                <div class="draft-prop-row">
-                  <input type="range" class="draft-prop-slider" id="draft-prop-opacity" min="10" max="100" value="100">
-                  <span class="draft-prop-value" id="draft-prop-opacity-val">100%</span>
-                </div>
-              </div>
-            </div>
-            <!-- 属性面板 -->
-            <div class="draft-sidebar-panel" data-panel="props">
-              <div class="draft-prop-section">
-                <span class="draft-palette-label">笔刷大小</span>
-                <div class="draft-prop-row">
-                  <input type="range" class="draft-prop-slider" id="draft-prop-size" min="1" max="50" value="3">
-                  <span class="draft-prop-value" id="draft-prop-size-val">3px</span>
-                </div>
-              </div>
-              <div class="draft-prop-section">
-                <span class="draft-palette-label">不透明度</span>
-                <div class="draft-prop-row">
-                  <input type="range" class="draft-prop-slider" id="draft-prop-opacity2" min="10" max="100" value="100">
-                  <span class="draft-prop-value" id="draft-prop-opacity2-val">100%</span>
-                </div>
-              </div>
-              <div class="draft-prop-section">
-                <label class="draft-prop-check">
-                  <input type="checkbox" id="draft-prop-fill">
-                  <span>填充形状</span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
         <!-- 可视化目录卡片 -->
         <div id="canvas-directory-card">
           <!-- 模式页签 -->
@@ -231,39 +117,27 @@
           </div>
         </div>
 
-        <!-- 图像处理卡片（与目录卡片同级，默认隐藏） -->
-        <div id="canvas-image-card" style="display:none;">
-          <div class="canvas-directory-tabs">
-            <button class="canvas-directory-tab active" data-mode="canvas" type="button">画布</button>
-            <button class="canvas-directory-tab" data-mode="edit" type="button">编辑</button>
-          </div>
-          <div class="canvas-directory-header">
-            <span class="canvas-directory-title">图像处理</span>
-            <button class="canvas-directory-status-btn" id="canvas-image-add-btn" type="button">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              <span>添加图片</span>
-            </button>
-          </div>
+      <!-- 图像创作：中央面板（类似视频式卡片网格） -->
+      <div id="image-panel" style="display:none;">
+        <div class="wiki-header">
+          <span class="wiki-title" id="image-panel-title">图像创作</span>
+          <button class="video-export-all-btn" id="image-download-all" type="button" title="下载全部图像">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>下载全部</span>
+          </button>
         </div>
+        <div class="wiki-divider"></div>
+        <div class="wiki-body" id="image-body">
+          <!-- 图像卡片网格区域 -->
+          <div id="image-card-grid"></div>
+        </div>
+      </div>
 
-        <!-- 视频编辑卡片（与目录卡片同级，默认隐藏） -->
-        <div id="canvas-video-card" style="display:none;">
-          <div class="canvas-directory-tabs">
-            <button class="canvas-directory-tab active" data-mode="grid" type="button">素材</button>
-            <button class="canvas-directory-tab" data-mode="timeline" type="button">时间轴</button>
-          </div>
-          <div class="canvas-directory-header">
-            <span class="canvas-directory-title">视频编辑</span>
-            <button class="canvas-directory-status-btn" id="canvas-video-add-btn" type="button">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              <span>添加素材</span>
-            </button>
-          </div>
-        </div>
+
 
         <svg id="workspace-canvas" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -275,10 +149,116 @@
         </svg>
 
       </div>
-        <!-- 草稿画布（叠加在无限画布上方） -->
-        <canvas id="draft-canvas"></canvas>
-        <!-- 左下角缩放比例、回正和图例 -->
-        <div id="canvas-controls">
+      <!-- 草稿画布（叠加在无限画布上方） -->
+      <canvas id="draft-canvas"></canvas>
+      <!-- 草稿工具箱（与 canvas-container 同级，避免被画布遮挡） -->
+      <div id="draft-toolbox">
+        <div class="draft-toolbox-tabs">
+          <button class="draft-toolbox-tab active" data-tab="tools" type="button">工具</button>
+          <button class="draft-toolbox-tab" data-tab="brush" type="button">笔画</button>
+          <button class="draft-toolbox-tab" data-tab="ui" type="button">UI</button>
+        </div>
+        <div class="draft-toolbox-panels">
+          <div class="draft-toolbox-panel active" data-panel="tools">
+            <button class="draft-tool" data-tool="select" title="选择 (V)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-7 1 3 7-3 1-3-7-4 4z"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="note" title="便签">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9"/><polyline points="14 3 14 10 21 10"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="mini-canvas" title="画布">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="line" title="连接线（用于组件间连线）">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><line x1="6.5" y1="17.5" x2="17.5" y2="6.5"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="arrow" title="箭头">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>
+            </button>
+          </div>
+          <div class="draft-toolbox-panel" data-panel="brush">
+            <button class="draft-tool" data-tool="ballpen" title="圆珠笔 (B)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="fountain" title="钢笔 (P)【点击放锥点，双击/Enter 结束，Esc 取消】">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l3-3 11-11-3-3-11 11-3 3z"/><path d="M14 4l3 3"/><circle cx="4.5" cy="19.5" r=".8" fill="currentColor"/></svg>
+            </button>
+            <div class="draft-tool-group" id="draft-eraser-group">
+              <button class="draft-tool" data-tool="eraser" title="橡皮擦 (E)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M19 13l-6 6H7l-3-3 9-9 6 6z"/></svg>
+              </button>
+              <button class="draft-tool-caret" id="draft-eraser-caret" title="橡皮擦模式" type="button">
+                <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 4l4 4 4-4z"/></svg>
+              </button>
+            </div>
+            <button class="draft-tool draft-tool-danger" id="draft-clear-canvas" title="清空画布" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </div>
+          <div class="draft-toolbox-panel" data-panel="ui">
+            <button class="draft-tool" data-tool="rect" title="矩形 (R)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+            </button>
+            <button class="draft-tool" data-tool="circle" title="圆形 (O)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <!-- 草稿右侧属性栏（与 canvas-container 同级，避免被画布遮挡） -->
+      <div id="draft-sidebar">
+        <div class="draft-sidebar-tabs">
+          <button class="draft-sidebar-tab active" data-tab="palette" title="调色盘">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="10"/></svg>
+          </button>
+          <button class="draft-sidebar-tab" data-tab="props" title="属性">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+        <div class="draft-sidebar-panels">
+          <div class="draft-sidebar-panel active" data-panel="palette">
+            <div class="draft-palette-grid" id="draft-palette-grid"></div>
+            <div class="draft-palette-custom">
+              <span class="draft-palette-label">自定义颜色</span>
+              <div class="draft-palette-input-row">
+                <input type="color" class="draft-palette-picker" id="draft-palette-picker" value="#FF5252">
+                <input type="text" class="draft-palette-hex" id="draft-palette-hex" value="#FF5252" maxlength="7">
+              </div>
+            </div>
+            <div class="draft-palette-opacity">
+              <span class="draft-palette-label">不透明度</span>
+              <div class="draft-prop-row">
+                <input type="range" class="draft-prop-slider" id="draft-prop-opacity" min="10" max="100" value="100">
+                <span class="draft-prop-value" id="draft-prop-opacity-val">100%</span>
+              </div>
+            </div>
+          </div>
+          <div class="draft-sidebar-panel" data-panel="props">
+            <div class="draft-prop-section">
+              <span class="draft-palette-label">笔刷大小</span>
+              <div class="draft-prop-row">
+                <input type="range" class="draft-prop-slider" id="draft-prop-size" min="1" max="50" value="3">
+                <span class="draft-prop-value" id="draft-prop-size-val">3px</span>
+              </div>
+            </div>
+            <div class="draft-prop-section">
+              <span class="draft-palette-label">不透明度</span>
+              <div class="draft-prop-row">
+                <input type="range" class="draft-prop-slider" id="draft-prop-opacity2" min="10" max="100" value="100">
+                <span class="draft-prop-value" id="draft-prop-opacity2-val">100%</span>
+              </div>
+            </div>
+            <div class="draft-prop-section">
+              <label class="draft-prop-check">
+                <input type="checkbox" id="draft-prop-fill">
+                <span>填充形状</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 左下角缩放比例、回正和图例 -->
+      <div id="canvas-controls">
           <button id="canvas-reset" title="一键回正" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
@@ -294,33 +274,35 @@
         </div>
       </div>
 
-      <!-- 视频模式：中央面板（1:1复制 wiki-panel 结构） -->
+      <!-- 视频模式：中央面板（镜头卡片网格） -->
       <div id="video-panel" style="display:none;">
         <div class="wiki-header">
-          <button class="wiki-back" id="video-back" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H4"/></svg>
-            返回
+          <span class="wiki-title" id="video-panel-title">视频创作</span>
+          <button class="video-export-all-btn" id="video-export-all" type="button" title="导出完整视频">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>导出全部</span>
           </button>
-          <span class="wiki-title">视频编辑</span>
         </div>
         <div class="wiki-divider"></div>
         <div class="wiki-body" id="video-body">
-          <!-- 卡片网格区域 -->
+          <!-- 镜头卡片网格区域 -->
           <div id="video-card-grid"></div>
-          <!-- 时间轴区域 -->
-          <div id="video-timeline-wrap"></div>
         </div>
       </div>
 
-      <!-- 右侧悬浮按钮组（与AI对话区卡片同级高度） -->
-      <div id="floating-actions">
-        <button class="floating-btn active" id="btn-directory" title="目录" type="button">
+      <!-- 视图页签栏（中央卡片正上方，8 视图一键切换） -->
+      <div id="floating-actions" class="view-tabs">
+        <button class="view-tab active" id="btn-directory" title="目录" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
           <span>目录</span>
         </button>
-        <button class="floating-btn" id="btn-repo" title="仓库" type="button">
+        <button class="view-tab" id="btn-repo" title="仓库" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"/>
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
@@ -328,7 +310,7 @@
           </svg>
           <span>仓库</span>
         </button>
-        <button class="floating-btn" id="btn-git" title="Git" type="button">
+        <button class="view-tab" id="btn-git" title="Git" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="6" cy="6" r="3"/>
             <circle cx="6" cy="18" r="3"/>
@@ -338,7 +320,7 @@
           </svg>
           <span>Git</span>
         </button>
-        <button class="floating-btn" id="btn-token" title="词元" type="button">
+        <button class="view-tab" id="btn-token" title="词元" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9"/>
             <path d="M12 7v10"/>
@@ -347,14 +329,14 @@
           </svg>
           <span>词元</span>
         </button>
-        <button class="floating-btn" id="btn-draft" title="草稿" type="button">
+        <button class="view-tab" id="btn-draft" title="草稿" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 20h9"/>
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
           </svg>
           <span>草稿</span>
         </button>
-        <button class="floating-btn" id="btn-image" title="图像" type="button">
+        <button class="view-tab" id="btn-image" title="图像" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
             <circle cx="8.5" cy="8.5" r="1.5"/>
@@ -362,14 +344,14 @@
           </svg>
           <span>图像</span>
         </button>
-        <button class="floating-btn" id="btn-video" title="视频" type="button">
+        <button class="view-tab" id="btn-video" title="视频" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="23 7 16 12 23 17 23 7"/>
             <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
           </svg>
           <span>视频</span>
         </button>
-        <button class="floating-btn" id="btn-data" title="数据分析" type="button">
+        <button class="view-tab" id="btn-data" title="数据分析" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="20" x2="18" y2="10"/>
             <line x1="12" y1="20" x2="12" y2="4"/>
@@ -425,7 +407,38 @@
         <div class="chat-divider"></div>
         <!-- 输入区域 -->
         <div class="chat-input-area">
-          <div class="chat-input-wrapper">
+          <div class="chat-input-wrapper" style="position:relative;">
+            <div id="slash-modal" class="slash-modal">
+              <div class="slash-modal-panel">
+                <div class="slash-modal-body">
+                  <button class="slash-option" data-command="image" data-label="/image" type="button">
+                    <div class="slash-option-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <polyline points="21 15 16 10 5 21"/>
+                      </svg>
+                    </div>
+                    <div class="slash-option-text">
+                      <span class="slash-option-title">图像创作</span>
+                      <span class="slash-option-desc">AI 图像生成</span>
+                    </div>
+                  </button>
+                  <button class="slash-option" data-command="video" data-label="/video" type="button">
+                    <div class="slash-option-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="23 7 16 12 23 17 23 7"/>
+                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                      </svg>
+                    </div>
+                    <div class="slash-option-text">
+                      <span class="slash-option-title">视频创作</span>
+                      <span class="slash-option-desc">专家团驱动：调研 → 镜头分段 → 生成拼接</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
             <textarea class="chat-input" id="chat-input" placeholder="输入消息..." rows="1"></textarea>
             <button class="chat-send-btn" id="chat-send-btn" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -793,10 +806,6 @@
       <!-- 仓库模式：中央 Wiki 面板 -->
       <div id="wiki-panel" style="display:none;">
         <div class="wiki-header">
-          <button class="wiki-back" id="wiki-back" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H4"/></svg>
-            返回
-          </button>
           <span class="wiki-title" id="wiki-title">Wiki</span>
         </div>
         <div class="wiki-divider"></div>
@@ -822,12 +831,6 @@
       <!-- 数据分析：中央面板（1:1复制wiki-panel结构） -->
       <div id="data-panel" style="display:none;">
         <div class="wiki-header">
-          <button class="wiki-back" id="data-back" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H4"/>
-            </svg>
-            返回
-          </button>
           <span class="wiki-title" id="data-title">数据分析</span>
         </div>
         <div class="wiki-divider"></div>
@@ -839,12 +842,6 @@
       <!-- 词元面板 - 中央仪表盘 -->
       <div id="token-panel" style="display:none;">
         <div class="token-panel-header">
-          <button class="token-panel-back" id="token-panel-back" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M19 12H5M12 19l-7-7 7-7"/>
-            </svg>
-            <span>返回</span>
-          </button>
           <div class="token-panel-tabs">
             <button class="token-tab active" data-tab="project" type="button">项目级</button>
             <button class="token-tab" data-tab="user" type="button">用户级</button>
@@ -886,36 +883,6 @@
         </div>
       </div>
 
-      <!-- 图像模式：右侧面板（1:1复制 repo-browser 结构） -->
-      <div id="image-browser" style="display:none;">
-        <div class="repo-tabs">
-          <button class="repo-tab-btn active" data-tab="nodes">节点</button>
-          <button class="repo-tab-btn" data-tab="properties">属性</button>
-        </div>
-        <div class="repo-tab-content-wiki">
-          <div class="repo-browser-header">
-            <span class="repo-browser-title">图像节点</span>
-          </div>
-          <div class="repo-browser-divider"></div>
-          <div class="repo-browser-list" id="image-node-list"></div>
-        </div>
-      </div>
-
-      <!-- 视频模式：右侧面板 -->
-      <div id="video-browser" style="display:none;">
-        <div class="repo-tabs">
-          <button class="repo-tab-btn active" data-tab="clips">片段</button>
-          <button class="repo-tab-btn" data-tab="properties">属性</button>
-        </div>
-        <div class="repo-tab-content-wiki">
-          <div class="repo-browser-header">
-            <span class="repo-browser-title">视频素材</span>
-          </div>
-          <div class="repo-browser-divider"></div>
-          <div class="repo-browser-list" id="video-clip-list"></div>
-        </div>
-      </div>
-
       <!-- 数据分析：右侧面板 -->
       <div id="data-browser" style="display:none;">
         <div class="repo-tabs">
@@ -934,12 +901,6 @@
       <!-- Git 模式：中央配置面板 -->
       <div id="git-panel" style="display:none;">
         <div class="git-panel-header">
-          <button class="git-panel-back" id="git-panel-back" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M19 12H5M12 19l-7-7 7-7"/>
-            </svg>
-            <span>返回</span>
-          </button>
           <span class="git-panel-title">Git 版本控制</span>
         </div>
         <div class="git-panel-divider"></div>
@@ -1011,6 +972,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
         <span id="error-toast-msg"></span>
       </div>
+
+
     </main>
   </body>
 </html>

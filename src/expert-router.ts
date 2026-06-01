@@ -7,8 +7,21 @@ export function setExpertsRef(ref: Expert[]) { _expertsRef = ref; }
 function getExperts(): Expert[] { return _expertsRef; }
 import {
   buildMemoryContext,
+  buildGeneralMemoryContext,
   saveExpertMemory,
 } from "./memory-store";
+import {
+  appendPromptModuleTrace,
+  loadPromptModuleHistoryHints,
+} from "./prompt-module-history";
+import {
+  assemblePromptFromModules,
+  buildExpertPromptPlan,
+  detectToolIntentWithoutAction,
+  normalizePromptModuleHintMap,
+  type PromptModuleId,
+  type PromptModuleHintMap,
+} from "./prompt-modules";
 
 // ========== 用户级词元数据 ==========
 
@@ -325,6 +338,7 @@ export type SceneType =
   | "data-analysis"
   | "document-processing"
   | "media-creation"
+  | "video-production"
   | "research-with-search";
 
 /** 路由器中的专家定义（含 system prompt） */
@@ -359,6 +373,7 @@ export interface ExpertTask {
   tokensUsed?: number;
   phase?: string;
   phaseDetail?: string;
+  dispatchWave?: number;
 }
 
 /** 专家表现统计 */
@@ -380,7 +395,127 @@ export interface DispatchPlan {
   taskDescription: string;
   expertIds: string[];
   requiresDesign?: boolean;
+  promptModuleHints?: PromptModuleHintMap;
 }
+
+export interface PipelineFollowup {
+  id: string;
+  message: string;
+  targetExpertIds: string[];
+  deliveryMode: "current-step" | "next-relevant" | "all-remaining";
+  consumedBy: string[];
+  createdAt: number;
+}
+
+export interface DispatchWave {
+  wave: number;
+  expertIds: string[];
+}
+
+export interface EvidenceItem {
+  id: string;
+  source: string;
+  summary: string;
+  createdAt: number;
+}
+
+export interface RequiredFileSet {
+  files: string[];
+  unresolved: string[];
+  exclusions: string[];
+}
+
+export interface PatchProposal {
+  id: string;
+  files: string[];
+  risk: "low" | "medium" | "high";
+  status: "draft" | "proposed" | "blocked" | "applied";
+}
+
+export interface ValidationRun {
+  command: string;
+  passed: boolean;
+  summary: string;
+}
+
+export interface ReviewDecision {
+  reviewer: string;
+  decision: "pass" | "revise" | "block";
+  reason: string;
+}
+
+export interface BlackboardTask {
+  id: string;
+  goal: string;
+  requiredFiles: RequiredFileSet;
+  evidence: EvidenceItem[];
+  assumptions: string[];
+  openQuestions: string[];
+  patchProposals: PatchProposal[];
+  validationRuns: ValidationRun[];
+  reviewDecisions: ReviewDecision[];
+  blockers: string[];
+  roundsWithoutProgress: number;
+}
+
+export interface ExpertCommandAuthorizationRequest {
+  expertId: string;
+  expertName: string;
+  expertTitle: string;
+  reason: string;
+  command: string;
+  workingDir: string;
+  authMode: "auto" | "restricted" | "admin";
+  safetyReason: string;
+}
+
+interface ExpertWebSearchToolEvent {
+  kind: "web-search";
+  expertId: string;
+  expertName: string;
+  expertTitle: string;
+  reason: string;
+  query: string;
+  status: "success" | "error";
+  results?: Array<{ title: string; url: string; snippet: string }>;
+  error?: string;
+}
+
+interface ExpertCommandToolEvent {
+  kind: "command";
+  expertId: string;
+  expertName: string;
+  expertTitle: string;
+  reason: string;
+  command: string;
+  workingDir: string;
+  authMode: "auto" | "restricted" | "admin";
+  status: "success" | "denied" | "error";
+  safetyReason?: string;
+  output?: {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  };
+  error?: string;
+}
+
+export type ExpertToolEvent = ExpertWebSearchToolEvent | ExpertCommandToolEvent;
+
+interface ExpertWebSearchRequest {
+  kind: "web-search";
+  query: string;
+  reason: string;
+}
+
+interface ExpertCommandRequest {
+  kind: "command";
+  command: string;
+  reason: string;
+  workingDir: string;
+}
+
+type ExpertToolRequest = ExpertWebSearchRequest | ExpertCommandRequest;
 
 /** 流水线步骤 */
 interface PipelineStep {
@@ -393,6 +528,31 @@ interface Pipeline {
   scene: SceneType;
   steps: PipelineStep[];
   description: string;
+}
+
+function buildPipelineSteps(plan: DispatchPlan, pipeline: Pipeline): PipelineStep[] {
+  const steps: PipelineStep[] = [];
+  for (const step of pipeline.steps) {
+    let ids = [...step.expertIds];
+    if (plan.scene === "code-development" && step.expertIds.includes("jiang-qinglan")) {
+      const planEngineers = plan.expertIds.filter((id) =>
+        ["jiang-qinglan", "jiang-yumo", "jiang-subai"].includes(id)
+      );
+      if (planEngineers.length > 0) ids = planEngineers;
+    }
+    if (step.optional && plan.scene === "code-development" && !plan.requiresDesign) {
+      continue;
+    }
+    steps.push({ expertIds: ids, optional: step.optional });
+  }
+  return steps;
+}
+
+export function buildDispatchWaves(plan: DispatchPlan): DispatchWave[] {
+  const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
+  if (!pipeline) return [];
+  const steps = buildPipelineSteps(plan, pipeline);
+  return steps.map((step, idx) => ({ wave: idx + 1, expertIds: [...step.expertIds] }));
 }
 
 // ========== 专家注册表（路由器内部，不含主管/助手） ==========
@@ -428,13 +588,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 你只负责调研和分析，不编写代码，不做设计
 - 如需读取文件了解现状，使用 [ACTION:READ_FILE:相对路径]
 - 输出结构清晰，便于后续专家快速理解
-
-## 网络搜索能力
-当需要获取最新信息、验证事实或收集外部资料时，你可以使用网络搜索：
-- 输出 [ACTION:WEB_SEARCH query="搜索关键词"] 触发网络搜索
-- 搜索结果将自动注入你的后续推理上下文
-- 合理使用搜索：先判断是否真的需要外部信息，避免不必要的搜索
-- 搜索关键词要精准，使用最相关的关键词组合`,
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
     id: "jiang-qinglan",
@@ -449,23 +603,17 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 3. 遵循项目现有代码风格和架构规范
 4. 处理跨前后端的通用技术任务
 
-执行规范：
-- 创建文件：[ACTION:CREATE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
-- 写入文件：[ACTION:WRITE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
-- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
-  \`\`\`search
-  待替换的旧文本（必须与文件中内容完全一致）
-  \`\`\`
-  \`\`\`replace
-  替换后的新文本
-  \`\`\`
-  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
-- 创建目录：[ACTION:CREATE_FOLDER:相对路径]
+变更输出规范：
+- 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
+- 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
 
 注意：
 - 严格按照调研报告的技术约束进行实现
 - 代码必须有完整导入、依赖，确保可直接运行
-- 不做不必要的重构，聚焦于当前任务`,
+- 不做不必要的重构，聚焦于当前任务
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
     id: "jiang-yumo",
@@ -480,28 +628,17 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 3. 确保响应式布局和良好用户体验
 4. 遵循项目前端架构和组件规范
 
-执行规范：
-- 创建文件：[ACTION:CREATE_FILE:相对路径]
-\`\`\`
-内容
-\`\`\`
-- 写入文件：[ACTION:WRITE_FILE:相对路径]
-\`\`\`
-内容
-\`\`\`
-- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
-  \`\`\`search
-  待替换的旧文本（必须与文件中内容完全一致）
-  \`\`\`
-  \`\`\`replace
-  替换后的新文本
-  \`\`\`
-  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
+变更输出规范：
+- 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
+- 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
 
 注意：
 - 严格遵循项目已有的 UI 规范和样式变量
 - 代码必须完整，包含所有必要的导入和类型声明
-- 关注无障碍访问和性能`,
+- 关注无障碍访问和性能
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
     id: "jiang-subai",
@@ -516,22 +653,17 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 3. 处理业务逻辑和服务端渲染
 4. 确保 API 安全和性能
 
-执行规范：
-- 创建文件：[ACTION:CREATE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
-- 写入文件：[ACTION:WRITE_FILE:相对路径]\n\`\`\`\n内容\n\`\`\`
-- **编辑文件（局部替换）：[ACTION:EDIT_FILE:相对路径]**
-  \`\`\`search
-  待替换的旧文本（必须与文件中内容完全一致）
-  \`\`\`
-  \`\`\`replace
-  替换后的新文本
-  \`\`\`
-  **修改已有文件时优先使用 EDIT_FILE 而不是 WRITE_FILE**
+变更输出规范：
+- 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
+- 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
 
 注意：
 - 严格遵循项目后端技术栈和架构模式
 - 确保数据验证和错误处理完整
-- 关注安全性和可扩展性`,
+- 关注安全性和可扩展性
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
     id: "jiang-dingchu",
@@ -588,7 +720,8 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 你只负责审查，不直接修改代码
 - 问题描述要具体，修改建议要可操作
-- 如发现问题严重，明确标注「不通过」并说明原因`,
+- 如发现问题严重，明确标注「不通过」并说明原因
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
     id: "jiang-lingyu",
@@ -660,24 +793,23 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 4. 根据需求生成新文档
 5. 文档排版整理和格式优化
 
-使用 [ACTION:READ_DOCUMENT] 读取文档，使用 [ACTION:WRITE_DOCUMENT] 写入文档。
-保持文档的结构完整性和格式规范性。`,
+保持文档的结构完整性和格式规范性。
+工具能力会按当前任务按需加载；未加载的能力不要臆造格式。`,
   },
   {
     id: "jiang-huaying",
     name: "江画影",
     title: "媒体专家",
-    description: "多媒体处理专家，擅长图像生成/编辑、视频处理、音频处理",
+    description: "多媒体处理专家，擅长图像生成/编辑、视频制作、音频处理",
     systemPrompt: `你是江画影，星图专家团的媒体专家。你的职责是：
 1. 根据描述生成图像（使用 [ACTION:GENERATE_IMAGE]）
 2. 对已有图像进行编辑和修改（局部重绘、风格转换等）
-3. 视频片段的生成和编排
+3. 视频创作：镜头分段规划、逐段生成、最终拼接
 4. 音频处理（语音合成、音频转写）
 5. 多媒体素材的管理和组合
 
-操作图像画布时使用 [ACTION:CANVAS_ADD_NODE] 和 [ACTION:CANVAS_CONNECT]。
-操作视频时间轴时使用 [ACTION:TIMELINE_ADD] 和 [ACTION:TIMELINE_CUT]。
-所有媒体文件默认导出到项目根目录。`,
+所有媒体文件默认导出到项目根目录。
+工具能力会按当前任务按需加载；未加载的能力不要臆造格式。`,
   },
 ];
 
@@ -750,6 +882,14 @@ const PIPELINES: Pipeline[] = [
     description: "图像生成/编辑、视频处理、音频处理",
   },
   {
+    scene: "video-production",
+    steps: [
+      { expertIds: ["jiang-ruoxi"] },
+      { expertIds: ["jiang-huaying"] },
+    ],
+    description: "视频创作：调研 → 镜头分段 → 生成 → 拼接",
+  },
+  {
     scene: "research-with-search",
     steps: [{ expertIds: ["jiang-ruoxi"] }],
     description: "需要网络搜索的深度调研",
@@ -761,6 +901,7 @@ const PIPELINES: Pipeline[] = [
 let activeExpertTasks: ExpertTask[] = [];
 let taskCounter = 0;
 let currentPipelineId = "";
+let activeStepExpertIds: string[] = [];
 
 /** 任务更新回调（供 UI 监听进度） */
 let taskUpdateCallback: ((tasks: ExpertTask[]) => void) | null = null;
@@ -784,6 +925,348 @@ export function createTask(expertId: string, input: string): ExpertTask {
     status: "pending",
     input,
   };
+}
+
+function getExpertNameLabel(expertId: string): string {
+  const expert = ROUTER_EXPERTS.find((item) => item.id === expertId);
+  return expert ? `${expert.name}（${expert.title}）` : expertId;
+}
+
+function getRelevantFollowupsForExpert(
+  expertId: string,
+  currentStepExpertIds: string[],
+  followups?: PipelineFollowup[],
+  currentStepOnly = false
+): PipelineFollowup[] {
+  if (!followups || followups.length === 0) return [];
+
+  return followups.filter((followup) => {
+    if (followup.consumedBy.includes(expertId)) return false;
+    if (followup.targetExpertIds.length > 0 && !followup.targetExpertIds.includes(expertId)) {
+      return false;
+    }
+    if (currentStepOnly && followup.deliveryMode === "next-relevant") return false;
+    if (followup.deliveryMode === "current-step") {
+      return currentStepExpertIds.includes(expertId);
+    }
+    return true;
+  });
+}
+
+function markFollowupsConsumed(
+  followups: PipelineFollowup[] | undefined,
+  followupIds: string[],
+  expertId: string
+): void {
+  if (!followups || followupIds.length === 0) return;
+  const seen = new Set(followupIds);
+  for (const followup of followups) {
+    if (!seen.has(followup.id)) continue;
+    if (!followup.consumedBy.includes(expertId)) {
+      followup.consumedBy.push(expertId);
+    }
+  }
+}
+
+function buildTaskDescriptionForExpert(
+  scene: SceneType,
+  baseTaskDescription: string,
+  blackboard: BlackboardTask,
+  expertId: string,
+  currentStepExpertIds: string[],
+  pendingFollowups?: PipelineFollowup[],
+  currentStepOnly = false
+): { text: string; followupIds: string[] } {
+  const relevantFollowups = getRelevantFollowupsForExpert(
+    expertId,
+    currentStepExpertIds,
+    pendingFollowups,
+    currentStepOnly
+  );
+
+  const followupContext = relevantFollowups.length > 0
+    ? `\n\n【主管刚收到用户的中途修正，请你直接处理】\n${relevantFollowups
+      .map((item, idx) => `${idx + 1}. ${item.message}`)
+      .join("\n")}\n`
+    : "";
+
+  const withFollowups = `${baseTaskDescription}${followupContext}`;
+  const finalText = scene === "code-development"
+    ? `${withFollowups}${renderBlackboardContext(blackboard)}`
+    : withFollowups;
+
+  return {
+    text: finalText,
+    followupIds: relevantFollowups.map((item) => item.id),
+  };
+}
+
+function upsertCompletedResult(
+  completedResults: Array<{ expertId: string; name: string; title: string; output: string }>,
+  task: ExpertTask
+): void {
+  if (!task.output) return;
+  const next = {
+    expertId: task.expertId,
+    name: task.expertName,
+    title: task.expertTitle,
+    output: task.output,
+  };
+  const existingIdx = completedResults.findIndex((item) => item.expertId === task.expertId);
+  if (existingIdx >= 0) {
+    completedResults[existingIdx] = next;
+  } else {
+    completedResults.push(next);
+  }
+}
+
+async function runCurrentStepFollowupRound(
+  scene: SceneType,
+  baseTaskDescription: string,
+  blackboard: BlackboardTask,
+  currentStepExpertIds: string[],
+  completedResults: Array<{ expertId: string; name: string; title: string; output: string }>,
+  allResults: ExpertTask[],
+  pendingFollowups: PipelineFollowup[] | undefined,
+  apiKeyResolver: (expertId: string) => string | null,
+  modelResolver: (expertId: string) => string,
+  projectName: string | undefined,
+  projectId: number | undefined,
+  promptModuleHints: PromptModuleHintMap | undefined,
+  projectWorkspacePath: string | undefined,
+  onProgress: (tasks: ExpertTask[]) => void,
+  onExpertProgress?: (progress: { expertId: string; phase: string; detail: string }) => void,
+  onToolEvent?: (event: ExpertToolEvent) => void,
+  onCommandAuthorization?: (request: ExpertCommandAuthorizationRequest) => Promise<boolean>
+): Promise<void> {
+  if (!pendingFollowups || pendingFollowups.length === 0) return;
+
+  for (const expertId of currentStepExpertIds) {
+    const followups = getRelevantFollowupsForExpert(expertId, currentStepExpertIds, pendingFollowups, true);
+    if (followups.length === 0) continue;
+
+    const apiKey = apiKeyResolver(expertId);
+    if (!apiKey) continue;
+
+    const expertTask = buildTaskDescriptionForExpert(
+      scene,
+      `${baseTaskDescription}\n\n【说明】你刚才已开始处理该任务。现在主管基于用户插话，要求你在现有基础上直接修正/补充。`,
+      blackboard,
+      expertId,
+      currentStepExpertIds,
+      pendingFollowups,
+      true
+    );
+
+    const task = await callExpert(
+      expertId,
+      scene,
+      expertTask.text,
+      completedResults,
+      apiKey,
+      modelResolver(expertId),
+      expertId,
+      undefined,
+      projectName,
+      projectId,
+      promptModuleHints?.[expertId],
+      projectWorkspacePath,
+      onExpertProgress,
+      onToolEvent,
+      onCommandAuthorization
+    );
+    for (let idx = activeExpertTasks.length - 1; idx >= 0; idx--) {
+      if (activeExpertTasks[idx].expertId === expertId) {
+        task.dispatchWave = activeExpertTasks[idx].dispatchWave;
+        break;
+      }
+    }
+    allResults.push(task);
+    activeExpertTasks.push(task);
+    updateBlackboardFromTask(blackboard, task);
+    onProgress([...activeExpertTasks]);
+    if (task.output) {
+      upsertCompletedResult(completedResults, task);
+      markFollowupsConsumed(pendingFollowups, expertTask.followupIds, expertId);
+    }
+  }
+}
+
+function createBlackboardTask(plan: DispatchPlan): BlackboardTask {
+  return {
+    id: `blackboard-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    goal: plan.taskDescription,
+    requiredFiles: { files: [], unresolved: [], exclusions: [] },
+    evidence: [],
+    assumptions: [],
+    openQuestions: [],
+    patchProposals: [],
+    validationRuns: [],
+    reviewDecisions: [],
+    blockers: [],
+    roundsWithoutProgress: 0,
+  };
+}
+
+function extractFileMentions(text: string): string[] {
+  const files = new Set<string>();
+  const regex = /(?:^|[\s`"'(])([A-Za-z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|rs|py|go|java|kt|swift|c|cpp|h|hpp|css|html|json|md|toml|yaml|yml|sql))/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    files.add(match[1].replace(/\\/g, "/"));
+  }
+  return [...files].slice(0, 80);
+}
+
+function extractChangeFiles(text: string): string[] {
+  const files = new Set<string>();
+  const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE):([^\]]+)\]/g;
+  const paramActionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE)\s+[^\]]*?path="([^"]+)"/g;
+  let match;
+  while ((match = actionRegex.exec(text)) !== null) files.add(match[1].trim());
+  while ((match = paramActionRegex.exec(text)) !== null) files.add(match[1].trim());
+  const jsonPathRegex = /"path"\s*:\s*"([^"]+)"/g;
+  while ((match = jsonPathRegex.exec(text)) !== null) files.add(match[1].trim());
+  return [...files].map((p) => p.replace(/\\/g, "/")).slice(0, 80);
+}
+
+function updateBlackboardFromTask(blackboard: BlackboardTask, task: ExpertTask): void {
+  const output = task.output || task.error || "";
+  if (!output) return;
+
+  const fileMentions = extractFileMentions(output);
+  for (const file of fileMentions) {
+    if (!blackboard.requiredFiles.files.includes(file)) {
+      blackboard.requiredFiles.files.push(file);
+      blackboard.requiredFiles.unresolved.push(file);
+    }
+  }
+
+  const changedFiles = extractChangeFiles(output);
+  if (changedFiles.length > 0) {
+    blackboard.patchProposals.push({
+      id: `${task.id}-patch-${blackboard.patchProposals.length + 1}`,
+      files: changedFiles,
+      risk: output.includes("allowOverwrite") || output.includes("WRITE_FILE") ? "high" : "medium",
+      status: "draft",
+    });
+    blackboard.requiredFiles.unresolved = blackboard.requiredFiles.unresolved.filter((f) => !changedFiles.includes(f));
+  }
+
+  if (task.expertTitle.includes("调研") || task.expertTitle.includes("设计")) {
+    blackboard.evidence.push({
+      id: `${task.id}-evidence-${blackboard.evidence.length + 1}`,
+      source: `${task.expertName}（${task.expertTitle}）`,
+      summary: output.replace(/<think>[\s\S]*?<\/think>/g, "").slice(0, 360),
+      createdAt: Date.now(),
+    });
+  }
+
+  if (task.expertTitle.includes("审查")) {
+    const decision: ReviewDecision["decision"] = /不通过|阻断|block/i.test(output)
+      ? "block"
+      : /修改|返工|revise/i.test(output)
+        ? "revise"
+        : "pass";
+    blackboard.reviewDecisions.push({
+      reviewer: task.expertName,
+      decision,
+      reason: output.replace(/<think>[\s\S]*?<\/think>/g, "").slice(0, 240),
+    });
+    if (decision !== "pass") {
+      const lastDecision = blackboard.reviewDecisions[blackboard.reviewDecisions.length - 1];
+      blackboard.blockers.push(`${task.expertName}: ${lastDecision?.reason || "审查未通过"}`);
+    }
+  }
+}
+
+function renderBlackboardContext(blackboard: BlackboardTask): string {
+  const required = blackboard.requiredFiles.files.length
+    ? blackboard.requiredFiles.files.slice(0, 40).map((f) => `- ${f}`).join("\n")
+    : "- 尚未锁定，当前专家必须先根据证据提出候选文件或说明无法锁定";
+  const evidence = blackboard.evidence.length
+    ? blackboard.evidence.slice(-6).map((e) => `- ${e.source}: ${e.summary}`).join("\n")
+    : "- 暂无，当前专家需要补充可验证证据";
+  const patches = blackboard.patchProposals.length
+    ? blackboard.patchProposals.slice(-6).map((p) => `- ${p.id}: ${p.files.join(", ")} (${p.risk})`).join("\n")
+    : "- 暂无文件变更动作";
+  const blockers = blackboard.blockers.length
+    ? blackboard.blockers.slice(-5).map((b) => `- ${b}`).join("\n")
+    : "- 暂无";
+
+  return `\n\n【共享黑板 · 所有专家必须围绕它协作】\n任务目标：${blackboard.goal}\n\n必检/候选文件：\n${required}\n\n证据：\n${evidence}\n\n文件变更动作：\n${patches}\n\n阻塞项：\n${blockers}\n\n协作规则：\n- 不要假装看过未列入证据的文件；需要文件时先把它加入必检/候选文件。\n- 工程实现必须输出可执行文件动作（ACTION 或结构化 changes），系统会直接执行。\n- 审查必须审查文件动作覆盖范围、局部编辑可定位性、是否存在漏改文件。\n`;
+}
+
+function parseActionParams(paramsStr: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  const paramRegex = /(\w+)="([^"]*)"/g;
+  let match;
+  while ((match = paramRegex.exec(paramsStr)) !== null) {
+    params[match[1]] = match[2];
+  }
+  return params;
+}
+
+function isAbsolutePath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("/");
+}
+
+function resolveToolWorkingDir(rawDir: string | undefined, projectWorkspacePath?: string): string {
+  const trimmed = rawDir?.trim();
+  const baseDir = projectWorkspacePath?.trim() || ".";
+  if (!trimmed || trimmed === ".") return baseDir;
+  if (!projectWorkspacePath || isAbsolutePath(trimmed)) return trimmed;
+
+  const separator = projectWorkspacePath.includes("\\") ? "\\" : "/";
+  const relative = trimmed
+    .replace(/^[.][\\/]/, "")
+    .replace(/^[\\/]+/, "");
+  return `${projectWorkspacePath.replace(/[\\/]+$/, "")}${separator}${relative}`;
+}
+
+function resolveToolCommandAuthMode(
+  requiresAuth: boolean,
+  authReason: string
+): "auto" | "restricted" | "admin" {
+  if (!requiresAuth) return "auto";
+  return /管理员权限/.test(authReason) ? "admin" : "restricted";
+}
+
+function extractExpertToolRequests(text: string, projectWorkspacePath?: string): ExpertToolRequest[] {
+  const requests: ExpertToolRequest[] = [];
+  const actionRegex = /\[ACTION:(WEB_SEARCH|EXECUTE_CMD)((?:\s+\w+="[^"]*")*)\]/g;
+  let match;
+  while ((match = actionRegex.exec(text)) !== null) {
+    const actionType = match[1];
+    const params = parseActionParams(match[2] || "");
+    if (actionType === "WEB_SEARCH") {
+      const query = params.query?.trim();
+      if (!query) continue;
+      requests.push({
+        kind: "web-search",
+        query,
+        reason: params.reason?.trim() || "需要外部资料或最新信息支撑当前结论",
+      });
+      continue;
+    }
+
+    const command = params.command?.trim();
+    if (!command) continue;
+    requests.push({
+      kind: "command",
+      command,
+      reason: params.reason?.trim() || "需要通过本地命令核实环境或验证当前结论",
+      workingDir: resolveToolWorkingDir(params.dir, projectWorkspacePath),
+    });
+  }
+  return requests;
+}
+
+function stripInlineToolActions(text: string): string {
+  return text
+    .replace(/\[ACTION:(?:WEB_SEARCH|EXECUTE_CMD)(?:\s+\w+="[^"]*")*\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ========== API 密钥解析 ==========
@@ -814,6 +1297,7 @@ export function resolveExpertApiKey(
 /** 调用单个专家 */
 async function callExpert(
   expertId: string,
+  scene: SceneType,
   taskDescription: string,
   previousResults: { name: string; title: string; output: string }[],
   apiKey: string,
@@ -822,7 +1306,11 @@ async function callExpert(
   onUpdate?: (task: ExpertTask) => void,
   projectName?: string,
   projectId?: number,
-  onProgress?: (progress: { expertId: string; phase: string; detail: string }) => void
+  hintModuleIds?: PromptModuleId[],
+  projectWorkspacePath?: string,
+  onProgress?: (progress: { expertId: string; phase: string; detail: string }) => void,
+  onToolEvent?: (event: ExpertToolEvent) => void,
+  onCommandAuthorization?: (request: ExpertCommandAuthorizationRequest) => Promise<boolean>
 ): Promise<ExpertTask> {
   const expert = ROUTER_EXPERTS.find((e) => e.id === expertId);
   if (!expert) throw new Error(`专家 ${expertId} 未注册`);
@@ -858,6 +1346,35 @@ async function callExpert(
   onUpdate?.(task);
 
   try {
+    let historyHintModuleIds: PromptModuleId[] = [];
+    if (projectName) {
+      try {
+        historyHintModuleIds = await loadPromptModuleHistoryHints(
+          projectName,
+          expert.id,
+          scene,
+          taskDescription
+        );
+      } catch {
+        historyHintModuleIds = [];
+      }
+    }
+
+    const promptAssembly = buildExpertPromptPlan(
+      expert.id,
+      expert.systemPrompt,
+      scene,
+      taskDescription,
+      [...(hintModuleIds || []), ...historyHintModuleIds]
+    );
+    const activeModuleIds = new Set<PromptModuleId>(promptAssembly.moduleIds);
+    let activeSystemPrompt = promptAssembly.prompt;
+    const learnedModuleIds = new Set<PromptModuleId>();
+    const triggerSources = new Set<string>();
+    console.debug(
+      `[PromptModules] ${expertId} scene=${scene} modules=${promptAssembly.moduleIds.join(",") || "none"} historyHints=${historyHintModuleIds.join(",") || "none"} promptChars=${promptAssembly.prompt.length}`
+    );
+
     // === 三重分级检索 ===
     let retrievalContext = "";
     const negativeIndex: string[] = []; // 负向索引：记录盲区
@@ -910,6 +1427,15 @@ async function callExpert(
         } else {
           negativeIndex.push("无相关历史记忆，当前任务缺乏历史经验参照");
         }
+
+        const sharedMemoryContext = await buildGeneralMemoryContext(
+          projectName,
+          projectId,
+          taskDescription
+        );
+        if (sharedMemoryContext && sharedMemoryContext !== memContext) {
+          retrievalContext += `\n【共享项目记忆】\n${sharedMemoryContext.trim()}\n`;
+        }
       } catch {
         negativeIndex.push("记忆检索失败");
       }
@@ -943,7 +1469,7 @@ async function callExpert(
     const rawReply = await invoke<string>("chat_with_expert", {
       messages,
       apiKey,
-      systemPrompt: expert.systemPrompt,
+      systemPrompt: activeSystemPrompt,
       model,
     });
 
@@ -964,59 +1490,316 @@ async function callExpert(
       // 不是 JSON 则直接使用原始文本
     }
 
-    // ========== WEB_SEARCH 拦截：检测专家输出中的搜索请求 ==========
-    const webSearchRegex = /\[ACTION:WEB_SEARCH\s+query="([^"]*)"\]/g;
-    let searchMatch;
-    const searchQueries: string[] = [];
-    while ((searchMatch = webSearchRegex.exec(reply)) !== null) {
-      searchQueries.push(searchMatch[1]);
-    }
-    if (searchQueries.length > 0) {
-      if (onProgress) onProgress({ expertId, phase: 'web-searching', detail: '网络搜索中...' });
-      let searchContext = "";
-      for (const sq of searchQueries) {
-        try {
-          const results = await invoke<string>("web_search_query", { query: sq, maxResults: 5 });
-          searchContext += `\n\n[搜索结果: "${sq}"]\n${results}\n`;
-        } catch (e) {
-          searchContext += `\n\n[搜索失败: "${sq}"] ${e}\n`;
-        }
+    const mergeUsage = (nextUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null) => {
+      if (!nextUsage) return;
+      if (usage) {
+        usage.prompt_tokens += nextUsage.prompt_tokens;
+        usage.completion_tokens += nextUsage.completion_tokens;
+        usage.total_tokens += nextUsage.total_tokens;
+      } else {
+        usage = { ...nextUsage };
       }
-      // 将搜索结果注入上下文，重新调用专家
-      if (onProgress) onProgress({ expertId, phase: 'analyzing', detail: '结合搜索结果分析中...' });
+    };
+
+    const rebuildActiveSystemPrompt = () => {
+      activeSystemPrompt = assemblePromptFromModules(expert.systemPrompt, [...activeModuleIds]);
+    };
+
+    const maybeRetryWithToolReminder = async () => {
+      if (extractExpertToolRequests(reply, projectWorkspacePath).length > 0) return;
+
+      const inferred = detectToolIntentWithoutAction(reply);
+      const reminderTargets: string[] = [];
+      if (inferred.needsWebSearch) {
+        reminderTargets.push("网络搜索");
+        activeModuleIds.add("web-search-guidance");
+      }
+      if (inferred.needsCommand) {
+        reminderTargets.push("命令执行");
+        activeModuleIds.add("command-guidance");
+      }
+      if (inferred.needsVideoWorkflow) {
+        reminderTargets.push("视频工作流");
+        activeModuleIds.add("video-workflow");
+      }
+      if (reminderTargets.length === 0) return;
+
+      rebuildActiveSystemPrompt();
+      if (onProgress) onProgress({ expertId, phase: "analyzing", detail: "补充按需能力后重试中..." });
       messages.push({ role: "assistant", content: reply });
-      messages.push({ role: "user", content: `以下是你请求的网络搜索结果，请基于这些信息继续完成你的分析：${searchContext}` });
-      const rawReply2 = await invoke<string>("chat_with_expert", {
+      messages.push({
+        role: "user",
+        content: `你刚才已经表现出可能需要${reminderTargets.join("、")}来完成任务。如果确实需要，请直接输出标准 ACTION 发起；如果不需要，就直接给出最终结果，不要停留在“建议后续再查/再跑命令”的层面。`,
+      });
+
+      const rawRetryReply = await invoke<string>("chat_with_expert", {
         messages,
         apiKey,
-        systemPrompt: expert.systemPrompt,
+        systemPrompt: activeSystemPrompt,
         model,
       });
-      // 解析第二次返回
+
+      let retriedReply = rawRetryReply;
+      let retryUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
       try {
-        const parsed2 = JSON.parse(rawReply2);
-        if (parsed2 && typeof parsed2 === "object") {
-          if (typeof parsed2.content === "string") reply = parsed2.content;
-          if (parsed2.usage && typeof parsed2.usage === "object") {
-            const usage2 = parsed2.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-            if (usage) {
-              usage.prompt_tokens += usage2.prompt_tokens;
-              usage.completion_tokens += usage2.completion_tokens;
-              usage.total_tokens += usage2.total_tokens;
-            } else {
-              usage = usage2;
-            }
+        const parsedRetry = JSON.parse(rawRetryReply);
+        if (parsedRetry && typeof parsedRetry === "object") {
+          if (typeof parsedRetry.content === "string") {
+            retriedReply = parsedRetry.content;
+          }
+          if (parsedRetry.usage && typeof parsedRetry.usage === "object") {
+            retryUsage = parsedRetry.usage as {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+            };
           }
         }
       } catch {
-        reply = rawReply2;
+        // 保持原始文本
       }
+
+      reply = retriedReply;
+      mergeUsage(retryUsage);
+    };
+
+    await maybeRetryWithToolReminder();
+
+    for (let toolRound = 0; toolRound < 3; toolRound++) {
+      const toolRequests = extractExpertToolRequests(reply, projectWorkspacePath);
+      if (toolRequests.length === 0) break;
+
+      const toolContexts: string[] = [];
+      for (const request of toolRequests) {
+        if (request.kind === "web-search") {
+          learnedModuleIds.add("web-search-guidance");
+          triggerSources.add("web-search");
+          if (onProgress) onProgress({ expertId, phase: "web-searching", detail: "网络搜索中..." });
+          try {
+            const results = await invoke<string>("web_search_query", {
+              query: request.query,
+              maxResults: 5,
+            });
+            let parsedResults: Array<{ title: string; url: string; snippet: string }> = [];
+            try {
+              parsedResults = JSON.parse(results) as Array<{ title: string; url: string; snippet: string }>;
+            } catch {
+              parsedResults = [];
+            }
+            onToolEvent?.({
+              kind: "web-search",
+              expertId,
+              expertName: expert.name,
+              expertTitle: expert.title,
+              reason: request.reason,
+              query: request.query,
+              status: "success",
+              results: parsedResults,
+            });
+            toolContexts.push(`[网络搜索结果]
+发起理由：${request.reason}
+查询：${request.query}
+结果：${results}`);
+          } catch (e) {
+            const error = String(e);
+            onToolEvent?.({
+              kind: "web-search",
+              expertId,
+              expertName: expert.name,
+              expertTitle: expert.title,
+              reason: request.reason,
+              query: request.query,
+              status: "error",
+              error,
+            });
+            toolContexts.push(`[网络搜索失败]
+发起理由：${request.reason}
+查询：${request.query}
+错误：${error}`);
+          }
+          continue;
+        }
+
+        learnedModuleIds.add("command-guidance");
+        triggerSources.add("command");
+        if (onProgress) onProgress({ expertId, phase: "running-command", detail: "命令执行中..." });
+        try {
+          const projectDir = projectWorkspacePath || request.workingDir;
+          const safetyCheck = await invoke<string>("check_command_safety", {
+            command: request.command,
+            args: [],
+            workingDir: request.workingDir,
+            projectDir,
+          });
+          const safety = JSON.parse(safetyCheck) as {
+            requires_auth?: boolean;
+            auth_reason?: string;
+          };
+          const requiresAuth = !!safety.requires_auth;
+          const safetyReason = String(safety.auth_reason || "");
+          const authMode = resolveToolCommandAuthMode(requiresAuth, safetyReason);
+
+          if (requiresAuth) {
+            const authorized = onCommandAuthorization
+              ? await onCommandAuthorization({
+                expertId,
+                expertName: expert.name,
+                expertTitle: expert.title,
+                reason: request.reason,
+                command: request.command,
+                workingDir: request.workingDir,
+                authMode,
+                safetyReason,
+              })
+              : false;
+            if (!authorized) {
+              onToolEvent?.({
+                kind: "command",
+                expertId,
+                expertName: expert.name,
+                expertTitle: expert.title,
+                reason: request.reason,
+                command: request.command,
+                workingDir: request.workingDir,
+                authMode,
+                status: "denied",
+                safetyReason,
+              });
+              toolContexts.push(`[命令未执行]
+发起理由：${request.reason}
+命令：${request.command}
+工作目录：${request.workingDir}
+状态：用户未授权
+说明：${safetyReason || "命令需要用户授权"}`);
+              continue;
+            }
+          }
+
+          const rawCommandResult = await invoke<string>("execute_command", {
+            command: request.command,
+            args: [],
+            workingDir: request.workingDir,
+          });
+          const parsedCommandResult = JSON.parse(rawCommandResult) as {
+            stdout?: string;
+            stderr?: string;
+            exit_code?: number;
+          };
+          const stdout = parsedCommandResult.stdout || "";
+          const stderr = parsedCommandResult.stderr || "";
+          const exitCode = typeof parsedCommandResult.exit_code === "number" ? parsedCommandResult.exit_code : -1;
+          onToolEvent?.({
+            kind: "command",
+            expertId,
+            expertName: expert.name,
+            expertTitle: expert.title,
+            reason: request.reason,
+            command: request.command,
+            workingDir: request.workingDir,
+            authMode,
+            status: "success",
+            safetyReason,
+            output: {
+              stdout,
+              stderr,
+              exitCode,
+            },
+          });
+          toolContexts.push(`[命令执行结果]
+发起理由：${request.reason}
+命令：${request.command}
+工作目录：${request.workingDir}
+退出码：${exitCode}
+标准输出：
+${stdout || "(空)"}
+标准错误：
+${stderr || "(空)"}`);
+        } catch (e) {
+          const error = String(e);
+          onToolEvent?.({
+            kind: "command",
+            expertId,
+            expertName: expert.name,
+            expertTitle: expert.title,
+            reason: request.reason,
+            command: request.command,
+            workingDir: request.workingDir,
+            authMode: "auto",
+            status: "error",
+            error,
+          });
+          toolContexts.push(`[命令执行失败]
+发起理由：${request.reason}
+命令：${request.command}
+工作目录：${request.workingDir}
+错误：${error}`);
+        }
+      }
+
+      if (toolContexts.length === 0) {
+        reply = stripInlineToolActions(reply);
+        break;
+      }
+
+      if (onProgress) onProgress({ expertId, phase: "analyzing", detail: "结合工具结果分析中..." });
+      messages.push({ role: "assistant", content: reply });
+      messages.push({
+        role: "user",
+        content: `以下是你请求的工具执行结果，请基于这些信息继续完成任务，并不要重复发起已经执行过的同类请求：\n\n${toolContexts.join("\n\n")}`,
+      });
+
+      const rawFollowupReply = await invoke<string>("chat_with_expert", {
+        messages,
+        apiKey,
+        systemPrompt: activeSystemPrompt,
+        model,
+      });
+
+      let nextReply = rawFollowupReply;
+      let nextUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+      try {
+        const parsedFollowup = JSON.parse(rawFollowupReply);
+        if (parsedFollowup && typeof parsedFollowup === "object") {
+          if (typeof parsedFollowup.content === "string") {
+            nextReply = parsedFollowup.content;
+          }
+          if (parsedFollowup.usage && typeof parsedFollowup.usage === "object") {
+            nextUsage = parsedFollowup.usage as {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+            };
+          }
+        }
+      } catch {
+        // 保持原始文本
+      }
+
+      reply = nextReply;
+      mergeUsage(nextUsage);
     }
+
+    reply = stripInlineToolActions(reply);
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
       recordTokenUsage(expertId, expert.name, model, keyId, usage, expert.title).catch(console.error);
       task.tokensUsed = usage.total_tokens;
+    }
+
+    if (projectName && learnedModuleIds.size > 0) {
+      const normalizedTaskDescription = taskDescription
+        .split("【共享黑板")[0]
+        .trim()
+        .slice(0, 400);
+      appendPromptModuleTrace(projectName, {
+        expertId,
+        scene,
+        taskDescription: normalizedTaskDescription || taskDescription.slice(0, 400),
+        moduleIds: [...learnedModuleIds],
+        triggerSources: [...triggerSources],
+        createdAt: Date.now(),
+      }).catch(console.error);
     }
 
     // 保存专家输出到记忆系统
@@ -1028,7 +1811,8 @@ async function callExpert(
 
     // 检测专家是否在编写代码（输出中包含 ACTION 标记）
     if (onProgress) {
-      const hasAction = /\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|EXECUTE_CMD|WRITE_DOCUMENT|GENERATE_IMAGE|READ_DOCUMENT|OPEN_BROWSER|CANVAS_ADD_NODE|CANVAS_CONNECT|TIMELINE_ADD|TIMELINE_CUT|SWITCH_VIEW)/i.test(reply);
+      const hasAction = /\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|EXECUTE_CMD|WRITE_DOCUMENT|GENERATE_IMAGE|READ_DOCUMENT|OPEN_BROWSER|CANVAS_ADD_NODE|CANVAS_CONNECT|VIDEO_SET_SEGMENTS|VIDEO_UPDATE_SEGMENT|SWITCH_VIEW)/i.test(reply)
+        || /"changes"\s*:|"operation"\s*:\s*"(?:create_file|write_file|edit_file|create_folder|delete)"/i.test(reply);
       if (hasAction) {
         onProgress({ expertId, phase: 'writing-code', detail: '编写代码...' });
       }
@@ -1071,40 +1855,28 @@ export async function executePipeline(
   onProgress: (tasks: ExpertTask[]) => void,
   projectName?: string,
   projectId?: number,
+  projectWorkspacePath?: string,
   supervisorApiKey?: string,
   supervisorModel?: string,
-  pendingFollowups?: string[],
+  pendingFollowups?: PipelineFollowup[],
   onSupervisorDecision?: (action: string, reason?: string) => void,
-  onExpertProgress?: (progress: { expertId: string; phase: string; detail: string }) => void
+  onExpertProgress?: (progress: { expertId: string; phase: string; detail: string }) => void,
+  onToolEvent?: (event: ExpertToolEvent) => void,
+  onCommandAuthorization?: (request: ExpertCommandAuthorizationRequest) => Promise<boolean>
 ): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
   const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
   if (!pipeline) return { tasks: [], pipelineId: "" };
 
   currentPipelineId = `pipeline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   activeExpertTasks = [];
+  activeStepExpertIds = [];
   const allResults: ExpertTask[] = [];
-  const completedResults: { name: string; title: string; output: string }[] = [];
+  const completedResults: { expertId: string; name: string; title: string; output: string }[] = [];
+  const blackboard = createBlackboardTask(plan);
+  let lastBlackboardSignature = "";
 
   // 构建步骤的专家列表（根据 plan.expertIds 动态替换）
-  const steps: PipelineStep[] = [];
-  for (const step of pipeline.steps) {
-    let ids = [...step.expertIds];
-
-    // 对于 code-development 的工程师步骤：替换为 plan 指定的实际工程师
-    if (plan.scene === "code-development" && step.expertIds.includes("jiang-qinglan")) {
-      const planEngineers = plan.expertIds.filter((id) =>
-        ["jiang-qinglan", "jiang-yumo", "jiang-subai"].includes(id)
-      );
-      if (planEngineers.length > 0) ids = planEngineers;
-    }
-
-    // 跳过可选步骤（如果 plan 未要求设计）
-    if (step.optional && plan.scene === "code-development" && !plan.requiresDesign) {
-      continue;
-    }
-
-    steps.push({ expertIds: ids, optional: step.optional });
-  }
+  const steps: PipelineStep[] = buildPipelineSteps(plan, pipeline);
 
   // 构建剩余步骤描述列表（供主管中途检查用）
   const buildRemainingDescs = (currentIdx: number): string[] => {
@@ -1120,6 +1892,7 @@ export async function executePipeline(
   let stepIdx = 0;
   while (stepIdx < steps.length) {
     const step = steps[stepIdx];
+    activeStepExpertIds = [...step.expertIds];
     let stepCompleted = false;
 
     if (step.expertIds.length === 1) {
@@ -1138,23 +1911,47 @@ export async function executePipeline(
           error: `${expert?.name || expertId} 未配置 API 密钥，已跳过此步骤`,
           startTime: Date.now(),
           endTime: Date.now(),
+          dispatchWave: stepIdx + 1,
         };
         allResults.push(errTask);
         activeExpertTasks.push(errTask);
         onProgress([...activeExpertTasks]);
         stepCompleted = true;
       } else {
-        const task = await callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId, onExpertProgress);
+        const expertTask = buildTaskDescriptionForExpert(
+          plan.scene,
+          plan.taskDescription,
+          blackboard,
+          expertId,
+          step.expertIds,
+          pendingFollowups
+        );
+        const task = await callExpert(
+          expertId,
+          plan.scene,
+          expertTask.text,
+          completedResults,
+          apiKey,
+          modelResolver(expertId),
+          expertId,
+          undefined,
+          projectName,
+          projectId,
+          plan.promptModuleHints?.[expertId],
+          projectWorkspacePath,
+          onExpertProgress,
+          onToolEvent,
+          onCommandAuthorization
+        );
+        task.dispatchWave = stepIdx + 1;
         allResults.push(task);
         activeExpertTasks.push(task);
+        updateBlackboardFromTask(blackboard, task);
         onProgress([...activeExpertTasks]);
 
         if (task.output) {
-          completedResults.push({
-            name: task.expertName,
-            title: task.expertTitle,
-            output: task.output,
-          });
+          upsertCompletedResult(completedResults, task);
+          markFollowupsConsumed(pendingFollowups, expertTask.followupIds, expertId);
         }
         stepCompleted = true;
       }
@@ -1174,26 +1971,108 @@ export async function executePipeline(
             error: `${expert?.name || expertId} 未配置 API 密钥，已跳过`,
             startTime: Date.now(),
             endTime: Date.now(),
+            dispatchWave: stepIdx + 1,
           };
           return errTask;
         }
-        return callExpert(expertId, plan.taskDescription, completedResults, apiKey, modelResolver(expertId), expertId, undefined, projectName, projectId, onExpertProgress);
+        const expertTask = buildTaskDescriptionForExpert(
+          plan.scene,
+          plan.taskDescription,
+          blackboard,
+          expertId,
+          step.expertIds,
+          pendingFollowups
+        );
+        const task = await callExpert(
+          expertId,
+          plan.scene,
+          expertTask.text,
+          completedResults,
+          apiKey,
+          modelResolver(expertId),
+          expertId,
+          undefined,
+          projectName,
+          projectId,
+          plan.promptModuleHints?.[expertId],
+          projectWorkspacePath,
+          onExpertProgress,
+          onToolEvent,
+          onCommandAuthorization
+        );
+        task.dispatchWave = stepIdx + 1;
+        return { task, followupIds: expertTask.followupIds };
       });
 
       const results = await Promise.all(parallelPromises);
-      for (const task of results) {
+      for (const result of results) {
+        const task = "task" in result ? result.task : result;
+        const followupIds = "followupIds" in result ? result.followupIds : [];
         allResults.push(task);
         activeExpertTasks.push(task);
+        updateBlackboardFromTask(blackboard, task);
         if (task.output) {
-          completedResults.push({
-            name: task.expertName,
-            title: task.expertTitle,
-            output: task.output,
-          });
+          upsertCompletedResult(completedResults, task);
+          markFollowupsConsumed(pendingFollowups, followupIds, task.expertId);
         }
       }
       onProgress([...activeExpertTasks]);
       stepCompleted = true;
+    }
+
+    if (stepCompleted) {
+      await runCurrentStepFollowupRound(
+        plan.scene,
+        plan.taskDescription,
+        blackboard,
+        step.expertIds,
+        completedResults,
+        allResults,
+        pendingFollowups,
+        apiKeyResolver,
+        modelResolver,
+        projectName,
+        projectId,
+        plan.promptModuleHints,
+        projectWorkspacePath,
+        onProgress,
+        onExpertProgress,
+        onToolEvent,
+        onCommandAuthorization
+      );
+    }
+
+    if (plan.scene === "code-development" && stepCompleted) {
+      const signature = [
+        blackboard.requiredFiles.files.length,
+        blackboard.evidence.length,
+        blackboard.patchProposals.length,
+        blackboard.reviewDecisions.length,
+        blackboard.blockers.length,
+      ].join(":");
+      if (signature === lastBlackboardSignature) {
+        blackboard.roundsWithoutProgress++;
+      } else {
+        blackboard.roundsWithoutProgress = 0;
+        lastBlackboardSignature = signature;
+      }
+      if (blackboard.roundsWithoutProgress >= 5) {
+        const blockTask: ExpertTask = {
+          id: `task-${++taskCounter}`,
+          expertId: "blackboard-guard",
+          expertName: "黑板守卫",
+          expertTitle: "协作门禁",
+          status: "error",
+          input: plan.taskDescription,
+          error: "连续三轮没有新增证据、文件清单、文件变更动作或审查进展，已停止当前策略以避免空转。",
+          startTime: Date.now(),
+          endTime: Date.now(),
+        };
+        allResults.push(blockTask);
+        activeExpertTasks.push(blockTask);
+        onProgress([...activeExpertTasks]);
+        break;
+      }
     }
 
     // ===== 主管中途检查（非最后一步且有 supervisorApiKey 时调用）=====
@@ -1202,7 +2081,7 @@ export async function executePipeline(
       const decision = await supervisorMidCheck(
         stepIdx,
         steps.length,
-        plan.taskDescription,
+        plan.scene === "code-development" ? `${plan.taskDescription}${renderBlackboardContext(blackboard)}` : plan.taskDescription,
         completedResults,
         remainingDescs,
         pendingFollowups || [],
@@ -1239,6 +2118,7 @@ export async function executePipeline(
     }
   }
 
+  activeStepExpertIds = [];
   return { tasks: allResults, pipelineId: currentPipelineId };
 }
 
@@ -1249,14 +2129,19 @@ export async function supervisorMidCheck(
   stepIndex: number,
   totalSteps: number,
   taskDescription: string,
-  currentExpertResults: { name: string; title: string; output: string }[],
+  currentExpertResults: { expertId: string; name: string; title: string; output: string }[],
   remainingStepDescs: string[],
-  userFollowups: string[],
+  userFollowups: PipelineFollowup[],
   supervisorApiKey: string,
   supervisorModel: string
 ): Promise<{ action: "continue" | "retry" | "skip-next" | "abort"; reason?: string }> {
   const followupContext = userFollowups.length > 0
-    ? `\n\n【用户中途补充要求】\n${userFollowups.join("；")}`
+    ? `\n\n【用户中途补充要求】\n${userFollowups.map((item) => {
+      const targetText = item.targetExpertIds.length > 0
+        ? ` -> ${item.targetExpertIds.map((id) => getExpertNameLabel(id)).join("、")}`
+        : "";
+      return `${item.message}${targetText}`;
+    }).join("；")}`
     : "";
 
   const resultsSummary = currentExpertResults
@@ -1331,9 +2216,9 @@ export async function supervisorReview(
 
 ## 严格输出规则
 
-1. **仅输出一句不超过50字的自然语言交付语**，描述完成了什么（如"已完成登录页面的重构，修复了3处bug"）。这句话放在最后，不附带任何前缀标题。
+1. **仅输出一句不超过50字的自然语言交付语**，描述完成了什么（如"已完成登录页面重构并写入源码"）。
 
-2. **完整保留所有 [ACTION:CREATE_FILE/WRITE_FILE/EDIT_FILE/CREATE_FOLDER] 标记及其后的代码块**，原样输出。这些是系统执行的指令，不是给用户看的内容，必须一字不差地保留。
+2. 文件变更会由系统直接执行；你不要转述、复写或保留任何 ACTION/ChangeSet/代码块。
 
 3. **严禁以下行为：**
    - 复述、重复、摘要化任何专家已输出的代码内容
@@ -1342,8 +2227,9 @@ export async function supervisorReview(
    - 对代码内容做任何形式的总结、罗列或逐文件说明
    - 提及任何专家的名字、头衔或分工
    - 输出任何以 ### 开头的章节标题
+   - 输出任何 [ACTION:...] 标记或 JSON 代码块
 
-4. **最终输出结构：** ACTION 标记块（如有）→ 一句交付语（≤50字）。中间不留冗长段落。`;
+4. **最终输出结构：** 一句交付语（≤50字）。`;
 
   const summary = expertResults
     .map((r) => {
@@ -1354,7 +2240,7 @@ export async function supervisorReview(
 
   const messages = [
     { role: "user", content: `任务描述：${taskDescription}` },
-    { role: "user", content: `专家工作结果（包含文件操作标记，请保留所有 [ACTION:...] 标记并在最终回复中原样输出）：\n\n${summary}\n\n请审核并综合为最终回复。重要：如果专家输出中包含 [ACTION:CREATE_FILE:...] 或 [ACTION:WRITE_FILE:...] 等文件操作标记，必须在最终回复中完整保留这些标记，否则文件将无法被创建。` },
+    { role: "user", content: `专家工作结果（其中可能包含结构化 ChangeSet 或 ACTION，系统会直接执行对应文件动作）：\n\n${summary}\n\n请审核并综合为最终回复。重要：最终回复只给用户一句自然交付语，不要复写任何代码、JSON 或 ACTION 标记。` },
   ];
 
   // === 配额前置校验（主管）===
@@ -1425,6 +2311,7 @@ ${expertList}
    - 流程：调研员 → [设计师（可选）] → 工程师 → 审查员
    - 工程师从 江青澜（通用）/ 江予墨（前端）/ 江素白（后端）中选择
    - 复杂度较高时设置 requiresDesign=true 引入设计师
+   - 如果用户是在已有网站、网页、代码产物基础上提出修改要求，一律视为增量开发任务，必须选择 code-development，不能只分配 design
    - expertIds 顺序：["jiang-ruoxi", 工程师ID, "jiang-yingqiu"]
 
 2. code-review（代码审查）
@@ -1435,6 +2322,7 @@ ${expertList}
 
 4. design（设计方案）
    - 调研员 + 设计师：expertIds: ["jiang-ruoxi", "jiang-dingchu"]
+   - 仅当用户明确要求“方案/规范/文档”，且不要求直接修改现有产物时，才使用该场景
 
 5. quick-answer（简单问题/闲聊）
    - 无需专家：expertIds: []
@@ -1455,13 +2343,33 @@ ${expertList}
     - 读取/转换/生成文档文件：expertIds: ["jiang-zhilan"]
 
 11. media-creation（媒体创作）
-    - 图像生成/编辑、视频制作、音频处理：expertIds: ["jiang-huaying"]
+    - 图像生成/编辑、音频处理：expertIds: ["jiang-huaying"]
 
-12. research-with-search（需要网络搜索的调研）
+12. video-production（视频创作）
+    - 视频制作，需调研+镜头分段+逐段生成+拼接：expertIds: ["jiang-ruoxi", "jiang-huaying"]
+
+13. research-with-search（需要网络搜索的调研）
     - 需获取最新外部信息时：expertIds: ["jiang-ruoxi"]
 
+【按需能力模块提示】
+你可以额外输出 promptModuleHints，告诉系统某位专家应优先加载哪些能力模块。
+- 只在你有较高把握该专家大概率会用到时才填写；不确定就留空。
+- 只能给与该专家职责相符的模块，不要把视频工作流塞给前端工程师，也不要把文档模块塞给审查员。
+- 可选模块 ID 仅限：
+  - code-tool-primer
+  - web-search-guidance
+  - command-guidance
+  - document-tool-primer
+  - media-tool-primer
+  - video-workflow
+- 示例：
+  "promptModuleHints": {
+    "jiang-ruoxi": ["web-search-guidance"],
+    "jiang-yumo": ["command-guidance"]
+  }
+
 【输出格式】（必须是合法 JSON，不要输出其他内容）
-{"scene":"场景名","taskDescription":"具体任务描述","expertIds":["专家ID1","专家ID2"],"requiresDesign":false}`;
+{"scene":"场景名","taskDescription":"具体任务描述","expertIds":["专家ID1","专家ID2"],"requiresDesign":false,"promptModuleHints":{"专家ID":["模块ID"]}}`;
 }
 
 /** 主管分析用户意图，输出调度计划 */
@@ -1543,16 +2451,70 @@ export async function analyzeFollowupIntent(
   supervisorApiKey: string,
   keyId: string = "supervisor",
   model: string = "deepseek-chat"
-): Promise<{ action: "append" | "new-plan"; plan?: DispatchPlan }> {
+): Promise<{
+  action: "append" | "replace" | "respond" | "respond-and-append" | "respond-and-replace";
+  taskDescription?: string;
+  reply?: string;
+  targetExpertIds?: string[];
+  deliveryMode?: PipelineFollowup["deliveryMode"];
+}> {
+  const progressReport = buildProgressReport();
+  const currentStepSummary = activeStepExpertIds.length > 0
+    ? activeStepExpertIds.map((id) => `- ${id}: ${getExpertNameLabel(id)}`).join("\n")
+    : "- 当前没有可识别的执行中专家";
+  const remainingExpertSummary = currentPlan.expertIds.length > 0
+    ? currentPlan.expertIds.map((id) => `- ${id}: ${getExpertNameLabel(id)}`).join("\n")
+    : "- 当前计划中没有专家";
+  const activeTaskSummary = activeExpertTasks.length > 0
+    ? activeExpertTasks
+      .map((task) => {
+        const status =
+          task.status === "done"
+            ? "已完成"
+            : task.status === "running"
+              ? "执行中"
+              : task.status === "error"
+                ? `失败：${task.error || "未知错误"}`
+                : "等待中";
+        const detail = task.output
+          ? task.output.slice(0, 180)
+          : task.phaseDetail || task.error || task.input.slice(0, 120);
+        return `- ${task.expertId}: ${task.expertName}（${task.expertTitle}）：${status}${detail ? `；${detail}` : ""}`;
+      })
+      .join("\n")
+    : "暂无可用的阶段性结果。";
+
   const prompt = `你是项目主管。当前正在执行任务：
 场景：${currentPlan.scene}
 任务：${currentPlan.taskDescription}
 
-用户发来了新消息：「${followupMessage}」
+当前正在处理的专家：
+${currentStepSummary}
+
+当前任务可继续协作的专家：
+${remainingExpertSummary}
+
+当前进度：
+${progressReport}
+
+阶段性专家信息：
+${activeTaskSummary}
+
+用户发来了中途消息：「${followupMessage}」
 
 判断：
-1. 如果是对当前任务的补充或修改，输出 {"action":"append","taskDescription":"补充说明"}
-2. 如果是完全新的任务，输出 {"action":"new-plan","scene":"场景","taskDescription":"描述","expertIds":[]}
+1. 如果是对当前任务的补充，输出 {"action":"append","taskDescription":"补充说明","targetExpertIds":["专家ID"],"deliveryMode":"current-step|next-relevant|all-remaining"}
+2. 如果用户是在修正错误要求、撤销前述要求或明显改变主意，但仍属于当前这轮工作，输出 {"action":"replace","taskDescription":"更新后的当前任务描述","targetExpertIds":["专家ID"],"deliveryMode":"current-step|next-relevant|all-remaining"}
+3. 如果用户是在询问当前进度、原因、已经发现的问题，主管必须直接回答，输出 {"action":"respond","reply":"直接给用户的话"}
+4. 如果既要先回答用户，又要把补充要求转交给专家，输出 {"action":"respond-and-append","reply":"直接给用户的话","taskDescription":"补充说明","targetExpertIds":["专家ID"],"deliveryMode":"current-step|next-relevant|all-remaining"}
+5. 如果既要先回答用户，又要用新的任务描述覆盖当前方向，输出 {"action":"respond-and-replace","reply":"直接给用户的话","taskDescription":"更新后的当前任务描述","targetExpertIds":["专家ID"],"deliveryMode":"current-step|next-relevant|all-remaining"}
+
+规则：
+- 主管直接和用户对话，不要把用户问题原样丢给子专家。
+- 中途插话一律并入当前流水线，不要输出 new-plan，不要让用户“等这轮结束后再发一次”。
+- 如果当前有正在处理的专家，优先把补充/更正直接交给对应专家，deliveryMode 优先用 current-step。
+- reply 必须是自然中文，基于当前已知进度和专家输出；未知就坦诚说明，不要编造。
+- targetExpertIds 必须从上面列出的专家 ID 中选择；如果影响所有后续专家，可传空数组并用 all-remaining。
 
 仅输出 JSON。`;
 
@@ -1560,7 +2522,7 @@ export async function analyzeFollowupIntent(
   const quotaCheck = checkQuota("supervisor");
   if (!quotaCheck.allowed) {
     displayQuotaBlockMessage(quotaCheck.reason!);
-    return { action: "append" };
+    return { action: "append", taskDescription: followupMessage };
   }
 
   try {
@@ -1594,12 +2556,66 @@ export async function analyzeFollowupIntent(
     }
 
     const parsed = extractJson(reply);
-    if (parsed.action === "new-plan") {
-      return { action: "new-plan", plan: parseDispatchPlan(reply) };
+    const targetExpertIds = Array.isArray(parsed.targetExpertIds)
+      ? (parsed.targetExpertIds as unknown[])
+        .filter((item): item is string => typeof item === "string" && currentPlan.expertIds.includes(item))
+      : [];
+    const deliveryMode = parsed.deliveryMode === "current-step" || parsed.deliveryMode === "all-remaining"
+      ? parsed.deliveryMode
+      : "next-relevant";
+
+    if (parsed.action === "replace") {
+      return {
+        action: "replace",
+        taskDescription: typeof parsed.taskDescription === "string" && parsed.taskDescription.trim()
+          ? parsed.taskDescription.trim()
+          : currentPlan.taskDescription,
+        targetExpertIds,
+        deliveryMode,
+      };
     }
-    return { action: "append" };
+    if (parsed.action === "respond-and-replace") {
+      return {
+        action: "respond-and-replace",
+        reply: typeof parsed.reply === "string" ? parsed.reply.trim() : undefined,
+        taskDescription: typeof parsed.taskDescription === "string" && parsed.taskDescription.trim()
+          ? parsed.taskDescription.trim()
+          : currentPlan.taskDescription,
+        targetExpertIds,
+        deliveryMode,
+      };
+    }
+    if (parsed.action === "respond") {
+      return {
+        action: "respond",
+        reply: typeof parsed.reply === "string" && parsed.reply.trim()
+          ? parsed.reply.trim()
+          : `${progressReport}\n\n如果你想调整目标，我也可以继续转达给后续专家。`,
+      };
+    }
+    if (parsed.action === "respond-and-append") {
+      return {
+        action: "respond-and-append",
+        reply: typeof parsed.reply === "string" && parsed.reply.trim()
+          ? parsed.reply.trim()
+          : `${progressReport}\n\n我也会把你的新增要求继续转达给后续专家。`,
+        taskDescription: typeof parsed.taskDescription === "string" && parsed.taskDescription.trim()
+          ? parsed.taskDescription.trim()
+          : followupMessage,
+        targetExpertIds,
+        deliveryMode,
+      };
+    }
+    return {
+      action: "append",
+      taskDescription: typeof parsed.taskDescription === "string" && parsed.taskDescription.trim()
+        ? parsed.taskDescription.trim()
+        : followupMessage,
+      targetExpertIds,
+      deliveryMode,
+    };
   } catch {
-    return { action: "append" };
+    return { action: "append", taskDescription: followupMessage };
   }
 }
 
@@ -1632,6 +2648,7 @@ export function buildProgressReport(): string {
 /** 清除活跃任务列表（流水线结束后调用） */
 export function clearActiveTasks() {
   activeExpertTasks = [];
+  activeStepExpertIds = [];
 }
 
 // ========== 工具函数 ==========
@@ -1662,15 +2679,26 @@ function parseDispatchPlan(raw: string): DispatchPlan {
   const scene = (parsed.scene as SceneType) || "quick-answer";
   const validScenes: SceneType[] = [
     "code-development", "code-review", "technical-research", "design", "quick-answer",
-    "translation", "writing", "office", "data-analysis", "document-processing", "media-creation", "research-with-search",
+    "translation", "writing", "office", "data-analysis", "document-processing", "media-creation", "video-production", "research-with-search",
   ];
+  const expertIds = Array.isArray(parsed.expertIds)
+    ? (parsed.expertIds as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const rawPromptModuleHints = normalizePromptModuleHintMap(parsed.promptModuleHints);
+  const promptModuleHints: PromptModuleHintMap = {};
+  for (const expertId of expertIds) {
+    const hintModules = rawPromptModuleHints[expertId];
+    if (hintModules && hintModules.length > 0) {
+      promptModuleHints[expertId] = hintModules;
+    }
+  }
+
   return {
     scene: validScenes.includes(scene) ? scene : "quick-answer",
     taskDescription: typeof parsed.taskDescription === "string" ? parsed.taskDescription : "",
-    expertIds: Array.isArray(parsed.expertIds)
-      ? (parsed.expertIds as unknown[]).filter((v): v is string => typeof v === "string")
-      : [],
+    expertIds,
     requiresDesign: parsed.requiresDesign === true,
+    promptModuleHints,
   };
 }
 

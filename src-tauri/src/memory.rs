@@ -50,6 +50,38 @@ fn get_memory_file(project_dir: &Path, memory_type: &str) -> std::path::PathBuf 
     get_memory_dir(project_dir).join(format!("{}.json", memory_type))
 }
 
+fn persist_memory_entries(
+    project_dir: &Path,
+    memory_type: &str,
+    entries: &[MemoryEntry],
+) -> Result<(), String> {
+    let mem_dir = get_memory_dir(project_dir);
+    fs::create_dir_all(&mem_dir).map_err(|e| format!("创建记忆目录失败: {}", e))?;
+
+    let file_path = get_memory_file(project_dir, memory_type);
+    if entries.is_empty() {
+        if file_path.exists() {
+            fs::remove_file(&file_path).map_err(|e| format!("删除记忆文件失败: {}", e))?;
+        }
+        return Ok(());
+    }
+
+    let json = serde_json::to_string_pretty(entries)
+        .map_err(|e| format!("序列化记忆失败: {}", e))?;
+    fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
+    Ok(())
+}
+
+fn touch_memory_entry(project_dir: &Path, memory_type: &str, id: &str) -> Result<(), String> {
+    let mut entries = load_memory_entries(project_dir, memory_type)?;
+    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+        entry.access_count += 1;
+        entry.last_accessed = current_timestamp();
+        persist_memory_entries(project_dir, memory_type, &entries)?;
+    }
+    Ok(())
+}
+
 // ---- 记忆 CRUD ----
 
 /// 保存记忆条目
@@ -57,7 +89,6 @@ pub fn save_memory(project_dir: &Path, entry: &MemoryEntry) -> Result<(), String
     let mem_dir = get_memory_dir(project_dir);
     fs::create_dir_all(&mem_dir).map_err(|e| format!("创建记忆目录失败: {}", e))?;
 
-    let file_path = get_memory_file(project_dir, &entry.memory_type);
     let mut entries = load_memory_entries(project_dir, &entry.memory_type)?;
 
     // 更新或追加
@@ -76,9 +107,7 @@ pub fn save_memory(project_dir: &Path, entry: &MemoryEntry) -> Result<(), String
         entries.truncate(MAX_ENTRIES_PER_TYPE);
     }
 
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| format!("序列化记忆失败: {}", e))?;
-    fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
+    persist_memory_entries(project_dir, &entry.memory_type, &entries)?;
 
     Ok(())
 }
@@ -115,10 +144,7 @@ pub fn delete_memory(project_dir: &Path, memory_type: &str, id: &str) -> Result<
     let after = entries.len();
 
     if before != after {
-        let file_path = get_memory_file(project_dir, memory_type);
-        let json = serde_json::to_string_pretty(&entries)
-            .map_err(|e| format!("序列化记忆失败: {}", e))?;
-        fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
+        persist_memory_entries(project_dir, memory_type, &entries)?;
         Ok(true)
     } else {
         Ok(false)
@@ -174,8 +200,34 @@ pub fn search_memories(
         return Ok(vec![]);
     }
 
+    let limit = query.limit.max(1).min(1000);
+    let trimmed_query = query.query_text.trim();
+    if trimmed_query.is_empty() {
+        let mut sorted = filtered;
+        sorted.sort_by(|a, b| {
+            b.last_accessed
+                .cmp(&a.last_accessed)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        });
+
+        let results: Vec<MemorySearchResult> = sorted
+            .into_iter()
+            .take(limit)
+            .map(|entry| MemorySearchResult {
+                entry: entry.clone(),
+                score: 1.0,
+            })
+            .collect();
+
+        for result in &results {
+            let _ = touch_memory_entry(project_dir, &result.entry.memory_type, &result.entry.id);
+        }
+
+        return Ok(results);
+    }
+
     // 3. 对查询文本分词
-    let query_tokens: HashSet<String> = tfidf::tokenize(&query.query_text)
+    let query_tokens: HashSet<String> = tfidf::tokenize(trimmed_query)
         .into_iter()
         .collect();
 
@@ -235,7 +287,6 @@ pub fn search_memories(
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // 6. 返回 Top-N
-    let limit = query.limit.max(1).min(20);
     let results: Vec<MemorySearchResult> = scored
         .into_iter()
         .take(limit)
@@ -244,6 +295,10 @@ pub fn search_memories(
             score,
         })
         .collect();
+
+    for result in &results {
+        let _ = touch_memory_entry(project_dir, &result.entry.memory_type, &result.entry.id);
+    }
 
     Ok(results)
 }
@@ -280,9 +335,7 @@ pub fn promote_ephemeral_to_working(project_dir: &Path) -> Result<usize, String>
     if remaining.is_empty() {
         let _ = fs::remove_file(&file_path);
     } else {
-        let json = serde_json::to_string_pretty(&remaining)
-            .map_err(|e| format!("序列化记忆失败: {}", e))?;
-        fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
+        persist_memory_entries(project_dir, "ephemeral", &remaining)?;
     }
 
     Ok(promoted)
@@ -321,9 +374,7 @@ pub fn consolidate_working_to_longterm(project_dir: &Path) -> Result<usize, Stri
     if remaining.is_empty() {
         let _ = fs::remove_file(&file_path);
     } else {
-        let json = serde_json::to_string_pretty(&remaining)
-            .map_err(|e| format!("序列化记忆失败: {}", e))?;
-        fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
+        persist_memory_entries(project_dir, "working", &remaining)?;
     }
 
     Ok(consolidated)
@@ -410,4 +461,105 @@ fn is_common_stopword(word: &str) -> bool {
     ].iter().copied().collect();
 
     stopwords.contains(word.to_lowercase().as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_project_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ai_experts_memory_{}_{}", name, random_suffix()));
+        fs::create_dir_all(&dir).expect("create temp project dir");
+        dir
+    }
+
+    fn make_entry(id: &str, memory_type: &str, content: &str, created_at: i64) -> MemoryEntry {
+        MemoryEntry {
+            id: id.to_string(),
+            project_id: 1,
+            expert_id: "jiang-qinglan".to_string(),
+            memory_type: memory_type.to_string(),
+            content: content.to_string(),
+            keywords: extract_keywords(content),
+            context_summary: generate_summary(content),
+            created_at,
+            access_count: 0,
+            last_accessed: created_at,
+        }
+    }
+
+    #[test]
+    fn search_memories_lists_entries_for_blank_query_and_touches_access_stats() {
+        let dir = temp_project_dir("blank_query");
+        let now = current_timestamp();
+
+        save_memory(
+            &dir,
+            &make_entry("working-1", "working", "修复记忆检索与打断转达逻辑", now - 30),
+        )
+        .expect("save working memory");
+        save_memory(
+            &dir,
+            &make_entry("longterm-1", "longterm", "专家团会把主管结论沉淀为长期知识", now - 10),
+        )
+        .expect("save longterm memory");
+
+        let results = search_memories(
+            &dir,
+            &MemoryQuery {
+                project_id: 1,
+                expert_id: None,
+                query_text: "".to_string(),
+                memory_type: None,
+                limit: 10,
+            },
+        )
+        .expect("search memories");
+
+        assert_eq!(results.len(), 2);
+
+        let touched = load_memory_entries(&dir, "longterm").expect("reload longterm");
+        let longterm = touched.iter().find(|e| e.id == "longterm-1").expect("find longterm");
+        assert_eq!(longterm.access_count, 1);
+        assert!(longterm.last_accessed >= now);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lifecycle_promotes_ephemeral_and_consolidates_old_working_memory() {
+        let dir = temp_project_dir("lifecycle");
+        let now = current_timestamp();
+
+        let mut ephemeral = make_entry(
+            "ephemeral-1",
+            "ephemeral",
+            "这是一次足够长的专家输出，用于触发工作记忆提升。",
+            now - 60,
+        );
+        ephemeral.access_count = 2;
+        save_memory(&dir, &ephemeral).expect("save ephemeral");
+
+        let mut working = make_entry(
+            "working-legacy",
+            "working",
+            "跨会话稳定知识：主管需要把专家结论转达给用户。",
+            now - 15 * 86400,
+        );
+        working.access_count = 6;
+        save_memory(&dir, &working).expect("save working");
+
+        let summary = run_memory_lifecycle(&dir).expect("run lifecycle");
+        assert!(summary.contains("ephemeral -> working"));
+        assert!(summary.contains("working -> longterm"));
+
+        let working_entries = load_memory_entries(&dir, "working").expect("reload working");
+        assert!(working_entries.iter().any(|e| e.id == "working-ephemeral-1"));
+
+        let longterm_entries = load_memory_entries(&dir, "longterm").expect("reload longterm");
+        assert!(longterm_entries.iter().any(|e| e.id == "longterm-working-legacy"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

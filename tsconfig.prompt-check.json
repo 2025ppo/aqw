@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": ".prompt-check-dist",
+    "rootDir": ".",
+    "noEmit": false
+  },
+  "include": [
+    "src/prompt-modules.ts",
+    "scripts/prompt-module-replay.ts"
+  ]
+}

@@ -139,14 +139,13 @@ pub fn build_index(project_dir: &PathBuf) -> Result<IndexStatus, String> {
 
     // 5. 持久化到 .xt/perceptual_index/（紧凑 JSON + 流式写入）
     let index_dir = project_dir.join(".xt").join("perceptual_index");
-    fs::create_dir_all(&index_dir)
-        .map_err(|e| format!("创建索引目录失败: {}", e))?;
+    fs::create_dir_all(&index_dir).map_err(|e| format!("创建索引目录失败: {}", e))?;
 
     // 保存 chunks.json（紧凑格式，流式写入避免内存翻倍）
     let chunks_path = index_dir.join("chunks.json");
     {
-        let file = fs::File::create(&chunks_path)
-            .map_err(|e| format!("创建分段文件失败: {}", e))?;
+        let file =
+            fs::File::create(&chunks_path).map_err(|e| format!("创建分段文件失败: {}", e))?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, &all_chunks)
             .map_err(|e| format!("序列化分段数据失败: {}", e))?;
@@ -155,8 +154,8 @@ pub fn build_index(project_dir: &PathBuf) -> Result<IndexStatus, String> {
     // 保存 tfidf.json（紧凑格式）
     let tfidf_path = index_dir.join("tfidf.json");
     {
-        let file = fs::File::create(&tfidf_path)
-            .map_err(|e| format!("创建TF-IDF文件失败: {}", e))?;
+        let file =
+            fs::File::create(&tfidf_path).map_err(|e| format!("创建TF-IDF文件失败: {}", e))?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, &tfidf_data)
             .map_err(|e| format!("序列化TF-IDF数据失败: {}", e))?;
@@ -165,11 +164,9 @@ pub fn build_index(project_dir: &PathBuf) -> Result<IndexStatus, String> {
     // 保存 graph.json（紧凑格式）
     let graph_path = index_dir.join("graph.json");
     {
-        let file = fs::File::create(&graph_path)
-            .map_err(|e| format!("创建图谱文件失败: {}", e))?;
+        let file = fs::File::create(&graph_path).map_err(|e| format!("创建图谱文件失败: {}", e))?;
         let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, &graph)
-            .map_err(|e| format!("序列化图谱数据失败: {}", e))?;
+        serde_json::to_writer(writer, &graph).map_err(|e| format!("序列化图谱数据失败: {}", e))?;
     }
 
     eprintln!("[INDEX] 索引持久化完成");
@@ -234,22 +231,19 @@ pub fn search(project_dir: &PathBuf, query: &str) -> Result<Vec<SearchResult>, S
     // 加载索引数据
     let chunks: Vec<CodeChunk> = {
         let path = index_dir.join("chunks.json");
-        let json = fs::read_to_string(&path)
-            .map_err(|_| "索引未构建，请先构建索引".to_string())?;
+        let json = fs::read_to_string(&path).map_err(|_| "索引未构建，请先构建索引".to_string())?;
         serde_json::from_str(&json).map_err(|e| format!("解析分段数据失败: {}", e))?
     };
 
     let tfidf_data: tfidf::TfIdfData = {
         let path = index_dir.join("tfidf.json");
-        let json = fs::read_to_string(&path)
-            .map_err(|_| "索引未构建，请先构建索引".to_string())?;
+        let json = fs::read_to_string(&path).map_err(|_| "索引未构建，请先构建索引".to_string())?;
         serde_json::from_str(&json).map_err(|e| format!("解析TF-IDF数据失败: {}", e))?
     };
 
     let graph: Vec<GraphEdge> = {
         let path = index_dir.join("graph.json");
-        let json = fs::read_to_string(&path)
-            .map_err(|_| "索引未构建，请先构建索引".to_string())?;
+        let json = fs::read_to_string(&path).map_err(|_| "索引未构建，请先构建索引".to_string())?;
         serde_json::from_str(&json).map_err(|e| format!("解析图谱数据失败: {}", e))?
     };
 
@@ -303,7 +297,11 @@ pub fn search(project_dir: &PathBuf, query: &str) -> Result<Vec<SearchResult>, S
         .collect();
 
     // 按 final_score 降序排序
-    all_results.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
+    all_results.sort_by(|a, b| {
+        b.final_score
+            .partial_cmp(&a.final_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // 限制返回前 10 条
     all_results.truncate(10);
@@ -314,9 +312,13 @@ pub fn search(project_dir: &PathBuf, query: &str) -> Result<Vec<SearchResult>, S
 /// 搜索并返回格式化文本（供 AI 上下文使用）
 pub fn search_formatted(project_dir: &PathBuf, query: &str) -> Result<String, String> {
     let results = search(project_dir, query)?;
+    let files = scan_code_files(project_dir).unwrap_or_default();
 
     if results.is_empty() {
-        return Ok("(未找到相关代码段)".to_string());
+        return Ok(format!(
+            "(未找到相关代码段)\n\n{}",
+            build_coverage_report(project_dir, &files, &[], query)
+        ));
     }
 
     let mut output = String::from("[项目代码参考 - 以下是与当前问题最相关的代码段]\n\n");
@@ -336,8 +338,105 @@ pub fn search_formatted(project_dir: &PathBuf, query: &str) -> Result<String, St
         }
     }
 
-    output.push_str("---\n请基于以上代码参考回答用户问题。");
+    let matched_paths: Vec<String> = results.iter().map(|r| r.chunk.file_path.clone()).collect();
+    output.push_str("---\n");
+    output.push_str(&build_coverage_report(
+        project_dir,
+        &files,
+        &matched_paths,
+        query,
+    ));
+    output.push_str("\n请基于以上代码参考回答用户问题；如果覆盖报告显示可能遗漏，请明确把相关文件加入必检文件清单，不要假装已经检查。");
     Ok(output)
+}
+
+fn relative_file_list(project_dir: &PathBuf, files: &[PathBuf]) -> Vec<String> {
+    files
+        .iter()
+        .filter_map(|p| p.strip_prefix(project_dir).ok())
+        .map(|p| p.to_string_lossy().replace("\\", "/"))
+        .collect()
+}
+
+fn filter_candidates(paths: &[String], predicates: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|p| {
+            let lower = p.to_lowercase();
+            predicates.iter().any(|needle| lower.contains(needle))
+        })
+        .take(20)
+        .cloned()
+        .collect()
+}
+
+fn build_coverage_report(
+    project_dir: &PathBuf,
+    files: &[PathBuf],
+    matched_paths: &[String],
+    query: &str,
+) -> String {
+    let relative_paths = relative_file_list(project_dir, files);
+    let entry_candidates = filter_candidates(
+        &relative_paths,
+        &[
+            "main.", "index.", "app.", "server.", "lib.", "mod.rs", "routes", "router",
+        ],
+    );
+    let test_candidates = filter_candidates(
+        &relative_paths,
+        &[
+            ".test.",
+            ".spec.",
+            "__tests__",
+            "/tests/",
+            "\\tests\\",
+            "test_",
+            "_test.",
+        ],
+    );
+    let config_candidates = filter_candidates(
+        &relative_paths,
+        &[
+            "package.json",
+            "cargo.toml",
+            "tsconfig",
+            "vite.config",
+            "tauri.conf",
+            "config.",
+            ".toml",
+            ".yaml",
+            ".yml",
+        ],
+    );
+    let matched_set: HashSet<&str> = matched_paths.iter().map(|s| s.as_str()).collect();
+    let unmatched_candidates: Vec<String> = relative_paths
+        .iter()
+        .filter(|p| !matched_set.contains(p.as_str()))
+        .take(20)
+        .cloned()
+        .collect();
+
+    let large_repo_note = if relative_paths.len() >= MAX_INDEXABLE_FILES {
+        format!(
+            "\n- 大仓库提示：索引文件数达到上限 {}，必须使用分页/分批检索继续收集证据。",
+            MAX_INDEXABLE_FILES
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        "[索引覆盖报告]\n- 查询: {}\n- 可索引文件数: {}\n- 本次命中文件数: {}\n- 入口候选: {}\n- 测试候选: {}\n- 配置候选: {}\n- 未命中样例: {}{}\n",
+        query,
+        relative_paths.len(),
+        matched_set.len(),
+        if entry_candidates.is_empty() { "无".to_string() } else { entry_candidates.join(", ") },
+        if test_candidates.is_empty() { "无".to_string() } else { test_candidates.join(", ") },
+        if config_candidates.is_empty() { "无".to_string() } else { config_candidates.join(", ") },
+        if unmatched_candidates.is_empty() { "无".to_string() } else { unmatched_candidates.join(", ") },
+        large_repo_note
+    )
 }
 
 // ---- 辅助函数 ----
@@ -374,26 +473,55 @@ fn scan_dir(base: &PathBuf, current: &PathBuf, files: &mut Vec<PathBuf>) -> Resu
             // 跳过常见无关目录（覆盖主流语言/工具链）
             let skip_dirs: HashSet<&str> = [
                 // JS/TS 生态
-                "node_modules", "dist", ".next", "coverage", "bower_components",
-                "jspm_packages", ".parcel-cache", ".turbo",
+                "node_modules",
+                "dist",
+                ".next",
+                "coverage",
+                "bower_components",
+                "jspm_packages",
+                ".parcel-cache",
+                ".turbo",
                 // Rust
                 "target",
                 // Python
-                "__pycache__", "venv", ".venv", "wheels", "eggs",
+                "__pycache__",
+                "venv",
+                ".venv",
+                "wheels",
+                "eggs",
                 // Java/Kotlin/Gradle
-                ".gradle", "gradle", "build",
+                ".gradle",
+                "gradle",
+                "build",
                 // .NET/C#/C++
-                "obj", "bin", "out", "packages", ".nuget",
+                "obj",
+                "bin",
+                "out",
+                "packages",
+                ".nuget",
                 // iOS/macOS
-                "Pods", "DerivedData",
+                "Pods",
+                "DerivedData",
                 // Dart/Flutter
-                ".dart_tool", ".pub-cache",
+                ".dart_tool",
+                ".pub-cache",
                 // IDE/编辑器
-                ".idea", ".vs", ".vscode",
+                ".idea",
+                ".vs",
+                ".vscode",
                 // 通用
-                ".git", ".cache", ".terraform", ".serverless",
-                "logs", "tmp", "temp", "CDN",
-            ].iter().copied().collect();
+                ".git",
+                ".cache",
+                ".terraform",
+                ".serverless",
+                "logs",
+                "tmp",
+                "temp",
+                "CDN",
+            ]
+            .iter()
+            .copied()
+            .collect();
             if skip_dirs.contains(name.as_str()) {
                 continue;
             }
@@ -409,10 +537,9 @@ fn scan_dir(base: &PathBuf, current: &PathBuf, files: &mut Vec<PathBuf>) -> Resu
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             let indexable_exts = [
-                "ts", "tsx", "js", "jsx", "rs", "py", "md", "json",
-                "html", "css", "scss", "less", "go", "java", "kt",
-                "swift", "c", "cpp", "h", "hpp", "yaml", "yml", "toml",
-                "xml", "sql", "sh", "bash", "ps1", "txt", "cfg", "ini",
+                "ts", "tsx", "js", "jsx", "rs", "py", "md", "json", "html", "css", "scss", "less",
+                "go", "java", "kt", "swift", "c", "cpp", "h", "hpp", "yaml", "yml", "toml", "xml",
+                "sql", "sh", "bash", "ps1", "txt", "cfg", "ini",
             ];
             if indexable_exts.contains(&ext.as_str()) {
                 // 文件大小预检查，跳过超大文件（minified/lock/生成文件等）

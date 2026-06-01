@@ -11,6 +11,7 @@ import {
   supervisorReview,
   resolveExpertApiKey,
   buildProgressReport,
+  buildDispatchWaves,
   analyzeFollowupIntent,
   getAvailableExpertInfos,
   recordTokenUsage,
@@ -22,14 +23,24 @@ import {
   getTotalUsage,
   getExpertPerformance,
   type DispatchPlan,
+  type ExpertCommandAuthorizationRequest,
+  type ExpertToolEvent,
   type ExpertTask,
+  type PipelineFollowup,
   type TimeRange,
   type ExpertPerformance,
 } from "./expert-router";
-import { saveUserIntentMemory, searchMemory, deleteMemory, getMemoryStats } from "./memory-store";
+import {
+  saveUserIntentMemory,
+  searchMemory,
+  deleteMemory,
+  getMemoryStats,
+  buildGeneralMemoryContext,
+  runMemoryLifecycle,
+} from "./memory-store";
+import { bootstrapPromptModuleHistoryFromSessions } from "./prompt-module-history";
 import "./video-canvas";
 import "./data-analysis";
-import "./image-canvas";
 
 // 引用以避免 TS6133 未使用警告（专家表现面板后续将使用）
 void getExpertPerformance;
@@ -41,6 +52,17 @@ interface TreeEntry {
   path: string;
   type: "folder" | "file";
   children: TreeEntry[] | null;
+}
+
+interface ChangeSet {
+  operation: "create_folder" | "create_file" | "write_file" | "edit_file" | "delete";
+  path: string;
+  searchText?: string;
+  replaceText?: string;
+  content?: string;
+  rationale?: string;
+  risk?: string;
+  allowOverwrite?: boolean;
 }
 
 // ========== 词元跟踪数据类型 ==========
@@ -194,9 +216,9 @@ window.addEventListener("DOMContentLoaded", () => {
   log("INFO", "drag-drop listener registered");
 
   // 悬浮按钮切换激活状态
-  document.querySelectorAll(".floating-btn").forEach((btn) => {
+  document.querySelectorAll(".view-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
     });
   });
@@ -1208,8 +1230,47 @@ window.addEventListener("chat-changed", ((e: CustomEvent) => {
 // 每个项目下可以有多个对话历史（对话一、对话二...）
 interface ChatMessage {
   /** expert-tasks 表示一组专家任务卡片快照（content 为 JSON 序列化的 ExpertTask[]） */
-  role: "user" | "assistant" | "expert-tasks";
+  role: "user" | "assistant" | "expert-tasks" | "tool-event" | "command-auth";
   content: string;
+}
+
+interface ToolEventMessage {
+  kind: "web-search" | "command";
+  createdAt: number;
+  initiator: {
+    expertId: string;
+    expertName: string;
+    expertTitle: string;
+  };
+  reason: string;
+  query?: string;
+  command?: string;
+  workingDir?: string;
+  authMode?: "auto" | "restricted" | "admin";
+  status: "success" | "blocked" | "denied" | "error";
+  safetyReason?: string;
+  results?: Array<{ title: string; url: string; snippet: string }>;
+  output?: {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  };
+  error?: string;
+}
+
+interface CommandAuthMessage {
+  id: string;
+  createdAt: number;
+  initiator: {
+    expertName: string;
+    expertTitle: string;
+  };
+  command: string;
+  workingDir: string;
+  reason: string;
+  authMode: "auto" | "restricted" | "admin";
+  safetyReason?: string;
+  status: "pending" | "approved" | "denied";
 }
 
 interface ChatSession {
@@ -1243,7 +1304,9 @@ let perceptualIndexBuilding = false;
 // ========== 专家团流水线状态 ==========
 let pipelineRunning = false;
 let currentDispatchPlan: DispatchPlan | null = null;
-let pendingFollowups: string[] = [];
+let pendingFollowups: PipelineFollowup[] = [];
+let currentMemoryFilter: "all" | "ephemeral" | "working" | "longterm" = "all";
+const pendingCommandAuthResolvers = new Map<string, (approved: boolean) => void>();
 
 document.addEventListener("DOMContentLoaded", async () => {
   // 初始化时加载密钥池和专家团数据（供画布分析和消息发送使用）
@@ -1276,6 +1339,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       chatMessages.appendChild(errorNotice);
     }
   }
+  await sidebar.ready;
 
   const activeChat = sidebar.getActiveChat();
   if (activeChat) {
@@ -1319,17 +1383,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     const project = sidebar.getChats().find((c) => c.id === projectId);
     if (!project) return;
 
+    const bootstrapPromptModuleHistory = async (sessions: ChatSession[]) => {
+      if (sessions.length === 0) return;
+      try {
+        const report = await bootstrapPromptModuleHistoryFromSessions(project.name, sessions);
+        if (report.imported > 0) {
+          log(
+            "INFO",
+            `提示模块历史已从旧会话回灌：新增 ${report.imported} 条，当前总计 ${report.total} 条`
+          );
+        }
+      } catch (e) {
+        log("WARN", `提示模块历史回灌失败: ${e}`);
+      }
+    };
+
     try {
       // 优先从项目文件 .xt/chat_sessions.json 加载（项目级持久化）
       const fileData = await invoke<string>("load_chat_sessions", {
         projectName: project.name,
       });
       if (fileData && fileData !== "null") {
-        const sessions: ChatSession[] = JSON.parse(fileData);
+        const sessions = normalizeSessions(projectId, JSON.parse(fileData));
         if (sessions.length > 0) {
           projectSessions.set(projectId, sessions);
-          const maxId = Math.max(...sessions.map((s) => s.id), 0);
-          if (maxId >= nextSessionId) nextSessionId = maxId + 1;
+          await bootstrapPromptModuleHistory(sessions);
+          await persistSessionsToFile(projectId);
           log("INFO", `从项目文件加载了 ${sessions.length} 个会话`);
           return;
         }
@@ -1341,11 +1420,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 回退：从 SQLite 数据库加载
     try {
       const data = await invoke<string>("db_load_project_data", { projectId });
-      const sessions: ChatSession[] = JSON.parse(data);
+      const sessions = normalizeSessions(projectId, JSON.parse(data));
       if (sessions.length > 0) {
         projectSessions.set(projectId, sessions);
-        const maxId = Math.max(...sessions.map((s) => s.id), 0);
-        if (maxId >= nextSessionId) nextSessionId = maxId + 1;
+        await bootstrapPromptModuleHistory(sessions);
         log("INFO", `从数据库加载了 ${sessions.length} 个会话`);
         // 迁移到项目文件
         await invoke("save_chat_sessions", {
@@ -1365,6 +1443,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         messagesEl.appendChild(errorNotice);
       }
     }
+
+    if (!projectSessions.has(projectId)) {
+      projectSessions.set(projectId, []);
+    }
   }
 
   // 保存会话消息到数据库
@@ -1373,6 +1455,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!sessions) return;
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return;
+
+    try {
+      await persistSessionsToFile(projectId);
+    } catch (e) {
+      log("ERROR", `保存会话到项目文件失败: ${e}`);
+    }
 
     try {
       // 先清除该会话的旧消息，再重新插入（避免重复）
@@ -1384,26 +1472,166 @@ document.addEventListener("DOMContentLoaded", async () => {
           content: msg.content,
         });
       }
-
-      // 持久化到项目文件
-      await persistSessionsToFile(projectId);
     } catch (e) {
-      log("ERROR", `保存会话消息失败: ${e}`);
+      log("WARN", `保存会话到数据库失败，项目文件已保存: ${e}`);
     }
   }
 
   // 获取当前项目的所有会话
   function getSessions(projectId: number): ChatSession[] {
     if (!projectSessions.has(projectId)) {
-      // 默认创建一个会话
-      const session: ChatSession = {
-        id: nextSessionId++,
-        name: "对话 1",
-        messages: [],
-      };
-      projectSessions.set(projectId, [session]);
+      projectSessions.set(projectId, []);
     }
     return projectSessions.get(projectId)!;
+  }
+
+  function normalizeSessions(projectId: number, rawSessions: unknown): ChatSession[] {
+    if (!Array.isArray(rawSessions)) return [];
+
+    const rawIds = rawSessions
+      .map((s: any) => Number(s?.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    const maxId = Math.max(0, ...rawIds);
+    if (maxId >= nextSessionId) nextSessionId = maxId + 1;
+
+    const usedIds = new Set<number>();
+    const normalized: ChatSession[] = [];
+
+    for (const raw of rawSessions as any[]) {
+      let id = Number(raw?.id);
+      if (!Number.isInteger(id) || id <= 0 || usedIds.has(id)) {
+        while (usedIds.has(nextSessionId)) nextSessionId++;
+        id = nextSessionId++;
+      }
+      usedIds.add(id);
+
+      const messages = Array.isArray(raw?.messages)
+        ? raw.messages.filter((msg: any) =>
+          (msg?.role === "user"
+              || msg?.role === "assistant"
+              || msg?.role === "expert-tasks"
+              || msg?.role === "tool-event"
+              || msg?.role === "command-auth")
+            && typeof msg?.content === "string"
+          )
+        : [];
+
+      normalized.push({
+        id,
+        name: typeof raw?.name === "string" && raw.name.trim()
+          ? raw.name
+          : `对话 ${normalized.length + 1}`,
+        messages,
+      });
+    }
+
+    if (normalized.length !== rawSessions.length || new Set(rawIds).size !== rawIds.length) {
+      log("WARN", `项目 ${projectId} 的会话数据存在重复或异常 ID，已自动修复`);
+    }
+
+    return normalized;
+  }
+
+  function summarizeExpertTasksMessage(content: string): string {
+    try {
+      const tasks = JSON.parse(content) as Array<Partial<ExpertTask>>;
+      if (!Array.isArray(tasks) || tasks.length === 0) {
+        return "专家协作快照：暂无可用进展。";
+      }
+      const lines = tasks.slice(-6).map((task) => {
+        const status =
+          task.status === "done"
+            ? "已完成"
+            : task.status === "running"
+              ? "执行中"
+              : task.status === "error"
+                ? `失败：${task.error || "未知错误"}`
+                : "等待中";
+        const detail = (task.output || task.error || task.input || "").toString().slice(0, 120);
+        return `- ${task.expertName || task.expertId || "未知专家"}（${task.expertTitle || "未知角色"}）：${status}${detail ? `；${detail}` : ""}`;
+      });
+      return `专家协作快照：\n${lines.join("\n")}`;
+    } catch {
+      return "专家协作快照：解析失败。";
+    }
+  }
+
+  function summarizeToolEventMessage(content: string): string {
+    try {
+      const event = JSON.parse(content) as ToolEventMessage;
+      const initiator = `${event.initiator.expertName}（${event.initiator.expertTitle}）`;
+      const status =
+        event.status === "success"
+          ? "成功"
+          : event.status === "denied"
+            ? "被拒绝"
+            : event.status === "blocked"
+              ? "受限"
+              : "失败";
+      if (event.kind === "web-search") {
+        return `工具调用记录：${initiator} 因“${event.reason}”发起网络搜索「${event.query || ""}」，结果：${status}。`;
+      }
+      const authLabel =
+        event.authMode === "admin"
+          ? "管理员命令"
+          : event.authMode === "restricted"
+            ? "受限命令"
+            : "命令";
+      const exitCode = typeof event.output?.exitCode === "number" ? `，退出码 ${event.output.exitCode}` : "";
+      return `工具调用记录：${initiator} 因“${event.reason}”发起${authLabel}「${event.command || ""}」，结果：${status}${exitCode}。`;
+    } catch {
+      return "工具调用记录：解析失败。";
+    }
+  }
+
+  function summarizeCommandAuthMessage(content: string): string {
+    try {
+      const auth = JSON.parse(content) as CommandAuthMessage;
+      const initiator = `${auth.initiator.expertName}（${auth.initiator.expertTitle}）`;
+      const status =
+        auth.status === "approved"
+          ? "用户已同意"
+          : auth.status === "denied"
+            ? "用户已拒绝"
+            : "等待用户处理";
+      return `命令授权请求：${initiator} 请求执行命令「${auth.command}」，状态：${status}。`;
+    } catch {
+      return "命令授权请求：解析失败。";
+    }
+  }
+
+  function toApiMessage(message: ChatMessage): { role: "user" | "assistant"; content: string } | null {
+    if (message.role === "user" || message.role === "assistant") {
+      return {
+        role: message.role,
+        content: message.content,
+      };
+    }
+    if (message.role === "expert-tasks") {
+      return {
+        role: "assistant",
+        content: summarizeExpertTasksMessage(message.content),
+      };
+    }
+    if (message.role === "tool-event") {
+      return {
+        role: "assistant",
+        content: summarizeToolEventMessage(message.content),
+      };
+    }
+    if (message.role === "command-auth") {
+      return {
+        role: "assistant",
+        content: summarizeCommandAuthMessage(message.content),
+      };
+    }
+    return null;
+  }
+
+  function buildApiMessages(messages: ChatMessage[]): Array<{ role: "user" | "assistant"; content: string }> {
+    return messages
+      .map(toApiMessage)
+      .filter((message): message is { role: "user" | "assistant"; content: string } => message !== null);
   }
 
   // 将项目的所有会话持久化到 .xt/chat_sessions.json
@@ -1444,7 +1672,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         projectId,
         name: session.name,
       });
-      session.id = dbSessionId; // 使用数据库返回的ID
+      const dbIdConflicts = sessions.some((s) => s !== session && s.id === dbSessionId);
+      if (!dbIdConflicts) {
+        session.id = dbSessionId;
+      }
     } catch (e) {
       log("ERROR", `保存会话到数据库失败: ${e}`);
     }
@@ -1691,15 +1922,65 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 如果流水线正在执行：将新消息作为增量提交
     if (pipelineRunning) {
       showLoading("主管正在分析补充要求...");
-      pendingFollowups.push(text);
       try {
-        await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor", supervisorModel);
-        const reportMsg = `已收到新消息。当前专家团执行中，我已将您的补充要求转达给相关专家。\n\n${buildProgressReport()}`;
-        session.messages.push({ role: "assistant", content: reportMsg });
+        const decision = await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor", supervisorModel);
+        const followupExperts = (decision.targetExpertIds || [])
+          .map((id) => getAvailableExpertInfos().find((item) => item.id === id)?.name || id);
+        const followupTargetText = followupExperts.length > 0
+          ? `我会直接转给 ${followupExperts.join("、")}。`
+          : "我会直接并入当前这轮专家协作。";
+        const appendFollowup = (message: string, resetTask = false) => {
+          if (resetTask && currentDispatchPlan) {
+            currentDispatchPlan.taskDescription = message;
+            pendingFollowups.length = 0;
+          }
+          pendingFollowups.push({
+            id: `followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            message,
+            targetExpertIds: decision.targetExpertIds || [],
+            deliveryMode: decision.deliveryMode || "next-relevant",
+            consumedBy: [],
+            createdAt: Date.now(),
+          });
+        };
+        let reply = "";
+
+        switch (decision.action) {
+          case "respond":
+            reply = decision.reply || `${buildProgressReport()}\n\n我会继续盯着当前这轮执行。`;
+            break;
+          case "replace":
+            appendFollowup(decision.taskDescription || text, true);
+            reply = `我已按你的最新意思改写当前任务目标，并会直接同步给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            break;
+          case "respond-and-append":
+            appendFollowup(decision.taskDescription || text);
+            reply = decision.reply || `我已经理解你的插话，并会直接转给对应专家处理。${followupTargetText}\n\n${buildProgressReport()}`;
+            break;
+          case "respond-and-replace":
+            appendFollowup(decision.taskDescription || text, true);
+            reply = decision.reply || `我已按你的更正更新当前任务方向，并会直接同步给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            break;
+          case "append":
+          default:
+            appendFollowup(decision.taskDescription || text);
+            reply = `已收到新消息。当前专家团执行中，我会直接把这条补充交给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            break;
+        }
+
+        session.messages.push({ role: "assistant", content: reply });
         await saveSessionToDb(currentSessionId, currentProjectId);
       } catch (e) {
         log("WARN", `增量意图分析失败: ${e}`);
-        session.messages.push({ role: "assistant", content: "已记录您的补充要求，专家团执行完毕后将一并处理。" });
+        pendingFollowups.push({
+          id: `followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          message: text,
+          targetExpertIds: [],
+          deliveryMode: "all-remaining",
+          consumedBy: [],
+          createdAt: Date.now(),
+        });
+        session.messages.push({ role: "assistant", content: "已记录你的补充要求，我会继续并入当前这轮专家协作里处理。" });
       } finally {
         hideLoading();
         renderMessages();
@@ -1711,43 +1992,62 @@ document.addEventListener("DOMContentLoaded", async () => {
     showLoading("主管正在规划专家调度...");
     let dispatchPlan: DispatchPlan;
     try {
-      // 感知索引上下文
-      let searchContext = "";
-      if (perceptualIndexReady) {
-        const searchProject = sidebar.getActiveChat();
-        if (searchProject) {
-          try {
-            searchContext = await invoke<string>("perceptual_index_search", {
-              projectName: searchProject.name,
-              query: text,
-            });
-          } catch (e) { log("WARN", `感知索引检索失败: ${e}`); }
-        }
-      }
-
-      // 构建对话历史上下文（排除当前用户消息，避免重复）
-      const historyForSupervisor = session.messages.slice(0, -1).map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      // 可用专家列表（不含主管和助手）
-      const availableExperts = getAvailableExpertInfos();
-
-      // 用户消息 + 感知索引上下文
-      const userMessageWithContext = searchContext
-        ? `[项目相关代码]\n${searchContext}\n\n[用户需求]\n${text}`
-        : text;
-
-      dispatchPlan = await supervisorAnalyze(
-        userMessageWithContext,
-        historyForSupervisor,
-        availableExperts,
-        supervisorKey,
-        "supervisor",
-        supervisorModel
+      const artifactFollowupPlan = await buildArtifactFollowupPlan(
+        text,
+        session.messages.slice(0, -1),
+        activeProject?.name
       );
-      log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
+      if (artifactFollowupPlan) {
+        dispatchPlan = artifactFollowupPlan;
+        log("INFO", `产物追改命中增量开发分流：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
+      } else {
+      // 感知索引上下文
+        let searchContext = "";
+        if (perceptualIndexReady) {
+          const searchProject = sidebar.getActiveChat();
+          if (searchProject) {
+            try {
+              searchContext = await invoke<string>("perceptual_index_search", {
+                projectName: searchProject.name,
+                query: text,
+              });
+            } catch (e) { log("WARN", `感知索引检索失败: ${e}`); }
+          }
+        }
+
+        // 构建对话历史上下文（排除当前用户消息，避免重复）
+        const historyForSupervisor = buildApiMessages(session.messages.slice(0, -1));
+
+        // 可用专家列表（不含主管和助手）
+        const availableExperts = getAvailableExpertInfos();
+
+        // 用户消息 + 感知索引上下文
+        let memoryContext = "";
+        if (activeProject?.name) {
+          try {
+            memoryContext = await buildGeneralMemoryContext(activeProject.name, currentProjectId, text);
+          } catch (e) {
+            log("WARN", `主管记忆检索失败: ${e}`);
+          }
+        }
+
+        const contextParts = [
+          searchContext ? `[项目相关代码]\n${searchContext}` : "",
+          memoryContext ? `[项目历史记忆]\n${memoryContext.trim()}` : "",
+          `[用户需求]\n${text}`,
+        ].filter(Boolean);
+        const userMessageWithContext = contextParts.join("\n\n");
+
+        dispatchPlan = await supervisorAnalyze(
+          userMessageWithContext,
+          historyForSupervisor,
+          availableExperts,
+          supervisorKey,
+          "supervisor",
+          supervisorModel
+        );
+        log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
+      }
     } catch (e) {
       log("ERROR", `主管意图分析失败: ${e}`);
       dispatchPlan = { scene: "quick-answer", taskDescription: text, expertIds: [] };
@@ -1755,14 +2055,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // === 根据场景执行 ===
     let finalReply: string;
+    let actionExecutionSources: Array<{ content: string; expertId: string; expertName: string; expertTitle: string }> = [];
 
     if (dispatchPlan.scene === "quick-answer" || dispatchPlan.expertIds.length === 0) {
       // 简单问题：主管直接回答
       try {
-        const apiMessages = session.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
+        const apiMessages = buildApiMessages(session.messages);
         const rawReply = await invoke<string>("chat_with_expert", {
           messages: apiMessages,
           apiKey: supervisorKey,
@@ -1802,8 +2100,16 @@ document.addEventListener("DOMContentLoaded", async () => {
       currentDispatchPlan = dispatchPlan;
       pendingFollowups = [];
       hideLoading();
+      appendCleanSystemMessage(buildDispatchNarrative(dispatchPlan));
 
-      // 立即渲染所有专家的 pending 卡片，让用户看到专家团正在加入（不写入消息历史，避免“派遣专家处理”这种元数据泄露）
+      // 立即渲染所有专家的 pending 卡片，让用户看到专家团正在加入
+      const dispatchWaves = buildDispatchWaves(dispatchPlan);
+      const expertWaveMap = new Map<string, number>();
+      dispatchWaves.forEach((wave) => {
+        wave.expertIds.forEach((expertId) => {
+          if (!expertWaveMap.has(expertId)) expertWaveMap.set(expertId, wave.wave);
+        });
+      });
       const joiningTasks: ExpertTask[] = dispatchPlan.expertIds.map((id) => {
         const info = getAvailableExpertInfos().find((e) => e.id === id);
         return {
@@ -1813,6 +2119,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           expertTitle: info?.title || "未知",
           status: "pending" as const,
           input: dispatchPlan.taskDescription,
+          dispatchWave: expertWaveMap.get(id) || 1,
         };
       });
       window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: joiningTasks } }));
@@ -1832,11 +2139,12 @@ document.addEventListener("DOMContentLoaded", async () => {
           },
           activeProjectForPipeline?.name,
           activeProjectForPipeline?.id,
+          activeProjectForPipeline?.workspacePath,
           supervisorKey,
           supervisorModel,
           pendingFollowups,
           (action: string, reason?: string) => {
-            // 主管中途决策：作为状态说明展示给用户
+            // 主管中途决策只写入日志，不进入聊天消息，避免元数据泄露。
             const actionLabels: Record<string, string> = {
               "continue": "继续执行下一步",
               "retry": "要求重新执行当前步骤",
@@ -1845,10 +2153,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             };
             const label = actionLabels[action] || action;
             const reasonText = reason ? `：${reason}` : "";
-            session.messages.push({
-              role: "assistant",
-              content: `[主管中途检查] ${label}${reasonText}`,
-            });
+            log("INFO", `主管中途检查 ${label}${reasonText}`);
           },
           (progress: { expertId: string; phase: string; detail: string }) => {
             const task = currentPipelineTasks.find(t => t.expertId === progress.expertId);
@@ -1857,10 +2162,64 @@ document.addEventListener("DOMContentLoaded", async () => {
               task.phaseDetail = progress.detail;
               window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: [...currentPipelineTasks] } }));
             }
+          },
+          (event: ExpertToolEvent) => {
+            appendToolEventToCurrentSession(
+              event.kind === "web-search"
+                ? {
+                  kind: "web-search",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: event.expertId,
+                    expertName: event.expertName,
+                    expertTitle: event.expertTitle,
+                  },
+                  reason: event.reason,
+                  query: event.query,
+                  status: event.status,
+                  results: event.results,
+                  error: event.error,
+                }
+                : {
+                  kind: "command",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: event.expertId,
+                    expertName: event.expertName,
+                    expertTitle: event.expertTitle,
+                  },
+                  reason: event.reason,
+                  command: event.command,
+                  workingDir: event.workingDir,
+                  authMode: event.authMode,
+                  status: event.status,
+                  safetyReason: event.safetyReason,
+                  output: event.output,
+                  error: event.error,
+                }
+            ).catch(console.error);
+          },
+          async (request: ExpertCommandAuthorizationRequest) => {
+            return showCommandAuthDialog(
+              request.command,
+              request.workingDir,
+              request.reason,
+              `${request.expertName}（${request.expertTitle}）`,
+              request.authMode,
+              request.safetyReason
+            );
           }
         );
         const expertResults = pipelineResult.tasks;
         const pipelineId = pipelineResult.pipelineId;
+        actionExecutionSources = expertResults
+          .filter((t) => !!t.output)
+          .map((t) => ({
+            content: t.output || "",
+            expertId: t.expertId,
+            expertName: t.expertName,
+            expertTitle: t.expertTitle,
+          }));
 
         // 将专家卡片快照作为消息推入会话历史（作为对话的一部分永久保留）
         session.messages.push({
@@ -1874,12 +2233,13 @@ document.addEventListener("DOMContentLoaded", async () => {
             input: t.input,
             output: t.output,
             error: t.error,
+            dispatchWave: t.dispatchWave,
           }))),
         });
 
         // 检查是否有补充消息需传递给审核阶段
         const followupContext = pendingFollowups.length > 0
-          ? `\n\n用户补充要求：${pendingFollowups.join("；")}`
+          ? `\n\n用户补充要求：${pendingFollowups.map((item) => item.message).join("；")}`
           : "";
 
         // 主管审核所有专家结果
@@ -1904,6 +2264,10 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
         }
 
+        if (activeProjectForPipeline?.name) {
+          runMemoryLifecycle(activeProjectForPipeline.name).catch(console.error);
+        }
+
       } catch (e) {
         log("ERROR", `流水线执行失败: ${e}`);
         finalReply = `专家团执行出错：${e}`;
@@ -1913,7 +2277,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
-    // 主管最终回复极简化：剥离代码块与元数据，仅保留 ACTION 标记 + 最后一句交付语
+    // 主管最终回复极简化：剥离代码块与元数据，仅保留一句交付语
     const sanitizedReply = sanitizeSupervisorReply(finalReply);
 
     // 将最终回复推入会话
@@ -1927,11 +2291,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("chat-messages")?.querySelector('.expert-tasks-group[data-live="true"]')?.remove();
     renderMessages();
 
-    // 解析并执行 Agent 动作（仍基于原始 finalReply 以保留所有 ACTION 标记）
-    await executeAgentActions(finalReply);
+    // 解析专家原始输出中的结构化 ChangeSet/ACTION，直接执行文件变更。
+    await executeAgentActions(
+      actionExecutionSources.length > 0
+        ? actionExecutionSources
+        : [{ content: finalReply, expertId: "jiang-xingtu", expertName: "江星图", expertTitle: "主管" }],
+      text
+    );
   }
 
   // ========== Agent 动作解析与执行 ==========
+  interface AgentActionSource {
+    content: string;
+    expertId: string;
+    expertName: string;
+    expertTitle: string;
+  }
+
   interface AgentAction {
     type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "EDIT_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH"
       | "WEB_SEARCH" | "EXECUTE_CMD" | "READ_DOCUMENT" | "WRITE_DOCUMENT" | "GENERATE_IMAGE"
@@ -1941,149 +2317,603 @@ document.addEventListener("DOMContentLoaded", async () => {
     searchText?: string;
     replaceText?: string;
     params?: Record<string, string>;
+    sourceExpertId: string;
+    sourceExpertName: string;
+    sourceExpertTitle: string;
+    requestReason?: string;
+  }
+
+  function isFileMutationAction(action: AgentAction): boolean {
+    return action.type === "CREATE_FILE"
+      || action.type === "WRITE_FILE"
+      || action.type === "EDIT_FILE"
+      || action.type === "CREATE_FOLDER"
+      || action.type === "DELETE";
+  }
+
+  function actionToChangeSet(action: AgentAction): ChangeSet | null {
+    switch (action.type) {
+      case "CREATE_FOLDER":
+        return {
+          operation: "create_folder",
+          path: action.path,
+          rationale: "AI 请求创建目录",
+          risk: "low",
+        };
+      case "CREATE_FILE":
+        return {
+          operation: "create_file",
+          path: action.path,
+          content: action.content || "",
+          rationale: "AI 请求创建文件",
+          risk: "medium",
+        };
+      case "EDIT_FILE":
+        return {
+          operation: "edit_file",
+          path: action.path,
+          searchText: action.searchText || "",
+          replaceText: action.replaceText || "",
+          rationale: "AI 请求局部编辑文件",
+          risk: "medium",
+        };
+      case "WRITE_FILE":
+        return {
+          operation: "write_file",
+          path: action.path,
+          content: action.content || "",
+          rationale: "AI 请求写入文件；已有文件默认会被后端阻断，避免全量覆盖",
+          risk: "high",
+        };
+      case "DELETE":
+        return {
+          operation: "delete",
+          path: action.path,
+          rationale: "AI 请求删除文件或目录",
+          risk: "high",
+        };
+      default:
+        return null;
+    }
+  }
+
+  function extractStructuredChangeSets(content: string): ChangeSet[] {
+    const changes: ChangeSet[] = [];
+    const tryParseJson = (raw: string): any | null => {
+      const candidates = [raw, raw.replace(/,\s*([}\]])/g, "$1")];
+      for (const candidate of candidates) {
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // 尝试下一个候选
+        }
+      }
+      return null;
+    };
+    const parseChangesFromParsed = (parsed: any) => {
+      const rawChanges = Array.isArray(parsed) ? parsed : parsed?.changes;
+      if (!Array.isArray(rawChanges)) return;
+      for (const raw of rawChanges) {
+        if (!raw || typeof raw !== "object" || typeof raw.path !== "string") continue;
+        const op = String(raw.operation || raw.type || "").toLowerCase().replace(/-/g, "_");
+        if (!["create_folder", "create_file", "write_file", "edit_file", "delete"].includes(op)) continue;
+        changes.push({
+          operation: op as ChangeSet["operation"],
+          path: raw.path,
+          searchText: raw.searchText ?? raw.search_text,
+          replaceText: raw.replaceText ?? raw.replace_text,
+          content: raw.content,
+          rationale: raw.rationale,
+          risk: raw.risk,
+          allowOverwrite: raw.allowOverwrite ?? raw.allow_overwrite,
+        });
+      }
+    };
+    const jsonFenceRegex = /```(?:json)?\s*([\s\S]*?)```/g;
+    let match;
+    while ((match = jsonFenceRegex.exec(content)) !== null) {
+      const parsed = tryParseJson(match[1]);
+      if (parsed) parseChangesFromParsed(parsed);
+    }
+    // 兜底：处理未包裹在代码块中的 JSON（常见于模型直接输出对象）
+    const rawJsonRegex = /(\{[\s\S]*?"changes"\s*:\s*\[[\s\S]*?\][\s\S]*?\})/g;
+    while ((match = rawJsonRegex.exec(content)) !== null) {
+      const parsed = tryParseJson(match[1]);
+      if (parsed) parseChangesFromParsed(parsed);
+    }
+    return changes;
+  }
+
+  function extractStructuredRequiredFiles(content: string): string[] {
+    const files = new Set<string>();
+    const tryParseJson = (raw: string): any | null => {
+      const candidates = [raw, raw.replace(/,\s*([}\]])/g, "$1")];
+      for (const candidate of candidates) {
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // 尝试下一个候选
+        }
+      }
+      return null;
+    };
+    const hasValidChanges = (parsed: any): boolean => {
+      const rawChanges = Array.isArray(parsed) ? parsed : parsed?.changes;
+      if (!Array.isArray(rawChanges)) return false;
+      return rawChanges.some((raw: any) => {
+        if (!raw || typeof raw !== "object" || typeof raw.path !== "string") return false;
+        const op = String(raw.operation || raw.type || "").toLowerCase().replace(/-/g, "_");
+        return ["create_folder", "create_file", "write_file", "edit_file", "delete"].includes(op);
+      });
+    };
+    const jsonFenceRegex = /```(?:json)?\s*([\s\S]*?)```/g;
+    let match;
+    while ((match = jsonFenceRegex.exec(content)) !== null) {
+      const parsed = tryParseJson(match[1]);
+      if (!parsed || !hasValidChanges(parsed)) continue;
+      const rawFiles = parsed?.requiredFiles ?? parsed?.required_files;
+      if (!Array.isArray(rawFiles)) continue;
+      for (const file of rawFiles) {
+        if (typeof file === "string" && file.trim()) files.add(file.trim());
+      }
+    }
+    return [...files];
+  }
+
+  function appendCleanSystemMessage(text: string): void {
+    if (!currentProjectId || !currentSessionId) return;
+    const sessions = projectSessions.get(currentProjectId);
+    const session = sessions?.find((s) => s.id === currentSessionId);
+    if (!session) return;
+    session.messages.push({ role: "assistant", content: text });
+    renderMessages();
+  }
+
+  function parseActionParams(paramsStr: string): Record<string, string> {
+    const params: Record<string, string> = {};
+    const paramRegex = /(\w+)="([^"]*)"/g;
+    let paramMatch;
+    while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
+      params[paramMatch[1]] = paramMatch[2];
+    }
+    return params;
+  }
+
+  function extractArtifactPathsFromText(content: string): string[] {
+    const paths = new Set<string>();
+    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER)(?::([^\]]+)|(\s+[^\]]+))\]/g;
+    let match;
+    while ((match = actionRegex.exec(content)) !== null) {
+      const legacyPath = match[1]?.trim();
+      const paramPath = match[2] ? parseActionParams(match[2]).path?.trim() : "";
+      const path = legacyPath || paramPath;
+      if (path) paths.add(path);
+    }
+    const jsonPathRegex = /"path"\s*:\s*"([^"]+)"/g;
+    while ((match = jsonPathRegex.exec(content)) !== null) {
+      if (match[1]?.trim()) paths.add(match[1].trim());
+    }
+    return [...paths];
+  }
+
+  function collectGeneratedArtifactPaths(messages: ChatMessage[]): string[] {
+    const paths = new Set<string>();
+    for (const message of messages) {
+      if (message.role === "expert-tasks") {
+        try {
+          const tasks = JSON.parse(message.content);
+          if (Array.isArray(tasks)) {
+            for (const task of tasks) {
+              if (task && typeof task.output === "string") {
+                extractArtifactPathsFromText(task.output).forEach((path) => paths.add(path));
+              }
+            }
+          }
+        } catch {
+          // ignore malformed historical snapshots
+        }
+        continue;
+      }
+      extractArtifactPathsFromText(message.content).forEach((path) => paths.add(path));
+    }
+    return [...paths];
+  }
+
+  function isWebArtifactPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    return /\.(html|css|scss|sass|js|jsx|ts|tsx|vue|svelte|astro)$/.test(normalized)
+      || /(^|\/)(pages|components|public|src|assets)\//.test(normalized);
+  }
+
+  function isBackendArtifactPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    return /\.(rs|py|go|java|kt|cs|rb|php|sql)$/.test(normalized)
+      || /(^|\/)(server|api|backend|services)\//.test(normalized);
+  }
+
+  function isArtifactModificationRequest(text: string): boolean {
+    if (!text) return false;
+    if (/(规范文档|设计文档|方案文档|只出方案|只要规范)/i.test(text)) return false;
+    return /(修改|改成|调整|优化|重做|继续改|基于.*产物|在.*基础上|把.*改|更新一下|换成|希望.*风格|偏向.*风格|科技风|简洁风|高级感)/i.test(text);
+  }
+
+  async function buildArtifactFollowupPlan(
+    text: string,
+    messages: ChatMessage[],
+    projectName?: string
+  ): Promise<DispatchPlan | null> {
+    if (!isArtifactModificationRequest(text)) return null;
+    const artifactPaths = collectGeneratedArtifactPaths(messages);
+    if (artifactPaths.length === 0) return null;
+
+    const webArtifacts = artifactPaths.filter(isWebArtifactPath);
+    const backendArtifacts = artifactPaths.filter(isBackendArtifactPath);
+    const relevantArtifacts = (webArtifacts.length > 0 ? webArtifacts : artifactPaths).slice(0, 12);
+    const engineerId = webArtifacts.length > 0
+      ? "jiang-yumo"
+      : backendArtifacts.length > 0
+        ? "jiang-subai"
+        : "jiang-qinglan";
+    let fileContext = "";
+    if (projectName && relevantArtifacts.length > 0) {
+      const previews: string[] = [];
+      for (const path of relevantArtifacts.slice(0, 4)) {
+        try {
+          const content = await invoke<string>("sandbox_read_file", {
+            projectName,
+            relativePath: path,
+          });
+          const snippet = content.length > 2400 ? `${content.slice(0, 2400)}\n...(truncated)` : content;
+          previews.push(`文件：${path}\n\`\`\`\n${snippet}\n\`\`\``);
+        } catch {
+          previews.push(`文件：${path}\n（读取失败，需优先重新确认当前文件内容）`);
+        }
+      }
+      if (previews.length > 0) {
+        fileContext = `\n当前文件内容（生成补丁时必须以此为准）：\n${previews.join("\n\n")}`;
+      }
+    }
+
+    return {
+      scene: "code-development",
+      taskDescription: `这是对现有产物的增量修改任务。必须直接修改已有文件或新增实现文件，不要只输出规范文档。\n已生成文件：${relevantArtifacts.join(", ")}\n用户的新要求：${text}${fileContext}\n补丁要求：优先使用 edit_file；searchText 必须直接来自上面的当前文件内容。`,
+      expertIds: ["jiang-ruoxi", engineerId, "jiang-yingqiu"],
+      requiresDesign: false,
+    };
+  }
+
+  function isWebsiteIntent(taskText: string): boolean {
+    if (!taskText) return false;
+    return /(网站|网页|web\s*site|website|landing\s*page|首页|前端页面|html页面|页面开发|做个站)/i.test(taskText);
+  }
+
+  function isEnvPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    return /(^|\/)\.env(\.[^/]+)?$/.test(normalized) || /(^|\/)env(\.[^/]+)?$/.test(normalized);
+  }
+
+  function isWebFilePath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    return /\.(html|css|scss|sass|js|jsx|ts|tsx|vue|svelte|astro)$/.test(normalized)
+      || /(^|\/)(public|src|pages|components|assets)\//.test(normalized);
+  }
+
+  function isEnvExplicitlyRequested(taskText: string): boolean {
+    if (!taskText) return false;
+    return /(env|环境变量|配置密钥|api[_\s-]?key|token|secret|dotenv|\.env)/i.test(taskText);
+  }
+
+  function validateChangeIntent(taskText: string, changes: ChangeSet[]): string[] {
+    const issues: string[] = [];
+    if (changes.length === 0) return issues;
+
+    const changedPaths = changes.map((c) => c.path.trim()).filter(Boolean);
+    const envChanges = changedPaths.filter(isEnvPath);
+    const nonEnvChanges = changedPaths.filter((p) => !isEnvPath(p));
+    const webChanges = changedPaths.filter(isWebFilePath);
+
+    if (isWebsiteIntent(taskText)) {
+      if (webChanges.length === 0) {
+        issues.push("当前任务是网站/页面开发，但本次变更未包含任何前端页面文件（如 html/css/js/tsx/vue）。");
+      }
+      if (envChanges.length > 0 && nonEnvChanges.length === 0) {
+        issues.push(`当前任务是网站/页面开发，但本次只修改了环境配置文件：${envChanges.join(", ")}`);
+      }
+    }
+
+    if (envChanges.length > 0 && !isEnvExplicitlyRequested(taskText) && nonEnvChanges.length === 0) {
+      issues.push(`检测到仅修改环境配置文件（${envChanges.join(", ")}），但任务描述未明确要求修改环境变量。`);
+    }
+
+    return issues;
+  }
+
+  interface DirectChangeApplyResult {
+    applied: number;
+    failed: number;
+    errors: string[];
+    touchedFiles: string[];
+  }
+
+  function buildDispatchNarrative(plan: DispatchPlan): string {
+    const waves = buildDispatchWaves(plan);
+    if (waves.length === 0) return "主管已完成任务拆解，专家准备执行。";
+    const infoMap = new Map(getAvailableExpertInfos().map((e) => [e.id, e]));
+    const waveText = waves.map((w) => {
+      const names = w.expertIds.map((id) => {
+        const info = infoMap.get(id);
+        return info ? `${info.name}（${info.title}）` : id;
+      }).join("、");
+      const mode = w.expertIds.length > 1 ? "并行" : "串行";
+      return `第${w.wave}轮${mode}：${names}`;
+    }).join("\n");
+    return `主管已完成派遣，执行方案如下：\n${waveText}`;
+  }
+
+  async function proposeAndMaybeApplyChanges(
+    projectName: string,
+    taskDescription: string,
+    changes: ChangeSet[],
+    requiredFiles: string[] = [],
+    userTaskText = ""
+  ): Promise<DirectChangeApplyResult | null> {
+    if (changes.length === 0) return null;
+    void requiredFiles;
+    void taskDescription;
+
+    const result: DirectChangeApplyResult = {
+      applied: 0,
+      failed: 0,
+      errors: [],
+      touchedFiles: [],
+    };
+
+    const intentIssues = validateChangeIntent(userTaskText || taskDescription, changes);
+    if (intentIssues.length > 0) {
+      const top = intentIssues.slice(0, 5).map((e, i) => `${i + 1}. ${e}`).join("\n");
+      appendCleanSystemMessage(`检测到潜在变更风险，已继续执行并请你留意：\n${top}`);
+    }
+
+    for (const change of changes) {
+      const relativePath = change.path?.trim();
+      if (!relativePath) continue;
+      try {
+        switch (change.operation) {
+          case "create_folder":
+            await invoke("sandbox_create_folder", {
+              projectName,
+              relativePath,
+            });
+            break;
+          case "create_file":
+            await invoke("sandbox_create_file", {
+              projectName,
+              relativePath,
+              content: change.content || "",
+            });
+            break;
+          case "write_file":
+            await invoke("sandbox_write_file", {
+              projectName,
+              relativePath,
+              content: change.content || "",
+            });
+            break;
+          case "edit_file":
+            await invoke("sandbox_edit_file", {
+              projectName,
+              relativePath,
+              searchText: change.searchText || "",
+              replaceText: change.replaceText || "",
+            });
+            break;
+          case "delete":
+            await invoke("sandbox_delete", {
+              projectName,
+              relativePath,
+            });
+            break;
+          default:
+            throw new Error(`不支持的变更操作: ${change.operation}`);
+        }
+
+        result.applied += 1;
+        result.touchedFiles.push(relativePath);
+      } catch (e) {
+        result.failed += 1;
+        result.errors.push(`[${change.operation}] ${relativePath}: ${String(e)}`);
+      }
+    }
+
+    if (result.failed > 0) {
+      const topErrors = result.errors.slice(0, 5).map((item, index) => `${index + 1}. ${item}`).join("\n");
+      appendCleanSystemMessage(`部分文件变更未成功（成功 ${result.applied}，失败 ${result.failed}）：\n${topErrors}`);
+    } else if (result.applied > 0) {
+      appendCleanSystemMessage(`已直接写入源码，共完成 ${result.applied} 项文件变更。`);
+    }
+
+    return result;
   }
 
   /** 解析 AI 返回中的动作标记 */
-  function parseAgentActions(content: string): AgentAction[] {
+  function parseAgentActions(sources: AgentActionSource[]): AgentAction[] {
     const actions: AgentAction[] = [];
-
-    // 匹配 [ACTION:CREATE_FOLDER:相对路径]
-    const folderRegex = /\[ACTION:CREATE_FOLDER:([^\]]+)\]/g;
-    let match;
-    while ((match = folderRegex.exec(content)) !== null) {
-      actions.push({ type: "CREATE_FOLDER", path: match[1].trim() });
-    }
-
-    // 匹配 [ACTION:CREATE_FILE:相对路径]\n```\n内容\n```
-    const fileRegex = /\[ACTION:CREATE_FILE:([^\]]+)\]\s*```(?:\w*\n)?([\s\S]*?)```/g;
-    while ((match = fileRegex.exec(content)) !== null) {
-      actions.push({
-        type: "CREATE_FILE",
-        path: match[1].trim(),
-        content: match[2].trimEnd(),
-      });
-    }
-
-    // 匹配 [ACTION:EDIT_FILE:相对路径]
-    // ```search\n旧文本\n```\n```replace\n新文本\n```
-    const editRegex = /\[ACTION:EDIT_FILE:([^\]]+)\]\s*```search\n?([\s\S]*?)```\s*```replace\n?([\s\S]*?)```/g;
-    while ((match = editRegex.exec(content)) !== null) {
-      actions.push({
-        type: "EDIT_FILE",
-        path: match[1].trim(),
-        searchText: match[2].trimEnd(),
-        replaceText: match[3].trimEnd(),
-      });
-    }
-
-    // 匹配 [ACTION:WRITE_FILE:相对路径]\n```\n内容\n```
-    const writeRegex = /\[ACTION:WRITE_FILE:([^\]]+)\]\s*```(?:\w*\n)?([\s\S]*?)```/g;
-    while ((match = writeRegex.exec(content)) !== null) {
-      actions.push({
-        type: "WRITE_FILE",
-        path: match[1].trim(),
-        content: match[2].trimEnd(),
-      });
-    }
-
-    // 匹配 [ACTION:DELETE:相对路径]
-    const deleteRegex = /\[ACTION:DELETE:([^\]]+)\]/g;
-    while ((match = deleteRegex.exec(content)) !== null) {
-      actions.push({ type: "DELETE", path: match[1].trim() });
-    }
-
-    // 匹配 [INDEX_BUILD]
-    const indexBuildRegex = /\[INDEX_BUILD\]/g;
-    while ((match = indexBuildRegex.exec(content)) !== null) {
-      actions.push({ type: "INDEX_BUILD", path: "" });
-    }
-
-    // 匹配 [INDEX_SEARCH:查询文本]
-    const indexSearchRegex = /\[INDEX_SEARCH:([^\]]+)\]/g;
-    while ((match = indexSearchRegex.exec(content)) !== null) {
-      actions.push({ type: "INDEX_SEARCH", path: match[1].trim() });
-    }
-
-    // ========== 新增 ACTION 标记解析（参数化格式） ==========
-    // 通用匹配: [ACTION:TYPE param1="val1" param2="val2" ...]
-    const paramActionRegex = /\[ACTION:([A-Z_]+)((?:\s+\w+="[^"]*")*)\]/g;
-    while ((match = paramActionRegex.exec(content)) !== null) {
-      const actionType = match[1];
-      const paramsStr = match[2];
-      // 跳过已由上方专用正则处理的旧格式
-      if (["CREATE_FILE", "WRITE_FILE", "EDIT_FILE", "CREATE_FOLDER", "DELETE"].includes(actionType)) continue;
+    const parseParams = (paramsStr: string): Record<string, string> => {
       const params: Record<string, string> = {};
       const paramRegex = /(\w+)="([^"]*)"/g;
       let paramMatch;
       while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
         params[paramMatch[1]] = paramMatch[2];
       }
-      actions.push({ type: actionType as AgentAction["type"], path: params.path || "", params });
+      return params;
+    };
+    const resolvePath = (legacyPath: string | undefined, paramStr: string | undefined): string => {
+      if (legacyPath && legacyPath.trim()) return legacyPath.trim();
+      if (paramStr) {
+        const params = parseParams(paramStr);
+        return (params.path || "").trim();
+      }
+      return "";
+    };
+
+    for (const source of sources) {
+      const content = source.content;
+      const pushAction = (action: Omit<AgentAction, "sourceExpertId" | "sourceExpertName" | "sourceExpertTitle" | "requestReason"> & { requestReason?: string }) => {
+        actions.push({
+          ...action,
+          sourceExpertId: source.expertId,
+          sourceExpertName: source.expertName,
+          sourceExpertTitle: source.expertTitle,
+          requestReason: action.requestReason,
+        });
+      };
+
+      const folderRegex = /\[ACTION:CREATE_FOLDER(?::([^\]]+)|(\s+[^\]]+))\]/g;
+      let match;
+      while ((match = folderRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({ type: "CREATE_FOLDER", path });
+      }
+
+      const fileRegex = /\[ACTION:CREATE_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w*\n)?([\s\S]*?)```/g;
+      while ((match = fileRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({
+          type: "CREATE_FILE",
+          path,
+          content: match[3].trimEnd(),
+        });
+      }
+
+      const editRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:search|SEARCH)\r?\n([\s\S]*?)```\s*```(?:replace|REPLACE)\r?\n([\s\S]*?)```/g;
+      while ((match = editRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({
+          type: "EDIT_FILE",
+          path,
+          searchText: match[3].trimEnd(),
+          replaceText: match[4].trimEnd(),
+        });
+      }
+
+      const writeRegex = /\[ACTION:WRITE_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w*\n)?([\s\S]*?)```/g;
+      while ((match = writeRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({
+          type: "WRITE_FILE",
+          path,
+          content: match[3].trimEnd(),
+        });
+      }
+
+      const deleteRegex = /\[ACTION:DELETE(?::([^\]]+)|(\s+[^\]]+))\]/g;
+      while ((match = deleteRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({ type: "DELETE", path });
+      }
+
+      const indexBuildRegex = /\[INDEX_BUILD\]/g;
+      while ((match = indexBuildRegex.exec(content)) !== null) {
+        pushAction({ type: "INDEX_BUILD", path: "" });
+      }
+
+      const indexSearchRegex = /\[INDEX_SEARCH:([^\]]+)\]/g;
+      while ((match = indexSearchRegex.exec(content)) !== null) {
+        pushAction({ type: "INDEX_SEARCH", path: match[1].trim() });
+      }
+
+      const paramActionRegex = /\[ACTION:([A-Z_]+)((?:\s+\w+="[^"]*")*)\]/g;
+      while ((match = paramActionRegex.exec(content)) !== null) {
+        const actionType = match[1];
+        const paramsStr = match[2];
+        if (["CREATE_FILE", "WRITE_FILE", "EDIT_FILE", "CREATE_FOLDER", "DELETE"].includes(actionType)) continue;
+        const params = parseParams(paramsStr);
+        pushAction({
+          type: actionType as AgentAction["type"],
+          path: params.path || "",
+          params,
+          requestReason: params.reason || params.rationale,
+        });
+      }
     }
 
     return actions;
   }
 
   /** 执行 Agent 动作 */
-  async function executeAgentActions(content: string): Promise<void> {
-    const actions = parseAgentActions(content);
-    if (actions.length === 0) return;
+  async function executeAgentActions(sources: AgentActionSource[], userTaskText = ""): Promise<void> {
+    const actions = parseAgentActions(sources);
+    const structuredChangeSets = sources.flatMap((source) => extractStructuredChangeSets(source.content));
+    const requiredFiles = [...new Set(sources.flatMap((source) => extractStructuredRequiredFiles(source.content)))];
+    if (actions.length === 0 && structuredChangeSets.length === 0) return;
 
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) return;
 
     // 检查是否有文件生成操作，显示反馈
-    const hasFileActions = actions.some((a) => a.type === "CREATE_FILE" || a.type === "WRITE_FILE" || a.type === "EDIT_FILE" || a.type === "CREATE_FOLDER" || a.type === "WRITE_DOCUMENT");
+    const fileActions = actions.filter(isFileMutationAction);
+    const hasFileActions = fileActions.length > 0 || structuredChangeSets.length > 0 || actions.some((a) => a.type === "WRITE_DOCUMENT");
     if (hasFileActions) {
-      showLoading("正在生成文件...");
+      showLoading("正在应用文件变更...");
     }
     const hasCmdActions = actions.some((a) => a.type === "EXECUTE_CMD" || a.type === "WEB_SEARCH");
     if (hasCmdActions && !hasFileActions) {
       showLoading("正在执行操作...");
     }
 
+    let shouldRefreshCurrentPreview = false;
+    const isAbsolutePath = (value: string) => /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+    const resolveWorkingDir = (rawDir?: string) => {
+      const trimmed = rawDir?.trim();
+      const workspacePath = activeProject.workspacePath || ".";
+      if (!trimmed || trimmed === ".") return workspacePath;
+      if (!activeProject.workspacePath || isAbsolutePath(trimmed)) return trimmed;
+      const separator = activeProject.workspacePath.includes("\\") ? "\\" : "/";
+      const relative = trimmed
+        .replace(/^[.][\\/]/, "")
+        .replace(/^[\\/]+/, "");
+      return `${activeProject.workspacePath.replace(/[\\/]+$/, "")}${separator}${relative}`;
+    };
+    const resolveCommandAuthMode = (requiresAuth: boolean, authReason: string) => {
+      if (!requiresAuth) return "auto" as const;
+      return /管理员权限/.test(authReason) ? "admin" as const : "restricted" as const;
+    };
+
+    const changeSets = [
+      ...structuredChangeSets,
+      ...fileActions.map(actionToChangeSet).filter((c): c is ChangeSet => c !== null),
+    ];
+
+    if (changeSets.length > 0) {
+      try {
+        const result = await proposeAndMaybeApplyChanges(
+          activeProject.name,
+          `来自专家团输出的直接变更，共 ${changeSets.length} 项`,
+          changeSets,
+          requiredFiles,
+          userTaskText
+        );
+        if (result && result.applied > 0) {
+          shouldRefreshCurrentPreview = true;
+          checkAndBuildIndex(activeProject.name, true);
+        }
+      } catch (err) {
+        log("ERROR", `Agent: 直接应用变更失败: ${err}`);
+        appendCleanSystemMessage("文件变更执行失败，源码未被完整写入。");
+      }
+    }
+
     for (const action of actions) {
+      if (isFileMutationAction(action)) {
+        continue;
+      }
       try {
         switch (action.type) {
-          case "CREATE_FOLDER":
-            await invoke("sandbox_create_folder", {
-              projectName: activeProject.name,
-              relativePath: action.path,
-            });
-            log("INFO", `Agent: 创建文件夹 ${action.path}`);
-            break;
-          case "CREATE_FILE":
-            await invoke("sandbox_create_file", {
-              projectName: activeProject.name,
-              relativePath: action.path,
-              content: action.content || "",
-            });
-            log("INFO", `Agent: 创建文件 ${action.path}`);
-            break;
-          case "EDIT_FILE":
-            await invoke("sandbox_edit_file", {
-              projectName: activeProject.name,
-              relativePath: action.path,
-              searchText: action.searchText || "",
-              replaceText: action.replaceText || "",
-            });
-            log("INFO", `Agent: 编辑文件 ${action.path}`);
-            break;
-          case "WRITE_FILE":
-            await invoke("sandbox_write_file", {
-              projectName: activeProject.name,
-              relativePath: action.path,
-              content: action.content || "",
-            });
-            log("INFO", `Agent: 写入文件 ${action.path}`);
-            break;
-          case "DELETE":
-            await invoke("sandbox_delete", {
-              projectName: activeProject.name,
-              relativePath: action.path,
-            });
-            log("INFO", `Agent: 删除 ${action.path}`);
-            break;
           case "INDEX_BUILD":
             await checkAndBuildIndex(activeProject.name, true);
             log("INFO", "Agent: 触发感知索引重建");
@@ -2118,16 +2948,40 @@ document.addEventListener("DOMContentLoaded", async () => {
               try {
                 const results = await invoke<string>("web_search_query", { query, maxResults: 5 });
                 log("INFO", `Agent: 网络搜索完成 "${query}"`);
-                const sessions = getSessions(activeProject.id);
-                const session = sessions.find((s) => s.id === currentSessionId);
-                if (session && results) {
-                  session.messages.push({
-                    role: "assistant",
-                    content: `[搜索结果: "${query}"]\n\n${results}`,
-                  });
+                let parsedResults: Array<{ title: string; url: string; snippet: string }> = [];
+                try {
+                  parsedResults = JSON.parse(results) as Array<{ title: string; url: string; snippet: string }>;
+                } catch {
+                  parsedResults = [];
                 }
+                await appendToolEventToCurrentSession({
+                  kind: "web-search",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: action.sourceExpertId,
+                    expertName: action.sourceExpertName,
+                    expertTitle: action.sourceExpertTitle,
+                  },
+                  reason: action.requestReason || "需要补充外部资料或验证最新信息",
+                  query,
+                  status: "success",
+                  results: parsedResults,
+                });
               } catch (err) {
                 log("ERROR", `Agent: 网络搜索失败: ${err}`);
+                await appendToolEventToCurrentSession({
+                  kind: "web-search",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: action.sourceExpertId,
+                    expertName: action.sourceExpertName,
+                    expertTitle: action.sourceExpertTitle,
+                  },
+                  reason: action.requestReason || "需要补充外部资料或验证最新信息",
+                  query,
+                  status: "error",
+                  error: String(err),
+                });
               }
             }
             break;
@@ -2135,7 +2989,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
           case "EXECUTE_CMD": {
             const command = action.params?.command;
-            const dir = action.params?.dir || "";
+            const dir = resolveWorkingDir(action.params?.dir);
             if (command) {
               try {
                 // 先检查安全性
@@ -2143,28 +2997,79 @@ document.addEventListener("DOMContentLoaded", async () => {
                   command,
                   args: [],
                   workingDir: dir,
-                  projectDir: dir,
+                  projectDir: activeProject.workspacePath || dir,
                 });
                 const safety = JSON.parse(safetyCheck);
+                const authMode = resolveCommandAuthMode(!!safety.requires_auth, String(safety.auth_reason || ""));
                 if (safety.requires_auth) {
-                  const authorized = await showCommandAuthDialog(command, dir, safety.auth_reason || "该命令需要用户授权");
+                  const authorized = await showCommandAuthDialog(
+                    command,
+                    dir,
+                    action.requestReason || "需要通过命令验证环境或执行检查",
+                    `${action.sourceExpertName}（${action.sourceExpertTitle}）`,
+                    authMode,
+                    String(safety.auth_reason || "")
+                  );
                   if (!authorized) {
                     log("INFO", `Agent: 用户拒绝执行命令 "${command}"`);
+                    await appendToolEventToCurrentSession({
+                      kind: "command",
+                      createdAt: Date.now(),
+                      initiator: {
+                        expertId: action.sourceExpertId,
+                        expertName: action.sourceExpertName,
+                        expertTitle: action.sourceExpertTitle,
+                      },
+                      reason: action.requestReason || "需要通过命令验证环境或执行检查",
+                      command,
+                      workingDir: dir,
+                      authMode,
+                      status: "denied",
+                      safetyReason: String(safety.auth_reason || ""),
+                    });
                     break;
                   }
                 }
                 const result = await invoke<string>("execute_command", { command, args: [], workingDir: dir });
                 log("INFO", `Agent: 执行命令 "${command}"`);
-                const sessions = getSessions(activeProject.id);
-                const session = sessions.find((s) => s.id === currentSessionId);
-                if (session && result) {
-                  session.messages.push({
-                    role: "assistant",
-                    content: `[命令执行结果: ${command}]\n\n${result}`,
-                  });
-                }
+                const parsed = JSON.parse(result) as { stdout?: string; stderr?: string; exit_code?: number };
+                await appendToolEventToCurrentSession({
+                  kind: "command",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: action.sourceExpertId,
+                    expertName: action.sourceExpertName,
+                    expertTitle: action.sourceExpertTitle,
+                  },
+                  reason: action.requestReason || "需要通过命令验证环境或执行检查",
+                  command,
+                  workingDir: dir,
+                  authMode,
+                  status: "success",
+                  safetyReason: String(safety.auth_reason || ""),
+                  output: {
+                    stdout: parsed.stdout || "",
+                    stderr: parsed.stderr || "",
+                    exitCode: typeof parsed.exit_code === "number" ? parsed.exit_code : -1,
+                  },
+                });
               } catch (err) {
                 log("ERROR", `Agent: 命令执行失败: ${err}`);
+                await appendToolEventToCurrentSession({
+                  kind: "command",
+                  createdAt: Date.now(),
+                  initiator: {
+                    expertId: action.sourceExpertId,
+                    expertName: action.sourceExpertName,
+                    expertTitle: action.sourceExpertTitle,
+                  },
+                  reason: action.requestReason || "需要通过命令验证环境或执行检查",
+                  command,
+                  workingDir: dir,
+                  authMode: "auto",
+                  status: "error",
+                  error: String(err),
+                });
               }
             }
             break;
@@ -2210,12 +3115,46 @@ document.addEventListener("DOMContentLoaded", async () => {
             const prompt = action.params?.prompt;
             const size = action.params?.size || "1024x1024";
             if (prompt) {
+              const card: ImageCard = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                prompt,
+                status: "generating",
+                createdAt: Date.now(),
+              };
+              imageCards.unshift(card);
+              renderImageCards();
+              enterImageMode();
               const imageKeys = findKeysByModality({ output: ["image"] });
               if (imageKeys.length === 0) {
                 log("WARN", "Agent: 未配置支持图像生成的密钥");
+                card.status = "error";
+                card.error = "未配置支持图像生成的密钥";
               } else {
                 log("INFO", `Agent: 图像生成请求已发送 prompt="${prompt}" size=${size}`);
+                try {
+                  const imageResult = await invoke<string>("chat_with_expert", {
+                    key_id: imageKeys[0],
+                    model: "gpt-4o",
+                    system_prompt: "你是图像生成器。请返回 Markdown 图片语法，图片 URL 必须可直接访问。",
+                    user_message: `请根据以下提示生成一张图片，仅返回 Markdown 图片链接：${prompt}，尺寸：${size}`,
+                  });
+                  const urlMatch = imageResult.match(/!\[[^\]]*\]\(([^)]+)\)/) || imageResult.match(/(https?:\/\/\S+)/);
+                  if (urlMatch?.[1]) {
+                    card.imageUrl = urlMatch[1];
+                    card.status = "done";
+                  } else if (urlMatch?.[0]) {
+                    card.imageUrl = urlMatch[0];
+                    card.status = "done";
+                  } else {
+                    card.status = "error";
+                    card.error = "未解析到图像链接";
+                  }
+                } catch (e) {
+                  card.status = "error";
+                  card.error = `图像生成失败: ${e}`;
+                }
               }
+              renderImageCards();
             }
             break;
           }
@@ -2301,6 +3240,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
+    if (shouldRefreshCurrentPreview) {
+      await reloadCurrentPreviewFile();
+    }
+
     // 文件操作完成后隐藏加载状态
     if (hasFileActions || hasCmdActions) {
       hideLoading();
@@ -2322,35 +3265,86 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // ========== 命令授权弹窗 ==========
-  function showCommandAuthDialog(command: string, dir: string, reason: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'cmd-auth-overlay';
-      overlay.innerHTML = `
-        <div class="cmd-auth-dialog">
-          <h3>⚠️ 命令需要授权</h3>
-          <div class="cmd-auth-info">
-            <p><strong>命令:</strong> <code>${escapeHtml(command)}</code></p>
-            <p><strong>目录:</strong> ${escapeHtml(dir || '当前项目')}</p>
-            <p><strong>原因:</strong> ${escapeHtml(reason)}</p>
-          </div>
-          <div class="cmd-auth-buttons">
-            <button class="cmd-auth-deny">拒绝</button>
-            <button class="cmd-auth-allow">授权执行</button>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(overlay);
+  // ========== 命令授权卡片 ==========
+  async function resolveCommandAuthRequest(requestId: string, approved: boolean): Promise<void> {
+    const resolver = pendingCommandAuthResolvers.get(requestId);
+    if (!resolver) return;
 
-      overlay.querySelector('.cmd-auth-deny')!.addEventListener('click', () => {
-        overlay.remove();
-        resolve(false);
-      });
-      overlay.querySelector('.cmd-auth-allow')!.addEventListener('click', () => {
-        overlay.remove();
-        resolve(true);
-      });
+    if (currentProjectId) {
+      const sessions = projectSessions.get(currentProjectId) || [];
+      let targetSessionId: number | null = null;
+      for (const session of sessions) {
+        const messageIndex = session.messages.findIndex((msg) => {
+          if (msg.role !== "command-auth") return false;
+          try {
+            const auth = JSON.parse(msg.content) as CommandAuthMessage;
+            return auth.id === requestId;
+          } catch {
+            return false;
+          }
+        });
+        if (messageIndex >= 0) {
+          try {
+            const auth = JSON.parse(session.messages[messageIndex].content) as CommandAuthMessage;
+            auth.status = approved ? "approved" : "denied";
+            session.messages[messageIndex].content = JSON.stringify(auth);
+            targetSessionId = session.id;
+          } catch {
+            // 解析失败不阻断授权结果返回
+          }
+          break;
+        }
+      }
+      if (targetSessionId !== null) {
+        renderMessages();
+        await saveSessionToDb(targetSessionId, currentProjectId);
+      }
+    }
+
+    pendingCommandAuthResolvers.delete(requestId);
+    resolver(approved);
+  }
+
+  function showCommandAuthDialog(
+    command: string,
+    dir: string,
+    reason: string,
+    initiator?: string,
+    authMode: "auto" | "restricted" | "admin" = "restricted",
+    safetyReason?: string
+  ): Promise<boolean> {
+    if (!currentProjectId || !currentSessionId) return Promise.resolve(false);
+    const sessions = projectSessions.get(currentProjectId);
+    const session = sessions?.find((s) => s.id === currentSessionId);
+    if (!session) return Promise.resolve(false);
+
+    const requestId = `cmd-auth-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const initiatorMatch = /^(.+?)（(.+?)）$/.exec(initiator || "");
+    const expertName = initiatorMatch?.[1] || initiator || "未知专家";
+    const expertTitle = initiatorMatch?.[2] || "未知角色";
+    const message: CommandAuthMessage = {
+      id: requestId,
+      createdAt: Date.now(),
+      initiator: {
+        expertName: expertName || "未知专家",
+        expertTitle: expertTitle || "未知角色",
+      },
+      command,
+      workingDir: dir || "当前项目",
+      reason,
+      authMode,
+      safetyReason,
+      status: "pending",
+    };
+    session.messages.push({
+      role: "command-auth",
+      content: JSON.stringify(message),
+    });
+    renderMessages();
+    saveSessionToDb(currentSessionId, currentProjectId).catch(console.error);
+
+    return new Promise((resolve) => {
+      pendingCommandAuthResolvers.set(requestId, resolve);
     });
   }
 
@@ -2429,6 +3423,40 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
+      if (msg.role === "tool-event") {
+        try {
+          const event = JSON.parse(msg.content) as ToolEventMessage;
+          const msgEl = document.createElement("div");
+          msgEl.className = "chat-message assistant tool-event-message";
+          msgEl.innerHTML = renderToolEventCard(event);
+          chatMessages!.appendChild(msgEl);
+        } catch (e) {
+          log("WARN", `工具事件消息解析失败: ${e}`);
+        }
+        return;
+      }
+
+      if (msg.role === "command-auth") {
+        try {
+          const auth = JSON.parse(msg.content) as CommandAuthMessage;
+          const msgEl = document.createElement("div");
+          msgEl.className = "chat-message assistant command-auth-message";
+          msgEl.innerHTML = renderCommandAuthCard(auth);
+          if (auth.status === "pending") {
+            msgEl.querySelector<HTMLElement>("[data-command-auth-action='deny']")?.addEventListener("click", () => {
+              resolveCommandAuthRequest(auth.id, false).catch(console.error);
+            });
+            msgEl.querySelector<HTMLElement>("[data-command-auth-action='allow']")?.addEventListener("click", () => {
+              resolveCommandAuthRequest(auth.id, true).catch(console.error);
+            });
+          }
+          chatMessages!.appendChild(msgEl);
+        } catch (e) {
+          log("WARN", `命令授权消息解析失败: ${e}`);
+        }
+        return;
+      }
+
       const msgEl = document.createElement("div");
       msgEl.className = `chat-message ${msg.role}`;
 
@@ -2438,8 +3466,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           <div class="message-content">${escapeHtml(msg.content)}</div>
         `;
       } else {
-        // AI 消息：无头像、无背景、流式布局，解析 Artifact 卡片
-        msgEl.innerHTML = renderAiMessage(msg.content);
+        // AI 消息：统一为结构化信息卡，避免元数据和内部信号泄露到用户界面。
+        msgEl.innerHTML = `<div class="assistant-panel">${renderAiMessage(msg.content)}</div>`;
       }
       chatMessages!.appendChild(msgEl);
     });
@@ -2451,9 +3479,113 @@ document.addEventListener("DOMContentLoaded", async () => {
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
+  async function appendToolEventToCurrentSession(event: ToolEventMessage): Promise<void> {
+    if (!currentProjectId || !currentSessionId) return;
+    const sessions = projectSessions.get(currentProjectId);
+    const session = sessions?.find((s) => s.id === currentSessionId);
+    if (!session) return;
+    session.messages.push({
+      role: "tool-event",
+      content: JSON.stringify(event),
+    });
+    renderMessages();
+    await saveSessionToDb(currentSessionId, currentProjectId);
+  }
+
+  function renderCommandAuthCard(message: CommandAuthMessage): string {
+    const title = message.authMode === "admin" ? "管理员命令待授权" : "命令待授权";
+    const initiator = `${message.initiator.expertName}（${message.initiator.expertTitle}）`;
+    const statusLabel = message.status === "approved"
+      ? "已同意"
+      : message.status === "denied"
+        ? "已拒绝"
+        : "等待你的决定";
+    const statusClass = message.status === "approved"
+      ? "approved"
+      : message.status === "denied"
+        ? "denied"
+        : "pending";
+    const actionButtons = message.status === "pending"
+      ? `
+        <div class="command-auth-actions">
+          <button class="command-auth-btn deny" data-command-auth-action="deny">拒绝</button>
+          <button class="command-auth-btn allow" data-command-auth-action="allow">同意执行</button>
+        </div>
+      `
+      : `<div class="command-auth-result ${statusClass}">${statusLabel}</div>`;
+
+    return `
+      <div class="tool-event-card command-auth-card" data-status="${message.status}">
+        <div class="tool-event-header">
+          <span class="tool-event-badge">${escapeHtml(title)}</span>
+          <span class="tool-event-status">${escapeHtml(statusLabel)}</span>
+        </div>
+        <div class="tool-event-meta">发起专家：${escapeHtml(initiator)}</div>
+        <div class="tool-event-primary">命令：<code>${escapeHtml(message.command || "")}</code></div>
+        ${message.safetyReason ? `<div class="tool-event-meta">说明：${escapeHtml(message.safetyReason)}</div>` : ""}
+        ${actionButtons}
+      </div>
+    `;
+  }
+
+  function renderToolEventCard(event: ToolEventMessage): string {
+    const statusLabel = event.status === "success"
+      ? "执行成功"
+      : event.status === "denied"
+        ? "用户拒绝"
+        : event.status === "blocked"
+          ? "受限放行"
+          : "执行失败";
+    const authLabel = event.kind === "command"
+      ? event.authMode === "admin"
+        ? "管理员命令"
+        : event.authMode === "restricted"
+          ? "受限放行"
+          : "自动放行"
+      : "自动执行";
+    const reason = event.reason?.trim() || "专家未提供明确理由";
+    const initiator = `${event.initiator.expertName}（${event.initiator.expertTitle}）`;
+
+    if (event.kind === "web-search") {
+      const results = (event.results || []).map((item) => `
+        <li class="tool-event-result-item">
+          <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
+          <div class="tool-event-result-snippet">${escapeHtml(item.snippet || item.url)}</div>
+        </li>
+      `).join("");
+
+      return `
+        <div class="tool-event-card" data-kind="web-search" data-status="${event.status}">
+          <div class="tool-event-header">
+            <span class="tool-event-badge">网络搜索</span>
+            <span class="tool-event-status">${statusLabel}</span>
+          </div>
+          <div class="tool-event-meta">发起专家：${escapeHtml(initiator)} · ID: ${escapeHtml(event.initiator.expertId)}</div>
+          <div class="tool-event-meta">发起理由：${escapeHtml(reason)}</div>
+          <div class="tool-event-primary">查询内容：<code>${escapeHtml(event.query || "")}</code></div>
+          ${event.error ? `<div class="tool-event-error">${escapeHtml(event.error)}</div>` : ""}
+          ${results ? `<ol class="tool-event-result-list">${results}</ol>` : '<div class="tool-event-empty">未返回搜索结果</div>'}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="tool-event-card" data-kind="command" data-status="${event.status}">
+        <div class="tool-event-header">
+          <span class="tool-event-badge">${escapeHtml(authLabel)}</span>
+          <span class="tool-event-status">${statusLabel}</span>
+        </div>
+        <div class="tool-event-meta">发起专家：${escapeHtml(initiator)}</div>
+        <div class="tool-event-primary">命令：<code>${escapeHtml(event.command || "")}</code></div>
+        ${event.error ? `<div class="tool-event-error">${escapeHtml(event.error)}</div>` : ""}
+      </div>
+    `;
+  }
+
   /** 渲染 AI 消息内容：解析文本和 Artifact 卡片 */
   function renderAiMessage(content: string): string {
-    const blocks = parseMessageBlocks(content);
+    const cleanContent = sanitizeAssistantDisplayContent(content);
+    const blocks = parseMessageBlocks(cleanContent);
     return blocks.map((block) => {
       if (block.type === "artifact") {
         return `
@@ -2487,7 +3619,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   > {
     const blocks: ReturnType<typeof parseMessageBlocks> = [];
     // 合并正则，同时匹配文件 Artifact 和文件夹
-    const combined = /\[ACTION:CREATE_FILE:([^\]]+)\]\s*```(?:\w*\n)?([\s\S]*?)```|\[ACTION:CREATE_FOLDER:([^\]]+)\]/g;
+    const combined = /\[ACTION:CREATE_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w*\n)?([\s\S]*?)```|\[ACTION:CREATE_FOLDER(?::([^\]]+)|(\s+[^\]]+))\]/g;
     let lastIndex = 0;
     let match;
 
@@ -2495,22 +3627,32 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 匹配前的文本（过滤掉残留的 [ACTION:...] 标记）
       if (match.index > lastIndex) {
         let text = content.slice(lastIndex, match.index).trim();
-        // 清除残留的 [ACTION:...] 元数据标记
+        // 清除残留元数据标记
         text = text.replace(/\[ACTION:[^\]]*\]\s*/g, "").trim();
         if (text) blocks.push({ type: "text", content: text });
       }
-      if (match[1]) {
+      if (match[1] || match[2]) {
         // 文件 Artifact
+        const filename = match[1]?.trim() || parseActionParams(match[2]).path?.trim();
+        if (!filename) {
+          lastIndex = combined.lastIndex;
+          continue;
+        }
         blocks.push({
           type: "artifact",
-          filename: match[1].trim(),
-          content: match[2].trimEnd(),
+          filename,
+          content: match[3].trimEnd(),
         });
-      } else if (match[3]) {
+      } else if (match[4] || match[5]) {
         // 文件夹
+        const folderName = match[4]?.trim() || parseActionParams(match[5]).path?.trim();
+        if (!folderName) {
+          lastIndex = combined.lastIndex;
+          continue;
+        }
         blocks.push({
           type: "folder",
-          name: match[3].trim(),
+          name: folderName,
         });
       }
       lastIndex = combined.lastIndex;
@@ -2519,7 +3661,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 剩余文本
     if (lastIndex < content.length) {
       let text = content.slice(lastIndex).trim();
-      // 清除残留的 [ACTION:...] 元数据标记
+      // 清除残留元数据标记
       text = text.replace(/\[ACTION:[^\]]*\]\s*/g, "").trim();
       if (text) blocks.push({ type: "text", content: text });
     }
@@ -2608,18 +3750,20 @@ document.addEventListener("DOMContentLoaded", async () => {
         const activeProject = sidebar.getActiveChat();
         if (!activeProject) return;
 
-        // 将内容写入沙箱文件
+        // 旧消息中的 Artifact 点击后直接写入源码（Codex 路线），不再走补丁提案合并。
         try {
-          await invoke("sandbox_write_file", {
-            projectName: activeProject.name,
-            relativePath: filename,
+          const result = await proposeAndMaybeApplyChanges(activeProject.name, `Artifact 文件变更: ${filename}`, [{
+            operation: "write_file",
+            path: filename,
             content: content || "",
-          });
-          log("INFO", `Artifact 写入文件: ${filename}`);
-          // 文件变更后重建感知索引
-          checkAndBuildIndex(activeProject.name, true);
+            rationale: "用户点击旧 Artifact 卡片触发的直接写入",
+            risk: "medium",
+          }]);
+          if (result && result.applied > 0) {
+            checkAndBuildIndex(activeProject.name, true);
+          }
         } catch (e) {
-          log("ERROR", `Artifact 写入失败: ${e}`);
+          log("ERROR", `Artifact 直接写入失败: ${e}`);
         }
 
         // 打开文件预览
@@ -2636,42 +3780,51 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /**
    * 主管最终回复裁剪：
-   * - 提取所有 ACTION 块（用于显示），executeAgentActions 仍基于原始 finalReply
-   * - 剥离代码块后逐句过滤元数据关键词
+   * - executeAgentActions 基于原始 finalReply 执行结构化文件动作
+   * - 对用户展示时彻底剥离 ACTION/ChangeSet 元数据和代码块
    * - 仅保留最后一句交付语（上限80字）
    */
   function sanitizeSupervisorReply(reply: string): string {
     if (!reply) return "文档已就绪，可直接使用，如有需要随时找我。";
   
-    // 1. 提取所有 ACTION 块（包含完整代码块，用于后续 executeAgentActions）
-    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER):[^\]]*\](?:\s*```[\s\S]*?```)?/g;
-    const actions = reply.match(actionRegex) || [];
-  
-    // 2. 移除所有 ACTION 块和 markdown 代码块，得到纯文字部分
+    // 1. 移除所有 ACTION 块和 markdown 代码块，得到纯文字部分
+    const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE|WRITE_DOCUMENT):[^\]]*\](?:\s*```[\s\S]*?```)?/g;
     let textPart = reply.replace(actionRegex, "");
     textPart = textPart.replace(/```[\s\S]*?```/g, ""); // 剥离残余代码块
   
-    // 3. 删除元数据段落
+    // 2. 删除元数据段落
     textPart = textPart.replace(/###?\s*工作亮点[\s\S]*?(?=###|$)/g, "");
     textPart = textPart.replace(/###?\s*改进建议[\s\S]*?(?=###|$)/g, "");
     textPart = textPart.replace(/###?\s*(?:修改|变更|代码)(?:总结|摘要|概览)[\s\S]*?(?=###|$)/g, "");
   
-    // 4. 逐句过滤含元数据关键词的句子
+    // 3. 逐句过滤含元数据关键词的句子
     const sentences = textPart.split(/[。！\n]+/).filter(s => s.trim());
     const filtered = sentences.filter(s => {
-      const metaKeywords = /专家|审查|汇总|各位|经审查确认|工作亮点|改进建议|调研员|设计师|工程师|已完成.*处理|处理结果|以下是.*代码|代码如下|具体实现|实现如下/;
+      const metaKeywords = /ACTION|ChangeSet|PatchProposal|专家|审查|汇总|各位|经审查确认|工作亮点|改进建议|调研员|设计师|工程师|已完成.*处理|处理结果|以下是.*代码|代码如下|具体实现|实现如下/;
       return !metaKeywords.test(s);
     });
   
-    // 5. 取最后一段非空句作为交付语（上限80字）
+    // 4. 取最后一段非空句作为交付语（上限80字）
     let deliveryLine = filtered.length > 0 ? filtered[filtered.length - 1].trim() : "任务已完成。";
     if (deliveryLine.length > 80) {
       deliveryLine = deliveryLine.substring(0, 77) + "...";
     }
   
-    // 6. 重建：ACTION块 + 交付语
-    const actionPart = actions.join("\n\n");
-    return actionPart ? `${actionPart}\n\n${deliveryLine}` : deliveryLine;
+    return deliveryLine;
+  }
+
+  function sanitizeAssistantDisplayContent(content: string): string {
+    if (!content) return "";
+    let text = content;
+    // 移除动作标记与代码块，防止把内部协议暴露给用户。
+    text = text.replace(/\[ACTION:[^\]]*\]/g, "");
+    text = text.replace(/```(?:json)?\s*\{[\s\S]*?"changes"[\s\S]*?\}\s*```/gi, "");
+    // 移除常见系统元数据段落。
+    text = text.replace(/^\s*\[(?:索引检索结果|搜索结果|命令执行结果|文档内容|系统认知盲区|项目代码参考|索引覆盖报告)[^\n]*\n?/gim, "");
+    text = text.replace(/^\s*(?:\[主管中途检查\].*)$/gim, "");
+    // 清理重复空行
+    text = text.replace(/\n{3,}/g, "\n\n").trim();
+    return text;
   }
 
   // ========== 专家任务卡片渲染 ==========
@@ -2679,14 +3832,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   /** 构建一组专家卡片元素（不插入 DOM，返回可复用的容器） */
   function buildTasksGroupEl(tasks: ExpertTask[], isLive = false): HTMLElement {
     const EXPERT_PHASE_LABELS: Record<string, string> = {
-      'searching-repo': '🔍 仓库检索中...',
-      'searching-vector': '📡 向量检索中...',
-      'searching-memory': '💾 记忆检索中...',
-      'reading-code': '📖 查看代码...',
-      'analyzing': '🧠 分析中...',
-      'writing-code': '✍️ 编写代码...',
-      'reviewing': '🔎 审查中...',
-      'completed': '✅ 已完成'
+      'searching-repo': '仓库检索中',
+      'searching-vector': '索引检索中',
+      'searching-memory': '记忆检索中',
+      'reading-code': '代码读取中',
+      'analyzing': '分析处理中',
+      'writing-code': '补丁生成中',
+      'reviewing': '质量审查中',
+      'completed': '已完成'
     };
 
     function extractSummary(output: string): string {
@@ -2695,48 +3848,95 @@ document.addEventListener("DOMContentLoaded", async () => {
       const clean = output.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       return clean.substring(0, 50) + (clean.length > 50 ? '...' : '');
     }
+    const sortedTasks = [...tasks].sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
     const groupEl = document.createElement("div");
     groupEl.className = "expert-tasks-group";
-
-    tasks.forEach((task) => {
-      const phase = task.phase || '';
-      const phaseLabel = EXPERT_PHASE_LABELS[phase] || '';
-
-      if (isLive) {
-        // 实时卡片：显示阶段状态词 + 加载动画
-        const cardHtml = `
-        <div class="expert-call-card" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}" data-phase="${escapeAttr(phase)}">
-          <div class="expert-call-accent"></div>
-          <div class="expert-call-body">
-            <div class="expert-call-header">
-              <span class="expert-call-name">${escapeHtml(task.expertName)}</span>
-              <span class="expert-call-title">${escapeHtml(task.expertTitle)}</span>
-            </div>
-            <div class="expert-call-phase">
-              <span class="phase-indicator"></span>
-              <span class="phase-text">${escapeHtml(phaseLabel || (task.status === 'pending' ? '⏳ 等待中...' : task.status === 'error' ? '❌ 失败' : '🔄 执行中...'))}</span>
-            </div>
-          </div>
+    const doneCount = sortedTasks.filter((t) => t.status === "done").length;
+    const failedCount = sortedTasks.filter((t) => t.status === "error").length;
+    const runningCount = sortedTasks.filter((t) => t.status === "running" || t.status === "pending").length;
+    const headerTitle = isLive ? "Monitored Background Tasks" : "专家协作记录";
+    groupEl.insertAdjacentHTML("beforeend", `
+      <div class="expert-group-header">
+        <div class="expert-group-title">${headerTitle}</div>
+        <div class="expert-group-stats">
+          <span>完成 ${doneCount}</span>
+          <span>执行中 ${runningCount}</span>
+          <span>异常 ${failedCount}</span>
         </div>
-      `;
-        groupEl.insertAdjacentHTML("beforeend", cardHtml);
-      } else {
-        // 历史卡片：显示摘要 + 折叠输出
-        const statusLabel = task.status === "done" ? "已完成"
-          : task.status === "running" ? "执行中"
-          : task.status === "error" ? "失败" : "等待中";
+      </div>
+    `);
 
-        const summaryText = task.status === "error"
-          ? (task.error || "执行出错")
-          : task.status === "done"
-          ? (task.output ? extractSummary(task.output) : "已完成")
-          : task.input.substring(0, 80) + (task.input.length > 80 ? "..." : "");
+    if (isLive) {
+      const firstBlockingTask = sortedTasks.find((t) => t.status === "error");
+      const leadTask = firstBlockingTask || sortedTasks.find((t) => t.status === "running") || sortedTasks[0];
+      const leadPhase = leadTask?.phase ? (EXPERT_PHASE_LABELS[leadTask.phase] || leadTask.phaseDetail || "处理中") : (leadTask?.phaseDetail || "处理中");
+      const leadLine = firstBlockingTask
+        ? `${leadTask.expertName} ${leadTask.expertTitle} 出现阻塞，正在重新分派。`
+        : `${leadTask?.expertName || "专家团"} ${leadPhase || "处理中"}。`;
+      const waveMap = new Map<number, ExpertTask[]>();
+      sortedTasks.forEach((task) => {
+        const wave = task.dispatchWave || 1;
+        if (!waveMap.has(wave)) waveMap.set(wave, []);
+        waveMap.get(wave)!.push(task);
+      });
+      const dispatchLine = `主管已派遣 ${sortedTasks.length} 位专家，分 ${waveMap.size} 轮执行。`;
+      const waveBlocks = [...waveMap.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([wave, waveTasks]) => {
+          const steps = waveTasks.map((task) => {
+            const statusLabel = task.status === "done" ? "完成"
+              : task.status === "error" ? "异常"
+              : task.status === "pending" ? "排队"
+              : "执行中";
+            const phaseText = task.phase ? (EXPERT_PHASE_LABELS[task.phase] || task.phaseDetail || "处理中") : (task.phaseDetail || "处理中");
+            return `
+              <li class="task-monitor-step" data-status="${task.status}">
+                <span class="task-monitor-dot"></span>
+                <div class="task-monitor-main">
+                  <span class="task-monitor-name">${escapeHtml(task.expertName)}</span>
+                  <span class="task-monitor-phase">${escapeHtml(phaseText)}</span>
+                </div>
+                <span class="task-monitor-status">${statusLabel}</span>
+              </li>
+            `;
+          }).join("");
+          const isParallel = waveTasks.length > 1 ? "并行" : "串行";
+          return `
+            <section class="task-monitor-wave">
+              <div class="task-monitor-wave-title">第 ${wave} 轮派遣 · ${isParallel}</div>
+              <ol class="task-monitor-steps">${steps}</ol>
+            </section>
+          `;
+        }).join("");
 
-        const cardHtml = `
+      groupEl.insertAdjacentHTML("beforeend", `
+        <div class="task-monitor-panel">
+          <div class="task-monitor-dispatch">${escapeHtml(dispatchLine)}</div>
+          <div class="task-monitor-lead">${escapeHtml(leadLine)}</div>
+          <div class="task-monitor-waves">${waveBlocks}</div>
+        </div>
+      `);
+      return groupEl;
+    }
+
+    sortedTasks.forEach((task, index) => {
+      // 历史卡片：显示摘要 + 折叠输出
+      const statusLabel = task.status === "done" ? "已完成"
+        : task.status === "running" ? "执行中"
+        : task.status === "error" ? "失败" : "等待中";
+
+      const summaryText = task.status === "error"
+        ? (task.error || "执行出错")
+        : task.status === "done"
+        ? (task.output ? extractSummary(task.output) : "已完成")
+        : task.input.substring(0, 80) + (task.input.length > 80 ? "..." : "");
+
+      const cardHtml = `
         <div class="expert-call-card" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}">
           <div class="expert-call-accent"></div>
           <div class="expert-call-body">
             <div class="expert-call-header">
+              <span class="expert-call-index">#${index + 1}</span>
               <span class="expert-call-name">${escapeHtml(task.expertName)}</span>
               <span class="expert-call-title">${escapeHtml(task.expertTitle)}</span>
               <span class="expert-call-status ${task.status}">${statusLabel}</span>
@@ -2750,14 +3950,13 @@ document.addEventListener("DOMContentLoaded", async () => {
                   </svg>
                   查看完整输出
                 </button>
-                <div class="expert-call-output-content">${escapeHtmlWithThink(task.output)}</div>
+                <div class="expert-call-output-content">${escapeHtmlWithThink(sanitizeAssistantDisplayContent(task.output))}</div>
               </div>
             ` : ""}
           </div>
         </div>
       `;
-        groupEl.insertAdjacentHTML("beforeend", cardHtml);
-      }
+      groupEl.insertAdjacentHTML("beforeend", cardHtml);
     });
 
     // 绑定折叠按钮
@@ -2807,12 +4006,65 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 发送按钮点击
   chatSendBtn?.addEventListener("click", sendMessage);
 
-  // 输入框回车发送
+  // 输入框回车发送 + 斜杠命令触发
   chatInput?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
+  });
+
+  chatInput?.addEventListener("input", () => {
+    const val = chatInput.value;
+    const slashModal = document.getElementById("slash-modal");
+    // 检测斜杠命令：行首单独 /
+    if (val === "/") {
+      if (slashModal) slashModal.classList.add("active");
+    } else if (val === "" || !val.startsWith("/")) {
+      if (slashModal) slashModal.classList.remove("active");
+      // 输入框内容被清空或不再以 / 开头，移除斜杠命令状态
+      chatInput.classList.remove("slash-active");
+      delete chatInput.dataset.slashCommand;
+      delete chatInput.dataset.slashLabel;
+    }
+  });
+
+  // 斜杠弹窗选项点击
+  document.querySelectorAll(".slash-option").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const target = e.currentTarget as HTMLElement;
+      const command = target.dataset.command;
+      const label = target.dataset.label || ("/" + command);
+      const slashModal = document.getElementById("slash-modal");
+      if (slashModal) slashModal.classList.remove("active");
+
+      // 在输入框中插入高亮的斜杠命令（营光笔迹效果）
+      const input = chatInput;
+      // 替换当前内容为高亮命令
+      input.value = label + " ";
+      // 标记输入框已含有激活的斜杠命令
+      input.dataset.slashCommand = command;
+      input.dataset.slashLabel = label;
+      input.classList.add("slash-active");
+      input.style.height = "auto";
+      input.focus();
+
+      if (command === "image") {
+        enterImageMode();
+      } else if (command === "video") {
+        enterVideoMode();
+      }
+    });
+  });
+
+  // 关闭斜杠弹窗
+  document.getElementById("slash-modal-close")?.addEventListener("click", () => {
+    const slashModal = document.getElementById("slash-modal");
+    if (slashModal) slashModal.classList.remove("active");
+  });
+  document.querySelector(".slash-modal-backdrop")?.addEventListener("click", () => {
+    const slashModal = document.getElementById("slash-modal");
+    if (slashModal) slashModal.classList.remove("active");
   });
 
   // 输入框自动高度
@@ -3547,7 +4799,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // 更新浮动按钮激活状态
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
     const repoBtn = document.getElementById("btn-repo");
     if (repoBtn) repoBtn.classList.add("active");
 
@@ -3606,7 +4858,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (floatingActions) floatingActions.style.visibility = "visible";
 
     // 更新浮动按钮激活状态
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
     const dirBtn = document.getElementById("btn-directory");
     if (dirBtn) dirBtn.classList.add("active");
 
@@ -3636,9 +4888,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       wikiItem.addEventListener("click", () => selectRepoItem("wiki", projectName));
       repoBrowserList.appendChild(wikiItem);
 
-      // 动态仓库项
+      // 动态仓库项（Wiki 文章入口固定保留一个，避免出现「文章名 + index」重复）
       if (Array.isArray(items)) {
         for (const item of items) {
+          if (typeof item?.id === "string" && item.id.startsWith("wiki:")) continue;
           const navItem = document.createElement("div");
           navItem.className = "repo-nav-item";
           navItem.dataset.repoId = item.id;
@@ -3848,41 +5101,64 @@ document.addEventListener("DOMContentLoaded", async () => {
       const statsEl = document.querySelector('.memory-stats');
       if (statsEl) {
         statsEl.innerHTML = `
+          <span class="memory-stat-item total">全部 ${stats.total}</span>
+          <span class="memory-stat-item ephemeral">瞬时记忆 ${stats.ephemeral}</span>
+          <span class="memory-stat-item working">工作记忆 ${stats.working}</span>
           <span class="memory-stat-item longterm">长期记忆 ${stats.longterm}</span>
         `;
       }
 
-      // 筛选器：只展示长期记忆，不需要筛选按钮
       const filterEl = document.querySelector('.memory-filter') as HTMLElement | null;
       if (filterEl) {
-        filterEl.innerHTML = '';
-        filterEl.style.display = 'none';
+        const filters: Array<{ key: typeof currentMemoryFilter; label: string }> = [
+          { key: 'all', label: '全部' },
+          { key: 'ephemeral', label: '瞬时' },
+          { key: 'working', label: '工作' },
+          { key: 'longterm', label: '长期' },
+        ];
+        filterEl.style.display = 'flex';
+        filterEl.innerHTML = filters.map(({ key, label }) => `
+          <button class="memory-filter-btn${currentMemoryFilter === key ? ' active' : ''}" data-filter="${key}">
+            ${label}
+          </button>
+        `).join('');
+        filterEl.querySelectorAll('.memory-filter-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const filter = (btn as HTMLElement).dataset.filter as typeof currentMemoryFilter | undefined;
+            if (!filter || filter === currentMemoryFilter) return;
+            currentMemoryFilter = filter;
+            loadMemoryPanel();
+          });
+        });
       }
 
-      // 检索记忆并只保留长期记忆
       const results = await searchMemory(projectName, {
         project_id: currentProjectId,
         query_text: '',
+        memory_type: currentMemoryFilter === 'all' ? undefined : currentMemoryFilter,
         limit: 1000,
       });
-      const filtered = results.filter(r => r.entry.memory_type === 'longterm');
+      const filtered = [...results].sort((a, b) => b.entry.created_at - a.entry.created_at);
 
       // 渲染列表
       const listEl = document.querySelector('.memory-list');
       if (listEl) {
         if (filtered.length === 0) {
-          listEl.innerHTML = `<div style="padding:20px;text-align:center;color:rgba(255,255,255,0.3);font-size:12px;">暂无长期记忆</div>`;
+          listEl.innerHTML = `<div style="padding:20px;text-align:center;color:rgba(255,255,255,0.3);font-size:12px;">暂无记忆</div>`;
         } else {
           listEl.innerHTML = filtered.map(r => {
             const m = r.entry;
             const kw = m.keywords?.length
               ? m.keywords.slice(0, 5).join(', ')
               : m.content?.substring(0, 40) || '';
+            const preview = escapeHtml(m.content?.replace(/\n+/g, ' ').slice(0, 120) || '');
             return `
               <div class="memory-item" data-id="${m.id}" data-type="${m.memory_type}">
+                <span class="memory-type-badge ${m.memory_type}">${m.memory_type}</span>
                 <span class="memory-keywords">${escapeHtml(kw)}</span>
                 <span class="memory-time">${relativeTime(m.created_at)}</span>
                 <button class="memory-delete-btn" title="删除">×</button>
+                <div style="width:100%;margin-top:8px;color:rgba(255,255,255,0.72);font-size:12px;line-height:1.5;">${preview}</div>
               </div>`;
           }).join('');
 
@@ -3950,10 +5226,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (isDraftMode) return;
     exitTokenMode();
     exitGitMode();
+    exitWikiMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
     isDraftMode = true;
 
-    // 更新浮动按钮状态
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    // 恢复目录画布可见（草稿模式下仍需要底层目录画布作为背景）
+    const cc = document.getElementById("canvas-container");
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (cc) cc.style.visibility = "visible";
+    if (dirCard) dirCard.style.display = "";
+
+    // 更新页签状态
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
     document.getElementById("btn-draft")?.classList.add("active");
 
     // 激活草稿画布和工具栏
@@ -3981,7 +5267,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     draftSidebar.hide();
 
     // 恢复目录按钮激活状态
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
 
     log("INFO", "退出草稿模式");
@@ -4554,7 +5840,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (filePreviewCard) { filePreviewCard.classList.remove("active"); filePreviewCard.style.display = "none"; }
 
     // 更新按钮active状态
-    document.querySelectorAll("#floating-actions .floating-btn").forEach((btn) => btn.classList.remove("active"));
+    document.querySelectorAll("#floating-actions .view-tab").forEach((btn) => btn.classList.remove("active"));
     document.getElementById("btn-token")?.classList.add("active");
 
     log("INFO", "进入词元模式");
@@ -4730,7 +6016,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     isGitMode = true;
 
     // 更新浮动按钮状态
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
     document.getElementById("btn-git")?.classList.add("active");
 
     // 隐藏画布
@@ -4789,7 +6075,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (floatingActions) floatingActions.style.visibility = "visible";
 
     // 恢复按钮
-    document.querySelectorAll(".floating-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
 
     log("INFO", "退出 Git 模式");
   }
@@ -4913,11 +6199,64 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitDataMode();
     const dirCard = document.getElementById("canvas-directory-card");
     if (dirCard) dirCard.style.display = "";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
   });
 
-  // ============ 图像模式 ============
+  type ImageCard = {
+    id: string;
+    prompt: string;
+    status: "pending" | "generating" | "done" | "error";
+    imageUrl?: string;
+    error?: string;
+    createdAt: number;
+  };
+  const imageCards: ImageCard[] = [];
+
+  function renderImageCards() {
+    const grid = document.getElementById("image-card-grid");
+    if (!grid) return;
+
+    if (imageCards.length === 0) {
+      grid.innerHTML = `
+        <div class="video-empty-state">
+          <p>在下方输入框中使用 <code>/image</code> 命令开始图像创作</p>
+          <p class="video-empty-hint">专家团将为你完成提示词设计和图像生成</p>
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = "";
+    for (const card of imageCards) {
+      const el = document.createElement("div");
+      el.className = `image-gen-card${card.status === "generating" || card.status === "pending" ? " generating" : ""}`;
+      const thumb = card.imageUrl
+        ? `<img src="${escapeAttr(card.imageUrl)}" alt="${escapeAttr(card.prompt)}" />`
+        : `<div class="image-gen-placeholder"><span class="image-gen-spinner"></span></div>`;
+      const actions = card.imageUrl
+        ? `<div class="image-gen-actions"><button class="image-action-btn download-btn" data-id="${escapeAttr(card.id)}" type="button">下载</button></div>`
+        : "";
+      el.innerHTML = `
+        <div class="image-gen-thumb">${thumb}</div>
+        <div class="image-gen-body">
+          <p class="image-gen-prompt">${escapeHtml(card.prompt)}</p>
+          ${actions}
+          ${card.error ? `<div class="video-segment-error">${escapeHtml(card.error)}</div>` : ""}
+        </div>
+      `;
+      el.querySelector(".download-btn")?.addEventListener("click", () => {
+        if (!card.imageUrl) return;
+        const a = document.createElement("a");
+        a.href = card.imageUrl;
+        a.download = `image_${card.id}.png`;
+        a.click();
+      });
+      grid.appendChild(el);
+    }
+  }
+
+  // ============ 图像模式（视频式卡片网格） ============
   function enterImageMode(): void {
     exitDraftMode();
     exitWikiMode();
@@ -4926,22 +6265,33 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitVideoMode();
     exitDataMode();
     const dirCard = document.getElementById("canvas-directory-card");
-    const imgCard = document.getElementById("canvas-image-card");
-    const imgBrowser = document.getElementById("image-browser");
+    const imgPanel = document.getElementById("image-panel");
+    const cc = document.getElementById("canvas-container");
+    const workspaceCanvas = document.getElementById("workspace-canvas");
     if (dirCard) dirCard.style.display = "none";
-    if (imgCard) imgCard.style.display = "flex";
-    if (imgBrowser) imgBrowser.style.display = "flex";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    if (cc) cc.style.visibility = "visible";
+    if (workspaceCanvas) workspaceCanvas.style.display = "none";
+    if (imgPanel) {
+      imgPanel.style.display = "flex";
+      imgPanel.classList.add("active");
+    }
+    renderImageCards();
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-image")?.classList.add("active");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "image" } }));
   }
 
   function exitImageMode(): void {
-    const imgCard = document.getElementById("canvas-image-card");
-    const imgBrowser = document.getElementById("image-browser");
+    const imgPanel = document.getElementById("image-panel");
     const dirCard = document.getElementById("canvas-directory-card");
-    if (imgCard) imgCard.style.display = "none";
-    if (imgBrowser) imgBrowser.style.display = "none";
+    const cc = document.getElementById("canvas-container");
+    const workspaceCanvas = document.getElementById("workspace-canvas");
+    if (imgPanel) {
+      imgPanel.classList.remove("active");
+      imgPanel.style.display = "none";
+    }
+    if (workspaceCanvas) workspaceCanvas.style.display = "";
+    if (cc) cc.style.visibility = "visible";
     if (dirCard) dirCard.style.display = "";
   }
 
@@ -4958,7 +6308,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const vidBrowser = document.getElementById("video-browser");
     const vidPanel = document.getElementById("video-panel");
     const cc = document.getElementById("canvas-container");
-    const floatingActions = document.getElementById("floating-actions");
     if (dirCard) dirCard.style.display = "none";
     if (vidCard) vidCard.style.display = "flex";
     if (vidBrowser) vidBrowser.style.display = "flex";
@@ -4967,8 +6316,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       vidPanel.classList.add("active");
     }
     if (cc) cc.style.visibility = "hidden";
-    if (floatingActions) floatingActions.style.visibility = "hidden";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-video")?.classList.add("active");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "video" } }));
   }
@@ -4978,7 +6326,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const vidBrowser = document.getElementById("video-browser");
     const vidPanel = document.getElementById("video-panel");
     const cc = document.getElementById("canvas-container");
-    const floatingActions = document.getElementById("floating-actions");
     const dirCard = document.getElementById("canvas-directory-card");
     if (vidCard) vidCard.style.display = "none";
     if (vidBrowser) vidBrowser.style.display = "none";
@@ -4987,7 +6334,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       vidPanel.style.display = "none";
     }
     if (cc) cc.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
     if (dirCard) dirCard.style.display = "";
   }
 
@@ -5005,7 +6351,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (cc) cc.style.visibility = "hidden";
     if (dataPanel) dataPanel.style.display = "flex";
     if (dataBrowser) dataBrowser.style.display = "flex";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-data")?.classList.add("active");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "data-analysis" } }));
   }
@@ -5023,13 +6369,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-image")?.addEventListener("click", () => {
     enterImageMode();
   });
+  document.getElementById("image-download-all")?.addEventListener("click", () => {
+    imageCards.filter((c) => !!c.imageUrl).forEach((c) => {
+      const a = document.createElement("a");
+      a.href = c.imageUrl!;
+      a.download = `image_${c.id}.png`;
+      a.click();
+    });
+  });
   document.getElementById("btn-video")?.addEventListener("click", () => {
     enterVideoMode();
   });
   document.getElementById("video-back")?.addEventListener("click", () => {
     exitVideoMode();
     document.getElementById("canvas-directory-card")!.style.display = "";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
   });
   document.getElementById("btn-data")?.addEventListener("click", () => {
@@ -5038,7 +6392,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("data-back")?.addEventListener("click", () => {
     exitDataMode();
     document.getElementById("canvas-directory-card")!.style.display = "";
-    document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
   });
 
@@ -5053,7 +6407,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       exitDataMode();
       const dirCard = document.getElementById("canvas-directory-card");
       if (dirCard) dirCard.style.display = "";
-      document.querySelectorAll(".floating-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
       document.getElementById("btn-directory")?.classList.add("active");
     }
   };
@@ -5259,6 +6613,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  async function reloadCurrentPreviewFile(): Promise<void> {
+    const activeProject = sidebar.getActiveChat();
+    if (!activeProject || !currentPreviewFile || !filePreviewEditor) return;
+    if (isImageFile(currentPreviewFile)) return;
+
+    try {
+      const content = await invoke<string>("sandbox_read_file", {
+        projectName: activeProject.name,
+        relativePath: currentPreviewFile,
+      });
+      filePreviewEditor.value = content;
+      if (isMarkdownFile(currentPreviewFile)) {
+        updateMdPreview();
+      } else {
+        updateHighlight();
+        triggerCanvasRefresh();
+      }
+    } catch (e) {
+      console.error("刷新当前预览文件失败:", e);
+    }
+  }
+
   // 自动保存（防抖 2 秒）
   function triggerAutoSave() {
     if (autoSaveTimer) clearTimeout(autoSaveTimer);
@@ -5437,7 +6813,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ========== 三模式切换 ==========
   function switchMode(mode: "source" | "preview" | "canvas" | "image" | "highlight") {
-    if (mode === currentPreviewMode) return;
     currentPreviewMode = mode;
 
     // 更新标签激活态
@@ -5454,7 +6829,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     switch (mode) {
       case "source":
-        if (filePreviewEditor) { filePreviewEditor.style.display = ""; filePreviewEditor.focus(); }
+        if (currentPreviewFile && !isMarkdownFile(currentPreviewFile) && !isImageFile(currentPreviewFile)) {
+          updateHighlight();
+          if (filePreviewHighlight) filePreviewHighlight.classList.add("active");
+        } else if (filePreviewEditor) {
+          filePreviewEditor.style.display = "";
+          filePreviewEditor.focus();
+        }
         break;
       case "preview":
         updateMdPreview();
@@ -5487,6 +6868,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   filePreviewEditor?.addEventListener("input", () => {
     triggerAutoSave();
     triggerCanvasRefresh();
+    if (currentPreviewMode === "source" || currentPreviewMode === "highlight") updateHighlight();
   });
 
   // 判断是否为 MD 文件
@@ -5605,8 +6987,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (filePreviewEditor) filePreviewEditor.value = `无法读取文件: ${e}`;
     }
 
-    // MD 默认预览模式，代码默认高亮模式
-    switchMode(isMd ? "preview" : "highlight");
+    // MD 默认预览模式，代码默认源码模式
+    switchMode(isMd ? "preview" : "source");
   };
 
   // 高亮侧边栏中当前预览的文件
@@ -5780,8 +7162,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           // 高亮当前选中
           fileBrowserTree?.querySelectorAll(".file-tree-item").forEach((el) => el.classList.remove("active"));
           div.classList.add("active");
-          // MD 默认预览，代码默认高亮
-          switchMode(isMd ? "preview" : "highlight");
+          // MD 默认预览，代码默认源码
+          switchMode(isMd ? "preview" : "source");
         }
       });
 

@@ -122,7 +122,7 @@ export async function saveExpertMemory(
     id: generateMemoryId(),
     project_id: projectId,
     expert_id: expertId,
-    memory_type: "ephemeral",
+    memory_type: "working",
     content: `[${expertName}] ${taskDescription}\n\n${content}`,
     keywords: extractKeywords(keywordText),
     context_summary: taskDescription.slice(0, 100),

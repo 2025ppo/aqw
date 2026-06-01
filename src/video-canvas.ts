@@ -1,37 +1,22 @@
 // video-canvas.ts
-// 视频编辑视图 - 卡片布局 + 底部时间轴 overlay
+// 视频创作视图 - 轻量卡片网格：播放器 + 导出按钮
+// 由专家团流水线驱动的镜头分段 → 生成 → 拼接工作流
 
-interface VideoNode {
+interface VideoSegment {
   id: string;
-  type: "source" | "effect" | "output";
-  label: string;
-  src: string;        // 视频缩略图或封面路径
-  properties: Record<string, any>;
-}
-
-interface VideoConnection {
-  id: string;
-  fromId: string;
-  toId: string;
-}
-
-interface TimelineClip {
-  id: string;
-  track: "image" | "audio";
-  startTime: number;
-  duration: number;
-  label: string;
-  color: string;
+  label: string;         // 镜头名称，如 "镜头1: 开场"
+  description: string;   // 镜头描述
+  videoUrl: string;      // 视频路径或 blob URL
+  duration: number;      // 秒
+  thumbnail: string;     // 缩略图（可选）
+  status: "pending" | "generating" | "done" | "error";
+  error?: string;
 }
 
 class VideoCanvasController {
-  private nodes: VideoNode[] = [];
-  private connections: VideoConnection[] = [];
-  private clips: TimelineClip[] = [];
-  // timeline 渲染到 #video-timeline-wrap，无需独立元素引用
+  private segments: VideoSegment[] = [];
   private active: boolean = false;
-  private playheadTime: number = 0;
-  private totalDuration: number = 60;
+  private currentPlayingId: string | null = null;
 
   constructor() {
     this.bindEvents();
@@ -45,59 +30,129 @@ class VideoCanvasController {
         this.deactivate();
       }
     });
-
-    document.getElementById("canvas-video-add-btn")?.addEventListener("click", () => {
-      // 等待AI操作或用户输入
-    });
   }
 
   private activate(): void {
     this.active = true;
     this.renderCardGrid();
-    this.showTimeline();
-    this.updateClipList();
   }
 
   private deactivate(): void {
     this.active = false;
+    this.stopAllPlayers();
     this.clearCardGrid();
-    this.hideTimeline();
   }
 
-  // 在 #video-card-grid 中渲染卡片网格
+  private stopAllPlayers(): void {
+    this.currentPlayingId = null;
+    const grid = document.getElementById("video-card-grid");
+    if (!grid) return;
+    grid.querySelectorAll("video").forEach((v) => {
+      (v as HTMLVideoElement).pause();
+    });
+  }
+
+  // === 卡片网格渲染 ===
+
   private renderCardGrid(): void {
     this.clearCardGrid();
     const grid = document.getElementById("video-card-grid");
     if (!grid) return;
 
-    const colorMap: Record<string, string> = {
-      source: "#4CAF50",
-      effect: "#9C27B0",
-      output: "#FF9800",
-    };
-
-    for (const node of this.nodes) {
-      const card = document.createElement("div");
-      card.className = "video-card-item";
-      card.dataset.id = node.id;
-
-      const thumb = node.src
-        ? `<img src="${node.src}" class="video-card-thumb" alt="" />`
-        : `<div class="video-card-placeholder" style="background:${colorMap[node.type] || "#555"}">
-             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:32px;height:32px;opacity:0.5;">
-               <polygon points="23 7 16 12 23 17 23 7"/>
-               <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-             </svg>
-           </div>`;
-
-      card.innerHTML = `
-        <div class="video-card-thumb-wrap">${thumb}</div>
-        <div class="video-card-info">
-          <div class="video-card-dot" style="background:${colorMap[node.type] || "#555"}"></div>
-          <span class="video-card-label">${node.label}</span>
+    if (this.segments.length === 0) {
+      grid.innerHTML = `
+        <div class="video-empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;opacity:0.3;">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <p>在下方输入框中使用 <code>/</code> 命令开始视频创作</p>
+          <p class="video-empty-hint">专家团将为你完成调研、镜头分段和视频生成</p>
         </div>
       `;
+      return;
+    }
+
+    for (const seg of this.segments) {
+      const card = this.buildSegmentCard(seg);
       grid.appendChild(card);
+    }
+  }
+
+  private buildSegmentCard(seg: VideoSegment): HTMLElement {
+    const card = document.createElement("div");
+    card.className = `video-segment-card${seg.status === "generating" ? " generating" : ""}`;
+    card.dataset.id = seg.id;
+
+    const statusBadge = this.statusBadge(seg.status);
+    const playerHtml = seg.videoUrl && seg.status === "done"
+      ? `<video class="video-segment-player"
+               src="${seg.videoUrl}"
+               preload="metadata"
+               controls
+               controlslist="nodownload"
+               data-seg-id="${seg.id}">
+         </video>`
+      : `<div class="video-segment-placeholder">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <polygon points="23 7 16 12 23 17 23 7"/>
+             <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+           </svg>
+           ${seg.status === "generating" ? '<span class="video-generating-spinner"></span>' : ''}
+         </div>`;
+
+    card.innerHTML = `
+      <div class="video-segment-thumb">${playerHtml}</div>
+      <div class="video-segment-body">
+        <div class="video-segment-header">
+          <span class="video-segment-label">${this.escapeHtml(seg.label)}</span>
+          ${statusBadge}
+        </div>
+        <p class="video-segment-desc">${this.escapeHtml(seg.description || "")}</p>
+        <div class="video-segment-meta">
+          <span class="video-segment-duration">${seg.duration > 0 ? seg.duration + "s" : "—"}</span>
+        </div>
+        ${seg.status === "done" && seg.videoUrl
+          ? `<div class="video-segment-actions">
+               <button class="video-action-btn export-btn" data-action="export" data-id="${seg.id}" title="导出此片段">
+                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                   <polyline points="7 10 12 15 17 10"/>
+                   <line x1="12" y1="15" x2="12" y2="3"/>
+                 </svg>
+                 <span>导出</span>
+               </button>
+             </div>`
+          : ""}
+        ${seg.status === "generating" ? `<div class="video-progress-bar"><div class="video-progress-fill"></div></div>` : ""}
+        ${seg.error ? `<div class="video-segment-error">${this.escapeHtml(seg.error)}</div>` : ""}
+      </div>
+    `;
+
+    // 绑定导出按钮
+    card.querySelector(".export-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.exportSegment(seg.id);
+    });
+
+    // 绑定播放器事件（防止多视频同时播放）
+    card.querySelector("video")?.addEventListener("play", () => {
+      if (this.currentPlayingId && this.currentPlayingId !== seg.id) {
+        const prevVideo = document.querySelector(`video[data-seg-id="${this.currentPlayingId}"]`) as HTMLVideoElement;
+        if (prevVideo) prevVideo.pause();
+      }
+      this.currentPlayingId = seg.id;
+    });
+
+    return card;
+  }
+
+  private statusBadge(status: VideoSegment["status"]): string {
+    switch (status) {
+      case "pending": return '<span class="video-status-badge pending">等待中</span>';
+      case "generating": return '<span class="video-status-badge generating">生成中</span>';
+      case "done": return '<span class="video-status-badge done">已完成</span>';
+      case "error": return '<span class="video-status-badge error">失败</span>';
     }
   }
 
@@ -106,134 +161,112 @@ class VideoCanvasController {
     if (grid) grid.innerHTML = "";
   }
 
-  // 时间轴（渲染到 #video-timeline-wrap 容器内）
-  private showTimeline(): void {
-    const wrap = document.getElementById("video-timeline-wrap");
-    if (!wrap) return;
-    wrap.style.display = "flex";
-    this.renderTimeline();
+  // === 导出 ===
+
+  private exportSegment(id: string): void {
+    const seg = this.segments.find((s) => s.id === id);
+    if (!seg || !seg.videoUrl) return;
+
+    // 如果是 blob URL，通过创建 a 标签下载
+    const a = document.createElement("a");
+    a.href = seg.videoUrl;
+    a.download = `${seg.label.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, "_")}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
-  private hideTimeline(): void {
-    const wrap = document.getElementById("video-timeline-wrap");
-    if (wrap) wrap.style.display = "none";
-  }
-
-  private renderTimeline(): void {
-    const wrap = document.getElementById("video-timeline-wrap");
-    if (!wrap) return;
-
-    const pixelsPerSecond = 20;
-    const totalWidth = this.totalDuration * pixelsPerSecond;
-
-    wrap.innerHTML = `
-      <div style="height:20px;background:#222;border-bottom:1px solid #333;position:relative;overflow:hidden;">
-        <div style="position:relative;height:100%;width:${totalWidth}px;">
-          ${Array.from({ length: Math.ceil(this.totalDuration / 5) + 1 }, (_, i) =>
-            `<span style="position:absolute;left:${i * 5 * pixelsPerSecond}px;top:2px;font-size:9px;color:#888;">${i * 5}s</span>`
-          ).join("")}
-        </div>
-      </div>
-      <div style="flex:1;display:flex;flex-direction:column;overflow-x:auto;overflow-y:hidden;">
-        <div style="display:flex;align-items:center;height:50%;border-bottom:1px solid #333;">
-          <span style="width:60px;font-size:10px;color:#888;padding-left:4px;">图像</span>
-          <div style="position:relative;flex:1;height:100%;width:${totalWidth}px;">
-            ${this.clips.filter(c => c.track === "image").map(c => `
-              <div style="position:absolute;left:${c.startTime * pixelsPerSecond}px;width:${c.duration * pixelsPerSecond}px;top:6px;bottom:6px;background:${c.color};border-radius:4px;font-size:10px;color:#fff;padding:2px 4px;overflow:hidden;">${c.label}</div>
-            `).join("")}
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;height:50%;">
-          <span style="width:60px;font-size:10px;color:#888;padding-left:4px;">音频</span>
-          <div style="position:relative;flex:1;height:100%;width:${totalWidth}px;">
-            ${this.clips.filter(c => c.track === "audio").map(c => `
-              <div style="position:absolute;left:${c.startTime * pixelsPerSecond}px;width:${c.duration * pixelsPerSecond}px;top:6px;bottom:6px;background:${c.color};border-radius:4px;font-size:10px;color:#fff;padding:2px 4px;overflow:hidden;">${c.label}</div>
-            `).join("")}
-          </div>
-        </div>
-      </div>
-      <div style="position:absolute;top:0;left:${this.playheadTime * pixelsPerSecond + 60}px;width:2px;height:100%;background:red;pointer-events:none;z-index:2;"></div>
-    `;
-  }
-
-  private updateClipList(): void {
-    const list = document.getElementById("video-clip-list");
-    if (!list) return;
-    const allItems = [...this.nodes, ...this.clips];
-    list.innerHTML = allItems.map(item => `
-      <div class="repo-nav-item" data-id="${item.id}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;">
-          <polygon points="23 7 16 12 23 17 23 7"/>
-          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-        </svg>
-        <span>${item.label}</span>
-      </div>
-    `).join("");
+  /** 导出完整拼接视频（如果有的话） */
+  public exportFinal(): void {
+    // 触发全局导出事件，由 main.ts 处理
+    window.dispatchEvent(new CustomEvent("video-export-final"));
   }
 
   // === 公共 API ===
 
-  public addNode(type: "source" | "effect" | "output", label: string, src?: string): string {
-    const id = "vn-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
-    this.nodes.push({
-      id, type, label,
-      src: src || "",
-      properties: {},
+  /** 添加镜头分段 */
+  public addSegment(label: string, description?: string): string {
+    const id = "vseg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+    this.segments.push({
+      id,
+      label,
+      description: description || "",
+      videoUrl: "",
+      duration: 0,
+      thumbnail: "",
+      status: "pending",
     });
-    if (this.active) { this.renderCardGrid(); this.updateClipList(); }
+    if (this.active) this.renderCardGrid();
     return id;
   }
 
-  public connect(fromId: string, toId: string): void {
-    const id = "vc-" + Date.now();
-    this.connections.push({ id, fromId, toId });
-    // 卡片布局不渲染连线，仅记录关系
+  /** 批量设置镜头分段（替换现有） */
+  public setSegments(segments: { label: string; description?: string }[]): string[] {
+    this.segments = segments.map((s) => ({
+      id: "vseg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      label: s.label,
+      description: s.description || "",
+      videoUrl: "",
+      duration: 0,
+      thumbnail: "",
+      status: "pending" as const,
+    }));
+    if (this.active) this.renderCardGrid();
+    return this.segments.map((s) => s.id);
   }
 
-  public addToTimeline(track: "image" | "audio", label: string, startTime: number, duration?: number): string {
-    const id = "clip-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
-    const color = track === "image" ? "#2196F3" : "#FF9800";
-    this.clips.push({ id, track, startTime, duration: duration ?? 5, label, color });
-    if (startTime + (duration ?? 5) > this.totalDuration) {
-      this.totalDuration = startTime + (duration ?? 5) + 10;
-    }
-    if (this.active) { this.renderTimeline(); this.updateClipList(); }
-    return id;
+  /** 更新镜头状态 */
+  public updateSegment(id: string, update: Partial<Pick<VideoSegment, "status" | "videoUrl" | "duration" | "thumbnail" | "error" | "label" | "description">>): void {
+    const seg = this.segments.find((s) => s.id === id);
+    if (!seg) return;
+    Object.assign(seg, update);
+    if (this.active) this.renderCardGrid();
   }
 
-  public cutAt(track: string, atTime: number): void {
-    const clip = this.clips.find(c => c.track === track && c.startTime <= atTime && c.startTime + c.duration > atTime);
-    if (!clip) return;
-    const newDuration = atTime - clip.startTime;
-    const remainDuration = clip.duration - newDuration;
-    clip.duration = newDuration;
-    const newId = "clip-" + Date.now();
-    this.clips.push({ id: newId, track: clip.track, startTime: atTime, duration: remainDuration, label: clip.label + "(2)", color: clip.color });
-    if (this.active) { this.renderTimeline(); this.updateClipList(); }
+  /** 移除镜头 */
+  public removeSegment(id: string): void {
+    this.segments = this.segments.filter((s) => s.id !== id);
+    if (this.active) this.renderCardGrid();
   }
 
-  public removeNode(id: string): void {
-    this.nodes = this.nodes.filter(n => n.id !== id);
-    this.connections = this.connections.filter(c => c.fromId !== id && c.toId !== id);
-    if (this.active) {
-      this.renderCardGrid();
-      this.updateClipList();
-    }
+  /** 清空所有镜头 */
+  public clearSegments(): void {
+    this.segments = [];
+    if (this.active) this.renderCardGrid();
   }
 
-  public getState() {
-    return { nodes: [...this.nodes], connections: [...this.connections], clips: [...this.clips], playheadTime: this.playheadTime, totalDuration: this.totalDuration };
+  public getState(): { segments: VideoSegment[] } {
+    return { segments: [...this.segments] };
+  }
+
+  public getSegments(): VideoSegment[] {
+    return [...this.segments];
+  }
+
+  private escapeHtml(text: string): string {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  /** 静默设置数据（不重新渲染，用于初始化加载） */
+  public loadState(segments: VideoSegment[]): void {
+    this.segments = segments;
   }
 }
 
 // 初始化
 const videoController = new VideoCanvasController();
 
-// 暴露全局API
+// 暴露全局 API
 (window as any).__videoCanvas = {
-  addNode: (type: string, label: string) => videoController.addNode(type as any, label),
-  connect: (from: string, to: string) => videoController.connect(from, to),
-  addToTimeline: (track: "image" | "audio", label: string, at: number, duration?: number) => videoController.addToTimeline(track, label, at, duration),
-  cut: (track: string, at: number) => videoController.cutAt(track, at),
+  addSegment: (label: string, description?: string) => videoController.addSegment(label, description),
+  setSegments: (segments: { label: string; description?: string }[]) => videoController.setSegments(segments),
+  updateSegment: (id: string, update: any) => videoController.updateSegment(id, update),
+  removeSegment: (id: string) => videoController.removeSegment(id),
+  clearSegments: () => videoController.clearSegments(),
   getState: () => videoController.getState(),
+  getSegments: () => videoController.getSegments(),
+  loadState: (segments: any[]) => videoController.loadState(segments),
+  exportFinal: () => videoController.exportFinal(),
 };
