@@ -1,4 +1,4 @@
-export type PromptScene =
+﻿export type PromptScene =
   | "code-development"
   | "code-review"
   | "technical-research"
@@ -19,7 +19,9 @@ export type PromptModuleId =
   | "command-guidance"
   | "document-tool-primer"
   | "media-tool-primer"
-  | "video-workflow";
+  | "video-workflow"
+  | "approval-guidance"
+  | "patch-guidance";
 
 export type PromptModuleHintMap = Partial<Record<string, PromptModuleId[]>>;
 
@@ -107,26 +109,120 @@ export const PROMPT_MODULES: Record<PromptModuleId, PromptModuleDefinition> = {
 ### 第三步：拼接输出
 所有镜头生成完成后，输出最终拼接方案。`,
   },
+  "approval-guidance": {
+    id: "approval-guidance",
+    text: `【审批流程指南】
+## 命令审批机制
+
+你可以使用工具执行命令，但需要了解审批规则：
+- **自动执行**: ls, dir, cat, git status, cargo check, npm run 等只读命令无需确认
+- **需要确认**: 涉及文件写入、安装包、网络请求的命令会请求用户确认
+- **被拦截**: rm -rf /, format c: 等危险命令将被系统拦截
+
+当工具返回“需要用户确认”时，等待确认结果后再继续。不要重复尝试被拦截的命令。`,
+  },
+  "patch-guidance": {
+    id: "patch-guidance",
+    text: `## File Patch Format Instructions
+
+You have access to a \`file_patch\` tool that can create, modify, delete, and move files using a structured patch format.
+
+### Patch Format Syntax
+
+\`\`\`
+*** Begin Patch
+[operations...]
+*** End Patch
+\`\`\`
+
+### Operations
+
+#### Create a new file:
+\`\`\`
+*** Add File: path/to/new/file.ts
++line 1 of new content
++line 2 of new content
++line 3 of new content
+\`\`\`
+
+#### Modify an existing file:
+\`\`\`
+*** Update File: path/to/existing/file.ts
+@@ context_line_to_locate_position
+ unchanged line (context, prefix with space)
+-old line to remove
++new line to add
+ another unchanged line
+\`\`\`
+
+#### Delete a file:
+\`\`\`
+*** Delete File: path/to/file.ts
+\`\`\`
+
+#### Move/Rename a file:
+\`\`\`
+*** Move to: path/to/new/location.ts
+*** Update File: path/to/old/location.ts
+\`\`\`
+
+### Critical Rules
+
+1. **Always use relative paths** — never use absolute paths like \`C:\\...\` or \`/home/...\`
+2. **Every new/added line MUST have a \`+\` prefix** — even when creating a brand new file
+3. **Context lines MUST have a space prefix** — not no prefix
+4. **Provide exactly 3 lines of context** before and after each change for accurate positioning
+5. **Use multiple \`@@\` sections** when the same file has changes in different locations
+6. **For repeated/similar code blocks**, include enough unique context lines so the system can unambiguously locate the correct position
+7. **Do NOT wrap the patch in JSON or markdown code fences** — output it directly as plain text
+8. **End of file operations**: Use \`*** End of File\` marker when changes are at the very end
+
+### Multiple Changes in One File
+
+When a file needs changes in multiple locations, use multiple @@ sections:
+\`\`\`
+*** Update File: src/main.ts
+@@ import { something } from
+ import { something } from './module';
++import { newThing } from './new-module';
+
+@@ function handleRequest
+ function handleRequest(req: Request) {
+-  const result = oldMethod(req);
++  const result = newMethod(req);
+   return result;
+ }
+\`\`\`
+
+### Important Tips
+- If your patch fails, you will receive an error message with the actual file content near the target area. Use this to correct your context lines and retry.
+- When editing large files, ensure your @@ context line is unique enough to avoid matching the wrong location.
+- Prefer small, focused patches over large ones — split complex changes into multiple patches if needed.`,
+  },
 };
 
 const ALL_PROMPT_MODULE_IDS = Object.keys(PROMPT_MODULES) as PromptModuleId[];
 
 const EXPERT_STATIC_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
   "jiang-ruoxi": ["code-tool-primer"],
-  "jiang-qinglan": ["code-tool-primer"],
-  "jiang-yumo": ["code-tool-primer"],
-  "jiang-subai": ["code-tool-primer"],
+  "jiang-qinglan": ["code-tool-primer", "patch-guidance"],
+  "jiang-yumo": ["code-tool-primer", "patch-guidance"],
+  "jiang-subai": ["code-tool-primer", "patch-guidance"],
   "jiang-yingqiu": ["code-tool-primer"],
+  "jiang-jianheng": ["code-tool-primer"],
+  "jiang-cexun": ["code-tool-primer", "command-guidance"],
   "jiang-zhilan": ["document-tool-primer"],
   "jiang-huaying": ["media-tool-primer"],
 };
 
 const EXPERT_SUPPORTED_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
   "jiang-ruoxi": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+  "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
+  "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
+  "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
   "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+  "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+  "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
   "jiang-zhilan": ["document-tool-primer"],
   "jiang-huaying": ["media-tool-primer", "video-workflow"],
 };
@@ -647,4 +743,33 @@ export function detectToolIntentWithoutAction(text: string): {
       includesAnyKeyword(text, VIDEO_TRIGGER_KEYWORDS)
       && !matchesAnyPattern(text, VIDEO_NEGATION_PATTERNS),
   };
+}
+
+// ========== 工具Schema动态注入 ==========
+
+export interface ToolDefinitionForPrompt {
+  name: string;
+  description: string;
+  parameters: { properties?: Record<string, any>; required?: string[] };
+}
+
+/**
+ * 根据专家角色生成工具Schema模块内容
+ * 动态生成而非静态定义
+ *
+ * 调用时机说明：在 Agent Loop 组装 prompt 时，
+ * 若专家拥有工具调用能力，应调用此函数生成工具描述并注入到最终 prompt 中。
+ */
+export function buildToolSchemaModule(_expertId: string, availableTools: ToolDefinitionForPrompt[]): string {
+  const header = '## 可用工具\n\n你可以通过以下工具与系统交互。调用工具时使用 [ACTION:TOOL_CALL name="工具名" args=\'{"参数JSON"}\'\']\n\n';
+
+  const toolDocs = availableTools.map(tool => {
+    const params = Object.entries(tool.parameters.properties || {}).map(([key, schema]: [string, any]) => {
+      const required = (tool.parameters.required || []).includes(key) ? '必填' : '可选';
+      return `  - \`${key}\` (${required}): ${schema.description || ''}`;
+    }).join('\n');
+    return `### ${tool.name}\n${tool.description}\n\n参数:\n${params}`;
+  }).join('\n\n');
+
+  return header + toolDocs;
 }

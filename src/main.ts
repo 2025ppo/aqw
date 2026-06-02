@@ -1,5 +1,6 @@
 ﻿import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { sidebar } from "./sidebar";
 import { initCanvas, getCanvas, FileCanvas, DocBlock, CanvasNode, CanvasEdge } from "./canvas";
 import { DraftCanvas, DraftToolbox, DraftSidebar, DraftTool } from "./draft";
@@ -63,6 +64,38 @@ interface ChangeSet {
   rationale?: string;
   risk?: string;
   allowOverwrite?: boolean;
+}
+
+interface LogicCanvasPayloadNode {
+  id: string;
+  label: string;
+  kind: string;
+  detail: string;
+  file_path?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  weight: number;
+}
+
+interface LogicCanvasPayloadEdge {
+  from: string;
+  to: string;
+  relation_type: string;
+  weight: number;
+}
+
+interface ProjectLogicCanvasPayload {
+  updated_at: string;
+  nodes: LogicCanvasPayloadNode[];
+  edges: LogicCanvasPayloadEdge[];
+}
+
+interface FileLogicCanvasPayload {
+  file_path: string;
+  language: string;
+  updated_at: string;
+  nodes: LogicCanvasPayloadNode[];
+  edges: LogicCanvasPayloadEdge[];
 }
 
 // ========== 词元跟踪数据类型 ==========
@@ -508,6 +541,12 @@ function getActiveApiKey(): string | null {
 /** 根据专家 ID 解析其绑定的 API 密钥（封装 resolveExpertApiKey） */
 function getExpertApiKey(expertId: string): string | null {
   return resolveExpertApiKey(expertId, experts, keyPoolItems as any);
+}
+
+/** 根据专家 ID 解析其绑定的密钥记录 ID */
+function getExpertKeyId(expertId: string): string | null {
+  const expert = experts.find((item) => item.id === expertId);
+  return expert?.keyId || null;
 }
 
 /** 查询密钥的多模态能力 */
@@ -958,8 +997,7 @@ export interface Expert {
 // 五者未配置密钥时软件核心功能不可用
 const CORE_EXPERT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan", "jiang-ruoxi", "jiang-yingqiu"];
 
-const DEFAULT_EXPERTS: Expert[] = [
-  // === 核心角色（顶部三个，必须配置密钥） ===
+const SYSTEM_EXPERTS: Expert[] = [
   {
     id: "jiang-xingtu",
     name: "江星图",
@@ -974,57 +1012,39 @@ const DEFAULT_EXPERTS: Expert[] = [
     description: "软件本体 AI 助手，负责画布目录关系生成、知识库与仓库生成、对话压缩/总结/优化",
     keyId: null,
   },
-  {
-    id: "jiang-qinglan",
-    name: "江青澜",
-    title: "通用工程师",
-    description: "负责通用技术方案、架构设计与技术调研",
-    keyId: null,
-  },
-  // === 普通专家 ===
-  {
-    id: "jiang-dingchu",
-    name: "江定初",
-    title: "设计师",
-    description: "负责 UI/UX 设计、视觉方案与交互规范",
-    keyId: null,
-  },
-  {
-    id: "jiang-niannian",
-    name: "江念念",
-    title: "文员",
-    description: "负责文档整理、会议纪要、资料归档",
-    keyId: null,
-  },
-  {
-    id: "jiang-yumo",
-    name: "江予墨",
-    title: "前端工程师",
-    description: "负责前端开发、界面实现与交互逻辑",
-    keyId: null,
-  },
-  {
-    id: "jiang-subai",
-    name: "江素白",
-    title: "后端工程师",
-    description: "负责后端服务、数据库设计与 API 开发",
-    keyId: null,
-  },
-  {
-    id: "jiang-ruoxi",
-    name: "江若溪",
-    title: "调研员",
-    description: "负责代码环境调研、需求分析、技术可行性评估与上下文收集",
-    keyId: null,
-  },
-  {
-    id: "jiang-yingqiu",
-    name: "江映秋",
-    title: "审查员",
-    description: "负责代码质量审查、方案合规校验、风险评估与验收确认",
-    keyId: null,
-  },
 ];
+
+function buildDefaultExperts(): Expert[] {
+  const routerExperts = getAvailableExpertInfos().map((info) => ({
+    id: info.id,
+    name: info.name,
+    title: info.title,
+    description: info.description,
+    keyId: null,
+  }));
+
+  const orderedIds = [
+    "jiang-xingtu",
+    "jiang-xinghe",
+    "jiang-qinglan",
+    ...routerExperts.map((expert) => expert.id).filter((id) => id !== "jiang-qinglan"),
+  ];
+
+  return orderedIds
+    .map((id) => SYSTEM_EXPERTS.find((expert) => expert.id === id) || routerExperts.find((expert) => expert.id === id))
+    .filter((expert): expert is Expert => Boolean(expert))
+    .map((expert) => ({
+      ...expert,
+      keyId: null,
+      tokenAllocation: expert.tokenAllocation
+        ? {
+          dailyLimit: expert.tokenAllocation.dailyLimit ?? null,
+          monthlyLimit: expert.tokenAllocation.monthlyLimit ?? null,
+          yearlyLimit: expert.tokenAllocation.yearlyLimit ?? null,
+        }
+        : undefined,
+    }));
+}
 
 export let experts: Expert[] = [];
 
@@ -1035,26 +1055,33 @@ async function loadExperts() {
 
 /** 仅加载专家数据，不渲染 UI（供启动时使用） */
 async function loadExpertsData() {
+  const defaults = buildDefaultExperts();
   try {
     const json = await invoke<string>("load_experts");
     const saved = JSON.parse(json || "[]") as Expert[];
-    const defaultIds = DEFAULT_EXPERTS.map((e) => e.id);
-    const savedIds = saved.map((e) => e.id);
-    const missingIds = defaultIds.filter((id) => !savedIds.includes(id));
-    if (missingIds.length > 0) {
-      // 补齐缺失的新角色（如旧数据缺少江星河）
-      const merged = defaultIds.map((id) => {
-        const existing = saved.find((e) => e.id === id);
-        if (existing) return existing;
-        return JSON.parse(JSON.stringify(DEFAULT_EXPERTS.find((e) => e.id === id)!));
-      });
-      experts = merged;
+    const merged = defaults.map((defaultExpert) => {
+      const existing = saved.find((expert) => expert.id === defaultExpert.id);
+      return {
+        ...defaultExpert,
+        keyId: existing?.keyId ?? null,
+        tokenAllocation: existing?.tokenAllocation
+          ? {
+            dailyLimit: existing.tokenAllocation.dailyLimit ?? null,
+            monthlyLimit: existing.tokenAllocation.monthlyLimit ?? null,
+            yearlyLimit: existing.tokenAllocation.yearlyLimit ?? null,
+          }
+          : defaultExpert.tokenAllocation,
+      };
+    });
+    const changed =
+      merged.length !== saved.length
+      || merged.some((expert, index) => JSON.stringify(expert) !== JSON.stringify(saved[index]));
+    experts = merged;
+    if (changed) {
       await saveExperts();
-    } else {
-      experts = saved;
     }
   } catch {
-    experts = JSON.parse(JSON.stringify(DEFAULT_EXPERTS));
+    experts = JSON.parse(JSON.stringify(defaults));
     try { await saveExperts(); } catch { /* 静默忽略 */ }
   }
   // 同步 experts 引用到 expert-router.ts
@@ -1694,6 +1721,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const idx = sessions.findIndex((s) => s.id === sessionId);
     if (idx >= 0) {
+      const deleted = sessions[idx];
       sessions.splice(idx, 1);
       // 如果删除的是当前会话，切换到第一个
       if (currentSessionId === sessionId) {
@@ -1701,6 +1729,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       // 持久化到项目文件
       await persistSessionsToFile(currentProjectId);
+      try {
+        await invoke("db_delete_session", { sessionId: deleted.id });
+      } catch (e) {
+        log("WARN", `删除数据库会话失败: ${e}`);
+      }
       renderMessages();
       updateHistoryDisplay();
     }
@@ -1724,7 +1757,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /** 检查并构建感知索引 */
   async function checkAndBuildIndex(projectName: string, force: boolean = false): Promise<void> {
-    if (perceptualIndexBuilding) return;
+    if (perceptualIndexBuilding) {
+      const startedAt = Date.now();
+      while (perceptualIndexBuilding && Date.now() - startedAt < 30000) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (perceptualIndexBuilding) return;
+    }
 
     try {
       // 先查询索引状态
@@ -1753,6 +1792,89 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (e) {
       updateIndexStatus("error", "构建失败");
       log("ERROR", `感知索引构建失败: ${e}`);
+    }
+  }
+
+  let projectIntelligenceSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  let projectIntelligenceSyncRunning = false;
+  let pendingProjectIntelligenceName: string | null = null;
+  const pendingProjectChangedFiles = new Set<string>();
+
+  function formatGraphTimestamp(raw?: string | null): string {
+    if (!raw) return "刚刚同步";
+    if (/^\d+$/.test(raw)) {
+      const ts = Number(raw) * 1000;
+      if (!Number.isNaN(ts)) {
+        return new Date(ts).toLocaleString("zh-CN");
+      }
+    }
+    const date = new Date(raw);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleString("zh-CN");
+    }
+    return raw;
+  }
+
+  function scheduleProjectIntelligenceSync(
+    projectName: string,
+    changedFiles: string[] = [],
+    reason: "agent-change" | "editor-save" | "manual-refresh" = "editor-save",
+  ) {
+    pendingProjectIntelligenceName = projectName;
+    changedFiles.filter(Boolean).forEach((path) => pendingProjectChangedFiles.add(path));
+
+    if (projectIntelligenceSyncTimer) {
+      clearTimeout(projectIntelligenceSyncTimer);
+    }
+
+    projectIntelligenceSyncTimer = setTimeout(() => {
+      const targetProject = pendingProjectIntelligenceName;
+      if (!targetProject) return;
+      void runProjectIntelligenceSync(targetProject, reason);
+    }, reason === "manual-refresh" ? 120 : 900);
+  }
+
+  async function runProjectIntelligenceSync(
+    projectName: string,
+    reason: "agent-change" | "editor-save" | "manual-refresh",
+  ): Promise<void> {
+    if (projectIntelligenceSyncRunning) {
+      scheduleProjectIntelligenceSync(projectName, [...pendingProjectChangedFiles], reason);
+      return;
+    }
+
+    projectIntelligenceSyncRunning = true;
+    const changedFiles = [...pendingProjectChangedFiles];
+    pendingProjectChangedFiles.clear();
+
+    try {
+      updateDirectoryStatus("updating");
+      await checkAndBuildIndex(projectName, true);
+      await refreshProjectCanvasCaches(projectName, reason === "manual-refresh");
+
+      const activeProject = sidebar.getActiveChat();
+      if (
+        activeProject &&
+        activeProject.name === projectName &&
+        currentPreviewFile &&
+        changedFiles.includes(currentPreviewFile)
+      ) {
+        if (currentPreviewMode === "canvas") {
+          await refreshFileCanvas(reason === "manual-refresh");
+        } else if (!isMarkdownFile(currentPreviewFile) && !isImageFile(currentPreviewFile)) {
+          setFileCanvasSyncState("ready", "后台图谱已同步", `最近同步：${new Date().toLocaleString("zh-CN")}`);
+        }
+      }
+    } catch (e) {
+      log("ERROR", `项目图谱自动同步失败: ${e}`);
+      updateDirectoryStatus("needs-update");
+      setFileCanvasSyncState("error", "图谱自动同步失败", "可点击重建图谱重试");
+    } finally {
+      projectIntelligenceSyncRunning = false;
+      pendingProjectIntelligenceName = null;
+      if (pendingProjectChangedFiles.size > 0 && projectName) {
+        scheduleProjectIntelligenceSync(projectName, [...pendingProjectChangedFiles], reason);
+      }
     }
   }
 
@@ -1923,7 +2045,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (pipelineRunning) {
       showLoading("主管正在分析补充要求...");
       try {
-        const decision = await analyzeFollowupIntent(text, currentDispatchPlan!, supervisorKey, "supervisor", supervisorModel);
+        const decision = await analyzeFollowupIntent(
+          text,
+          currentDispatchPlan!,
+          supervisorKey,
+          getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
+          supervisorModel
+        );
         const followupExperts = (decision.targetExpertIds || [])
           .map((id) => getAvailableExpertInfos().find((item) => item.id === id)?.name || id);
         const followupTargetText = followupExperts.length > 0
@@ -2043,7 +2171,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           historyForSupervisor,
           availableExperts,
           supervisorKey,
-          "supervisor",
+          getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
           supervisorModel
         );
         log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
@@ -2087,7 +2215,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // 记录词元使用（fire-and-forget）
         if (usage) {
-          recordTokenUsage("supervisor", "江星图", getExpertModel("jiang-xingtu"), "supervisor", usage, "主管").catch(console.error);
+          recordTokenUsage(
+            "jiang-xingtu",
+            "江星图",
+            getExpertModel("jiang-xingtu"),
+            getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
+            usage,
+            "主管"
+          ).catch(console.error);
         }
 
         finalReply = reply;
@@ -2110,7 +2245,8 @@ document.addEventListener("DOMContentLoaded", async () => {
           if (!expertWaveMap.has(expertId)) expertWaveMap.set(expertId, wave.wave);
         });
       });
-      const joiningTasks: ExpertTask[] = dispatchPlan.expertIds.map((id) => {
+      const dispatchedExpertIds = [...expertWaveMap.keys()];
+      const joiningTasks: ExpertTask[] = dispatchedExpertIds.map((id) => {
         const info = getAvailableExpertInfos().find((e) => e.id === id);
         return {
           id: `joining-${id}`,
@@ -2248,7 +2384,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           dispatchPlan.taskDescription + followupContext,
           expertResults,
           supervisorKey,
-          "supervisor",
+          getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
           supervisorModel
         );
 
@@ -2298,6 +2434,200 @@ document.addEventListener("DOMContentLoaded", async () => {
         : [{ content: finalReply, expertId: "jiang-xingtu", expertName: "江星图", expertTitle: "主管" }],
       text
     );
+  }
+
+  // ========== 流式渲染支持 ==========
+  let currentStreamDiv: HTMLElement | null = null;
+  let currentStreamContent = '';
+
+  listen<{ stream_id: string; token: string }>('llm-stream-token', (event) => {
+    if (!currentStreamDiv) {
+      currentStreamDiv = createStreamingMessageBubble();
+      currentStreamContent = '';
+    }
+    currentStreamContent += event.payload.token;
+    updateStreamingContent(currentStreamDiv, currentStreamContent);
+  });
+
+  listen<{ stream_id: string }>('llm-stream-done', () => {
+    if (currentStreamDiv) {
+      finalizeStreamingMessage(currentStreamDiv, currentStreamContent);
+      currentStreamDiv = null;
+      currentStreamContent = '';
+    }
+  });
+
+  listen<{ stream_id: string; error: string }>('llm-stream-error', (event) => {
+    if (currentStreamDiv) {
+      currentStreamDiv.classList.add('error');
+      currentStreamDiv.innerHTML += `<div class="stream-error">\u26A0\uFE0F ${escapeHtml(event.payload.error)}</div>`;
+      currentStreamDiv = null;
+      currentStreamContent = '';
+    }
+  });
+
+  function createStreamingMessageBubble(): HTMLElement {
+    const msgEl = document.createElement('div');
+    msgEl.className = 'chat-message assistant streaming';
+    msgEl.innerHTML = `<div class="assistant-panel"><div class="msg-text"></div></div>`;
+    chatMessages?.appendChild(msgEl);
+    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+    return msgEl;
+  }
+
+  function updateStreamingContent(div: HTMLElement, content: string): void {
+    const textEl = div.querySelector('.msg-text');
+    if (textEl) {
+      textEl.textContent = content;
+    }
+    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function finalizeStreamingMessage(div: HTMLElement, content: string): void {
+    div.classList.remove('streaming');
+    const panel = div.querySelector('.assistant-panel');
+    if (panel) {
+      panel.innerHTML = renderAiMessage(content);
+    }
+    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  // ========== Pipeline 进度面板 ==========
+  interface PipelineProgress {
+    pipelineScene: string;
+    currentStep: number;
+    totalSteps: number;
+    currentExpertId: string;
+    currentExpertName: string;
+    currentToolRound: number;
+    status: 'running' | 'tool-calling' | 'waiting-approval' | 'completed' | 'error';
+  }
+
+  listen<PipelineProgress>('pipeline-progress', (event) => {
+    updatePipelineProgress(event.payload);
+  });
+
+  function updatePipelineProgress(progress: PipelineProgress): void {
+    let panel = document.getElementById('pipeline-progress-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'pipeline-progress-panel';
+      panel.className = 'pipeline-progress';
+      if (chatMessages) {
+        chatMessages.parentElement?.insertBefore(panel, chatMessages);
+      }
+    }
+
+    if (progress.status === 'completed') {
+      panel.remove();
+      return;
+    }
+
+    const percentage = Math.round((progress.currentStep / progress.totalSteps) * 100);
+    panel.innerHTML = `
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" style="width: ${percentage}%"></div>
+      </div>
+      <div class="progress-info">
+        <span class="progress-step">\u6B65\u9AA4 ${progress.currentStep}/${progress.totalSteps}</span>
+        <span class="progress-expert">${escapeHtml(progress.currentExpertName)}</span>
+        <span class="progress-status">${getProgressStatusText(progress.status, progress.currentToolRound)}</span>
+      </div>
+    `;
+  }
+
+  function getProgressStatusText(status: string, toolRound: number): string {
+    switch (status) {
+      case 'running': return '\u601D\u8003\u4E2D...';
+      case 'tool-calling': return `\u5DE5\u5177\u8C03\u7528 #${toolRound}`;
+      case 'waiting-approval': return '\u23F8\uFE0F \u7B49\u5F85\u786E\u8BA4';
+      case 'error': return '\u274C \u51FA\u9519';
+      default: return '';
+    }
+  }
+
+  // ========== 工具调用实时展示 ==========
+  listen<{ expertId: string; toolName: string; args: Record<string, unknown> }>('tool-call-start', (event) => {
+    const toolDiv = showToolCallInChat(event.payload.expertId, event.payload.toolName, event.payload.args);
+    toolDiv.dataset.toolId = `${event.payload.expertId}-${Date.now()}`;
+  });
+
+  listen<{ expertId: string; toolName: string; result: string; success: boolean }>('tool-call-end', (event) => {
+    const indicators = document.querySelectorAll<HTMLElement>('.tool-call-indicator');
+    const last = indicators[indicators.length - 1];
+    if (last) {
+      updateToolCallResult(last, event.payload.result, event.payload.success);
+    }
+  });
+
+  function showToolCallInChat(_expertId: string, toolName: string, args: unknown): HTMLElement {
+    const toolDiv = document.createElement('div');
+    toolDiv.className = 'tool-call-indicator';
+    toolDiv.innerHTML = `
+      <div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="tool-icon">\uD83D\uDD27</span>
+        <span class="tool-name">${escapeHtml(toolName)}</span>
+        <span class="tool-status spinning">\u6267\u884C\u4E2D...</span>
+      </div>
+      <div class="tool-call-details">
+        <pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre>
+      </div>
+    `;
+    chatMessages?.appendChild(toolDiv);
+    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+    return toolDiv;
+  }
+
+  function updateToolCallResult(toolDiv: HTMLElement, result: string, success: boolean): void {
+    const status = toolDiv.querySelector('.tool-status');
+    if (status) {
+      status.classList.remove('spinning');
+      status.textContent = success ? '\u2713 \u5B8C\u6210' : '\u2717 \u5931\u8D25';
+      status.className = `tool-status ${success ? 'success' : 'error'}`;
+    }
+    const details = toolDiv.querySelector('.tool-call-details');
+    if (details) {
+      details.innerHTML += `<div class="tool-result ${success ? '' : 'error'}">${escapeHtml(result.slice(0, 500))}</div>`;
+    }
+  }
+
+  // ========== 审批弹窗 ==========
+  listen<{ command: string; reason: string; requestId: string }>('approval-request', async (event) => {
+    const decision = await showApprovalDialog(event.payload.command, event.payload.reason);
+    await invoke('record_tool_approval', {
+      command: event.payload.command,
+      decision: decision,
+    });
+  });
+
+  function showApprovalDialog(command: string, reason: string): Promise<string> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'approval-overlay';
+      overlay.innerHTML = `
+        <div class="approval-dialog">
+          <h3>\uD83D\uDD12 \u547D\u4EE4\u6267\u884C\u786E\u8BA4</h3>
+          <p class="approval-reason">${escapeHtml(reason || '\u6B64\u547D\u4EE4\u9700\u8981\u786E\u8BA4\u540E\u6267\u884C')}</p>
+          <div class="approval-command">
+            <code>${escapeHtml(command)}</code>
+          </div>
+          <div class="approval-actions">
+            <button class="btn-approve" data-action="approved">\u5141\u8BB8\u6267\u884C</button>
+            <button class="btn-approve-always" data-action="approved_always">\u603B\u662F\u5141\u8BB8\u6B64\u7C7B\u547D\u4EE4</button>
+            <button class="btn-deny" data-action="denied">\u62D2\u7EDD</button>
+          </div>
+        </div>
+      `;
+
+      overlay.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          resolve((btn as HTMLElement).dataset.action || 'denied');
+          overlay.remove();
+        });
+      });
+
+      document.body.appendChild(overlay);
+    });
   }
 
   // ========== Agent 动作解析与执行 ==========
@@ -2576,7 +2906,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     return {
       scene: "code-development",
-      taskDescription: `这是对现有产物的增量修改任务。必须直接修改已有文件或新增实现文件，不要只输出规范文档。\n已生成文件：${relevantArtifacts.join(", ")}\n用户的新要求：${text}${fileContext}\n补丁要求：优先使用 edit_file；searchText 必须直接来自上面的当前文件内容。`,
+      taskDescription: `这是对现有产物的增量修改任务。必须直接修改已有文件或新增实现文件，不要只输出规范文档。\n已生成文件：${relevantArtifacts.join(", ")}\n用户的新要求：${text}${fileContext}\n补丁要求：优先使用 edit_file；searchText 必须直接来自上面的当前文件内容。如果目标文件内容不完整、未展示或仍不确定，必须先发起 [ACTION:READ_FILE:相对路径] 读取真实文件后再修改，禁止臆造页面文案、组件结构或 searchText。`,
       expertIds: ["jiang-ruoxi", engineerId, "jiang-yingqiu"],
       requiresDesign: false,
     };
@@ -2637,7 +2967,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function buildDispatchNarrative(plan: DispatchPlan): string {
     const waves = buildDispatchWaves(plan);
-    if (waves.length === 0) return "主管已完成任务拆解，专家准备执行。";
+    if (waves.length === 0) return "主管已完成任务拆解，专家准备开始执行。";
     const infoMap = new Map(getAvailableExpertInfos().map((e) => [e.id, e]));
     const waveText = waves.map((w) => {
       const names = w.expertIds.map((id) => {
@@ -2647,7 +2977,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const mode = w.expertIds.length > 1 ? "并行" : "串行";
       return `第${w.wave}轮${mode}：${names}`;
     }).join("\n");
-    return `主管已完成派遣，执行方案如下：\n${waveText}`;
+    return `主管已发起专家协作。\n${waveText}`;
   }
 
   async function proposeAndMaybeApplyChanges(
@@ -2867,6 +3197,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     let shouldRefreshCurrentPreview = false;
+    const changedFiles = new Set<string>();
     const isAbsolutePath = (value: string) => /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
     const resolveWorkingDir = (rawDir?: string) => {
       const trimmed = rawDir?.trim();
@@ -2900,7 +3231,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
         if (result && result.applied > 0) {
           shouldRefreshCurrentPreview = true;
-          checkAndBuildIndex(activeProject.name, true);
+          result.touchedFiles.forEach((path) => changedFiles.add(path));
         }
       } catch (err) {
         log("ERROR", `Agent: 直接应用变更失败: ${err}`);
@@ -3250,17 +3581,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // 文件变更后标记目录为"需要更新"（不自动生成）
-    if (activeProject) {
-      updateDirectoryStatus("needs-update");
-    }
-
-    // 文件变更后自动重建感知索引（后台执行，不阻塞）
-    if (activeProject) {
-      checkAndBuildIndex(activeProject.name, true);
+    if (activeProject && changedFiles.size > 0) {
+      updateDirectoryStatus("updating");
+      scheduleProjectIntelligenceSync(activeProject.name, [...changedFiles], "agent-change");
     }
 
     // Wiki 自迭代：文件变更后触发增量更新
-    if (activeProject && wikiIterationMode === "self") {
+    if (activeProject && changedFiles.size > 0 && wikiIterationMode === "self") {
       runIncrementalUpdate();
     }
   }
@@ -3515,14 +3842,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       : `<div class="command-auth-result ${statusClass}">${statusLabel}</div>`;
 
     return `
-      <div class="tool-event-card command-auth-card" data-status="${message.status}">
-        <div class="tool-event-header">
-          <span class="tool-event-badge">${escapeHtml(title)}</span>
-          <span class="tool-event-status">${escapeHtml(statusLabel)}</span>
+      <div class="chat-log-block command-auth-log" data-status="${message.status}">
+        <div class="chat-log-kicker">
+          <span>${escapeHtml(title)}</span>
+          <span>${escapeHtml(statusLabel)}</span>
         </div>
-        <div class="tool-event-meta">发起专家：${escapeHtml(initiator)}</div>
-        <div class="tool-event-primary">命令：<code>${escapeHtml(message.command || "")}</code></div>
-        ${message.safetyReason ? `<div class="tool-event-meta">说明：${escapeHtml(message.safetyReason)}</div>` : ""}
+        <div class="chat-log-line"><strong>${escapeHtml(initiator)}</strong> 申请执行本地操作。</div>
+        <div class="chat-log-line">原因：${escapeHtml(message.reason?.trim() || "未提供说明")}</div>
+        ${message.safetyReason ? `<div class="chat-log-line subtle">说明：${escapeHtml(message.safetyReason)}</div>` : ""}
         ${actionButtons}
       </div>
     `;
@@ -3539,7 +3866,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const authLabel = event.kind === "command"
       ? event.authMode === "admin"
         ? "管理员命令"
-        : event.authMode === "restricted"
+      : event.authMode === "restricted"
           ? "受限放行"
           : "自动放行"
       : "自动执行";
@@ -3548,36 +3875,36 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (event.kind === "web-search") {
       const results = (event.results || []).map((item) => `
-        <li class="tool-event-result-item">
+        <li class="chat-log-link-item">
           <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
-          <div class="tool-event-result-snippet">${escapeHtml(item.snippet || item.url)}</div>
+          <div class="chat-log-link-snippet">${escapeHtml(item.snippet || item.url)}</div>
         </li>
       `).join("");
 
       return `
-        <div class="tool-event-card" data-kind="web-search" data-status="${event.status}">
-          <div class="tool-event-header">
-            <span class="tool-event-badge">网络搜索</span>
-            <span class="tool-event-status">${statusLabel}</span>
+        <div class="chat-log-block tool-event-log" data-kind="web-search" data-status="${event.status}">
+          <div class="chat-log-kicker">
+            <span>网络搜索</span>
+            <span>${escapeHtml(statusLabel)}</span>
           </div>
-          <div class="tool-event-meta">发起专家：${escapeHtml(initiator)} · ID: ${escapeHtml(event.initiator.expertId)}</div>
-          <div class="tool-event-meta">发起理由：${escapeHtml(reason)}</div>
-          <div class="tool-event-primary">查询内容：<code>${escapeHtml(event.query || "")}</code></div>
-          ${event.error ? `<div class="tool-event-error">${escapeHtml(event.error)}</div>` : ""}
-          ${results ? `<ol class="tool-event-result-list">${results}</ol>` : '<div class="tool-event-empty">未返回搜索结果</div>'}
+          <div class="chat-log-line"><strong>${escapeHtml(initiator)}</strong> 发起了资料检索。</div>
+          <div class="chat-log-line">原因：${escapeHtml(reason)}</div>
+          ${event.error ? `<div class="chat-log-line is-error">结果：${escapeHtml(event.error)}</div>` : ""}
+          ${results ? `<ol class="chat-log-links">${results}</ol>` : '<div class="chat-log-line subtle">结果：未返回可展示条目。</div>'}
         </div>
       `;
     }
 
     return `
-      <div class="tool-event-card" data-kind="command" data-status="${event.status}">
-        <div class="tool-event-header">
-          <span class="tool-event-badge">${escapeHtml(authLabel)}</span>
-          <span class="tool-event-status">${statusLabel}</span>
+      <div class="chat-log-block tool-event-log" data-kind="command" data-status="${event.status}">
+        <div class="chat-log-kicker">
+          <span>${escapeHtml(authLabel)}</span>
+          <span>${escapeHtml(statusLabel)}</span>
         </div>
-        <div class="tool-event-meta">发起专家：${escapeHtml(initiator)}</div>
-        <div class="tool-event-primary">命令：<code>${escapeHtml(event.command || "")}</code></div>
-        ${event.error ? `<div class="tool-event-error">${escapeHtml(event.error)}</div>` : ""}
+        <div class="chat-log-line"><strong>${escapeHtml(initiator)}</strong> 发起了本地执行。</div>
+        <div class="chat-log-line">原因：${escapeHtml(reason)}</div>
+        ${event.safetyReason ? `<div class="chat-log-line subtle">说明：${escapeHtml(event.safetyReason)}</div>` : ""}
+        ${event.error ? `<div class="chat-log-line is-error">结果：${escapeHtml(event.error)}</div>` : ""}
       </div>
     `;
   }
@@ -3785,7 +4112,7 @@ document.addEventListener("DOMContentLoaded", async () => {
    * - 仅保留最后一句交付语（上限80字）
    */
   function sanitizeSupervisorReply(reply: string): string {
-    if (!reply) return "文档已就绪，可直接使用，如有需要随时找我。";
+    if (!reply) return "工作已完成，相关结果已经整理好并写入当前项目。";
   
     // 1. 移除所有 ACTION 块和 markdown 代码块，得到纯文字部分
     const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE|WRITE_DOCUMENT):[^\]]*\](?:\s*```[\s\S]*?```)?/g;
@@ -3804,13 +4131,27 @@ document.addEventListener("DOMContentLoaded", async () => {
       return !metaKeywords.test(s);
     });
   
-    // 4. 取最后一段非空句作为交付语（上限80字）
-    let deliveryLine = filtered.length > 0 ? filtered[filtered.length - 1].trim() : "任务已完成。";
-    if (deliveryLine.length > 80) {
-      deliveryLine = deliveryLine.substring(0, 77) + "...";
+    const normalized = filtered
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    if (normalized.length === 0) return "任务已完成，相关文件和结果已经更新到当前项目。";
+
+    const highlightKeywords = /(完成|新增|修改|更新|修复|优化|支持|生成|创建|整理|写入|接入|联通)/;
+    const highlights = normalized.filter((s) => highlightKeywords.test(s));
+    const summaryLines = (highlights.length > 0 ? highlights : normalized)
+      .slice(-3)
+      .map((s) => s.replace(/[。！]+$/g, "").trim())
+      .filter(Boolean);
+
+    let deliveryText = summaryLines.join("。");
+    if (!deliveryText.endsWith("。")) {
+      deliveryText += "。";
     }
-  
-    return deliveryLine;
+    if (deliveryText.length > 120) {
+      deliveryText = `${deliveryText.substring(0, 117).trim()}...`;
+    }
+
+    return deliveryText;
   }
 
   function sanitizeAssistantDisplayContent(content: string): string {
@@ -3829,7 +4170,33 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ========== 专家任务卡片渲染 ==========
 
-  /** 构建一组专家卡片元素（不插入 DOM，返回可复用的容器） */
+  function getExpertPhaseText(task: ExpertTask, phaseLabels: Record<string, string>): string {
+    if (task.phase) return phaseLabels[task.phase] || task.phaseDetail || "处理中";
+    return task.phaseDetail || "处理中";
+  }
+
+  function getExpertStatusText(status: ExpertTask["status"]): string {
+    return status === "done"
+      ? "已完成"
+      : status === "running"
+        ? "执行中"
+        : status === "error"
+          ? "异常"
+          : "等待中";
+  }
+
+  function extractExpertSummary(output: string): string {
+    const match = output.match(/\[SUMMARY:(.*?)\]/);
+    if (match) return match[1].trim();
+    const clean = sanitizeAssistantDisplayContent(output)
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!clean) return "已完成本轮处理。";
+    return clean.substring(0, 90) + (clean.length > 90 ? "..." : "");
+  }
+
+  /** 构建一组专家协作记录元素（不插入 DOM，返回可复用的容器） */
   function buildTasksGroupEl(tasks: ExpertTask[], isLive = false): HTMLElement {
     const EXPERT_PHASE_LABELS: Record<string, string> = {
       'searching-repo': '仓库检索中',
@@ -3841,20 +4208,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       'reviewing': '质量审查中',
       'completed': '已完成'
     };
-
-    function extractSummary(output: string): string {
-      const match = output.match(/\[SUMMARY:(.*?)\]/);
-      if (match) return match[1].trim();
-      const clean = output.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-      return clean.substring(0, 50) + (clean.length > 50 ? '...' : '');
-    }
     const sortedTasks = [...tasks].sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
     const groupEl = document.createElement("div");
     groupEl.className = "expert-tasks-group";
     const doneCount = sortedTasks.filter((t) => t.status === "done").length;
     const failedCount = sortedTasks.filter((t) => t.status === "error").length;
     const runningCount = sortedTasks.filter((t) => t.status === "running" || t.status === "pending").length;
-    const headerTitle = isLive ? "Monitored Background Tasks" : "专家协作记录";
+    const headerTitle = isLive ? "专家协作进行中" : "专家协作记录";
     groupEl.insertAdjacentHTML("beforeend", `
       <div class="expert-group-header">
         <div class="expert-group-title">${headerTitle}</div>
@@ -3869,7 +4229,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (isLive) {
       const firstBlockingTask = sortedTasks.find((t) => t.status === "error");
       const leadTask = firstBlockingTask || sortedTasks.find((t) => t.status === "running") || sortedTasks[0];
-      const leadPhase = leadTask?.phase ? (EXPERT_PHASE_LABELS[leadTask.phase] || leadTask.phaseDetail || "处理中") : (leadTask?.phaseDetail || "处理中");
+      const leadPhase = leadTask ? getExpertPhaseText(leadTask, EXPERT_PHASE_LABELS) : "处理中";
       const leadLine = firstBlockingTask
         ? `${leadTask.expertName} ${leadTask.expertTitle} 出现阻塞，正在重新分派。`
         : `${leadTask?.expertName || "专家团"} ${leadPhase || "处理中"}。`;
@@ -3880,87 +4240,69 @@ document.addEventListener("DOMContentLoaded", async () => {
         waveMap.get(wave)!.push(task);
       });
       const dispatchLine = `主管已派遣 ${sortedTasks.length} 位专家，分 ${waveMap.size} 轮执行。`;
-      const waveBlocks = [...waveMap.entries()]
+      const liveItems = [...waveMap.entries()]
         .sort((a, b) => a[0] - b[0])
         .map(([wave, waveTasks]) => {
-          const steps = waveTasks.map((task) => {
-            const statusLabel = task.status === "done" ? "完成"
-              : task.status === "error" ? "异常"
-              : task.status === "pending" ? "排队"
-              : "执行中";
-            const phaseText = task.phase ? (EXPERT_PHASE_LABELS[task.phase] || task.phaseDetail || "处理中") : (task.phaseDetail || "处理中");
+          return waveTasks.map((task) => {
+            const statusLabel = getExpertStatusText(task.status);
+            const phaseText = getExpertPhaseText(task, EXPERT_PHASE_LABELS);
             return `
-              <li class="task-monitor-step" data-status="${task.status}">
-                <span class="task-monitor-dot"></span>
-                <div class="task-monitor-main">
-                  <span class="task-monitor-name">${escapeHtml(task.expertName)}</span>
-                  <span class="task-monitor-phase">${escapeHtml(phaseText)}</span>
+              <li class="expert-log-item" data-status="${task.status}">
+                <span class="expert-log-marker"></span>
+                <div class="expert-log-content">
+                  <div class="expert-log-main">${escapeHtml(task.expertName)}（${escapeHtml(task.expertTitle)}）</div>
+                  <div class="expert-log-sub">第 ${wave} 轮 · ${escapeHtml(phaseText)} · ${statusLabel}</div>
                 </div>
-                <span class="task-monitor-status">${statusLabel}</span>
               </li>
             `;
           }).join("");
-          const isParallel = waveTasks.length > 1 ? "并行" : "串行";
-          return `
-            <section class="task-monitor-wave">
-              <div class="task-monitor-wave-title">第 ${wave} 轮派遣 · ${isParallel}</div>
-              <ol class="task-monitor-steps">${steps}</ol>
-            </section>
-          `;
         }).join("");
 
       groupEl.insertAdjacentHTML("beforeend", `
-        <div class="task-monitor-panel">
-          <div class="task-monitor-dispatch">${escapeHtml(dispatchLine)}</div>
-          <div class="task-monitor-lead">${escapeHtml(leadLine)}</div>
-          <div class="task-monitor-waves">${waveBlocks}</div>
+        <div class="expert-log-shell">
+          <div class="expert-log-line">${escapeHtml(dispatchLine)}</div>
+          <div class="expert-log-line emphasis">${escapeHtml(leadLine)}</div>
+          <ol class="expert-log-list">${liveItems}</ol>
         </div>
       `);
       return groupEl;
     }
 
     sortedTasks.forEach((task, index) => {
-      // 历史卡片：显示摘要 + 折叠输出
-      const statusLabel = task.status === "done" ? "已完成"
-        : task.status === "running" ? "执行中"
-        : task.status === "error" ? "失败" : "等待中";
+      const statusLabel = getExpertStatusText(task.status);
 
       const summaryText = task.status === "error"
         ? (task.error || "执行出错")
         : task.status === "done"
-        ? (task.output ? extractSummary(task.output) : "已完成")
+        ? (task.output ? extractExpertSummary(task.output) : "已完成")
         : task.input.substring(0, 80) + (task.input.length > 80 ? "..." : "");
 
-      const cardHtml = `
-        <div class="expert-call-card" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}">
-          <div class="expert-call-accent"></div>
-          <div class="expert-call-body">
-            <div class="expert-call-header">
-              <span class="expert-call-index">#${index + 1}</span>
-              <span class="expert-call-name">${escapeHtml(task.expertName)}</span>
-              <span class="expert-call-title">${escapeHtml(task.expertTitle)}</span>
-              <span class="expert-call-status ${task.status}">${statusLabel}</span>
-            </div>
-            <div class="expert-call-summary">${escapeHtml(summaryText)}</div>
+      const recordHtml = `
+        <div class="expert-log-record" data-expert-id="${escapeAttr(task.expertId)}" data-status="${task.status}">
+          <div class="expert-log-record-head">
+            <span class="expert-log-record-index">#${index + 1}</span>
+            <span class="expert-log-record-name">${escapeHtml(task.expertName)}（${escapeHtml(task.expertTitle)}）</span>
+            <span class="expert-log-record-status">${statusLabel}</span>
+          </div>
+          <div class="expert-log-record-summary">${escapeHtml(summaryText)}</div>
             ${task.status === "done" && task.output ? `
-              <div class="expert-call-output">
-                <button class="expert-call-output-toggle" type="button">
+              <div class="expert-log-record-output">
+                <button class="expert-log-output-toggle" type="button">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="9 18 15 12 9 6"/>
                   </svg>
                   查看完整输出
                 </button>
-                <div class="expert-call-output-content">${escapeHtmlWithThink(sanitizeAssistantDisplayContent(task.output))}</div>
+                <div class="expert-log-output-content">${escapeHtmlWithThink(sanitizeAssistantDisplayContent(task.output))}</div>
               </div>
             ` : ""}
-          </div>
         </div>
       `;
-      groupEl.insertAdjacentHTML("beforeend", cardHtml);
+      groupEl.insertAdjacentHTML("beforeend", recordHtml);
     });
 
     // 绑定折叠按钮
-    groupEl.querySelectorAll(".expert-call-output-toggle").forEach((btn) => {
+    groupEl.querySelectorAll(".expert-log-output-toggle").forEach((btn) => {
       btn.addEventListener("click", () => {
         const toggle = btn as HTMLElement;
         const content = toggle.nextElementSibling as HTMLElement;
@@ -4307,6 +4649,141 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  async function saveDirectoryModeData(
+    projectName: string,
+    mode: "structure" | "logic",
+    nodes: CanvasNode[],
+    edges: CanvasEdge[],
+    directorySnapshot: string[],
+    updatedAt: string,
+  ) {
+    await invoke("save_canvas_directory", {
+      projectName,
+      data: JSON.stringify({
+        nodes,
+        edges,
+        updatedAt,
+        mode,
+        directorySnapshot,
+      }),
+    });
+  }
+
+  function layoutProjectLogicCanvas(
+    payload: ProjectLogicCanvasPayload,
+  ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+    const scoreMap = new Map<string, number>();
+    payload.nodes.forEach((node) => {
+      scoreMap.set(node.id, node.weight || 1);
+    });
+    payload.edges.forEach((edge) => {
+      scoreMap.set(edge.from, (scoreMap.get(edge.from) || 0) + edge.weight);
+      scoreMap.set(edge.to, (scoreMap.get(edge.to) || 0) + edge.weight);
+    });
+
+    const sortedNodes = [...payload.nodes].sort((a, b) => {
+      const scoreA = scoreMap.get(a.id) || a.weight || 1;
+      const scoreB = scoreMap.get(b.id) || b.weight || 1;
+      return scoreB - scoreA || a.label.localeCompare(b.label);
+    });
+
+    const laidOut: CanvasNode[] = [];
+    if (sortedNodes.length > 0) {
+      const center = sortedNodes[0];
+      laidOut.push({
+        id: center.file_path || center.id,
+        path: center.file_path || center.id,
+        type: "file",
+        name: center.label,
+        x: 0,
+        y: 0,
+      });
+    }
+
+    let cursor = 1;
+    let ring = 1;
+    while (cursor < sortedNodes.length) {
+      const ringCount = Math.min(sortedNodes.length - cursor, 8 + (ring - 1) * 6);
+      const radius = 220 + (ring - 1) * 180;
+      for (let i = 0; i < ringCount; i += 1) {
+        const node = sortedNodes[cursor + i];
+        const angle = (Math.PI * 2 * i) / ringCount + ring * 0.32;
+        laidOut.push({
+          id: node.file_path || node.id,
+          path: node.file_path || node.id,
+          type: "file",
+          name: node.label,
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
+        });
+      }
+      cursor += ringCount;
+      ring += 1;
+    }
+
+    const availableIds = new Set(laidOut.map((node) => node.id));
+    const edges: CanvasEdge[] = payload.edges
+      .map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+      }))
+      .filter((edge) => availableIds.has(edge.from) && availableIds.has(edge.to));
+
+    return { nodes: laidOut, edges };
+  }
+
+  async function generateLogicCanvas(
+    projectName: string,
+  ): Promise<{ nodes: CanvasNode[]; edges: CanvasEdge[]; updatedAt: string }> {
+    const graphJson = await invoke<string>("perceptual_index_project_logic_graph", {
+      projectName,
+    });
+    const payload = JSON.parse(graphJson) as ProjectLogicCanvasPayload;
+    const { nodes, edges } = layoutProjectLogicCanvas(payload);
+    return {
+      nodes,
+      edges,
+      updatedAt: payload.updated_at,
+    };
+  }
+
+  async function refreshProjectCanvasCaches(projectName: string, forceVisibleRefresh: boolean = false) {
+    const snapshot = await collectDirectorySnapshot(projectName);
+    const structureResult = await generateStructureCanvas(projectName);
+    const logicResult = await generateLogicCanvas(projectName);
+
+    await saveDirectoryModeData(
+      projectName,
+      "structure",
+      structureResult.nodes,
+      structureResult.edges,
+      snapshot,
+      new Date().toISOString(),
+    );
+    await saveDirectoryModeData(
+      projectName,
+      "logic",
+      logicResult.nodes,
+      logicResult.edges,
+      snapshot,
+      logicResult.updatedAt,
+    );
+
+    const activeProject = sidebar.getActiveChat();
+    const canvas = getCanvas();
+    if (!activeProject || activeProject.name !== projectName || !canvas) {
+      return;
+    }
+
+    if (directoryMode === "structure") {
+      canvas.setData(structureResult.nodes, structureResult.edges);
+    } else if (directoryMode === "logic" || forceVisibleRefresh) {
+      canvas.setData(logicResult.nodes, logicResult.edges);
+    }
+
+    updateDirectoryStatus("up-to-date");
+  }
+
   // 加载项目画布数据（仅加载缓存，不自动生成）
   async function loadProjectCanvas(projectId: number) {
     const canvas = getCanvas();
@@ -4360,101 +4837,86 @@ document.addEventListener("DOMContentLoaded", async () => {
       const snapshot = await collectDirectorySnapshot(project.name);
       const now = new Date().toISOString();
       try {
-        await invoke("save_canvas_directory", {
-          projectName: project.name,
-          data: JSON.stringify({
-            nodes: result.nodes,
-            edges: result.edges,
-            updatedAt: now,
-            mode: "structure",
-            directorySnapshot: snapshot,
-          }),
-        });
+        await saveDirectoryModeData(
+          project.name,
+          "structure",
+          result.nodes,
+          result.edges,
+          snapshot,
+          now,
+        );
       } catch { /* 保存失败不影响显示 */ }
       updateDirectoryStatus("up-to-date");
       log("INFO", "无缓存，结构模式自动生成完成");
     } else {
-      // 逻辑模式无缓存：先显示根节点，等用户点更新时调用 AI
-      const rootResult = makeRootOnlyResult(project.name);
-      canvas.setData(rootResult.nodes, rootResult.edges);
-      updateDirectoryStatus("needs-update");
+      updateDirectoryStatus("updating");
+      try {
+        await checkAndBuildIndex(project.name);
+        const logicResult = await generateLogicCanvas(project.name);
+        canvas.setData(logicResult.nodes, logicResult.edges);
+        const snapshot = await collectDirectorySnapshot(project.name);
+        await saveDirectoryModeData(
+          project.name,
+          "logic",
+          logicResult.nodes,
+          logicResult.edges,
+          snapshot,
+          logicResult.updatedAt,
+        );
+        updateDirectoryStatus("up-to-date");
+      } catch (e) {
+        log("ERROR", `逻辑模式自动生成失败: ${e}`);
+        const rootResult = makeRootOnlyResult(project.name);
+        canvas.setData(rootResult.nodes, rootResult.edges);
+        updateDirectoryStatus("needs-update");
+      }
     }
   }
 
-  // AI 生成画布数据并持久化
+  // 基于感知索引生成逻辑画布并持久化
   async function aiGenerateCanvas(
     project: { id: number; name: string },
     canvas: ReturnType<typeof getCanvas>,
   ) {
     if (!canvas) return;
     try {
-      const apiKey = getActiveApiKey();
-      if (!apiKey) {
-        log("WARN", "没有配置 API 密钥，跳过画布分析");
-        // 即使无密钥也显示根节点，禁止画布为空
-        const rootResult = makeRootOnlyResult(project.name);
-        canvas.setData(rootResult.nodes, rootResult.edges);
-        updateDirectoryStatus("needs-update");
-        return;
-      }
-      const result = await invoke<string>("analyze_project_dependencies", {
-        projectName: project.name,
-        apiKey: apiKey,
-        model: getActiveKeyModel(),
-      });
+      await checkAndBuildIndex(project.name);
+      const logicResult = await generateLogicCanvas(project.name);
+      canvas.setData(logicResult.nodes, logicResult.edges);
 
-      // 解析 DeepSeek 返回的 JSON
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
-        if (data.nodes && data.edges) {
-          canvas.setData(data.nodes, data.edges);
+      const snapshot = await collectDirectorySnapshot(project.name);
+      await saveDirectoryModeData(
+        project.name,
+        "logic",
+        logicResult.nodes,
+        logicResult.edges,
+        snapshot,
+        logicResult.updatedAt,
+      );
 
-          // 收集目录快照
-          const snapshot = await collectDirectorySnapshot(project.name);
-
-          // 持久化逻辑模式数据到 .xt/config.json
-          const now = new Date().toISOString();
-          await invoke("save_canvas_directory", {
-            projectName: project.name,
-            data: JSON.stringify({
-              nodes: data.nodes,
-              edges: data.edges,
-              updatedAt: now,
-              mode: "logic",
-              directorySnapshot: snapshot,
-            }),
-          });
-
-          // 同时确保结构模式也有缓存（如果还没有的话）
-          try {
-            const allCached = await invoke<string>("load_canvas_directory", {
-              projectName: project.name,
-            });
-            const parsedAll = allCached && allCached !== "null" ? JSON.parse(allCached) : {};
-            const hasStructure = parsedAll.structure && parsedAll.structure.nodes && parsedAll.structure.nodes.length > 0;
-            if (!hasStructure) {
-              const structureResult = await generateStructureCanvas(project.name);
-              const structureSnapshot = await collectDirectorySnapshot(project.name);
-              await invoke("save_canvas_directory", {
-                projectName: project.name,
-                data: JSON.stringify({
-                  nodes: structureResult.nodes,
-                  edges: structureResult.edges,
-                  updatedAt: now,
-                  mode: "structure",
-                  directorySnapshot: structureSnapshot,
-                }),
-              });
-              log("INFO", "逻辑模式生成时自动补全结构模式缓存");
-            }
-          } catch { /* 补全结构缓存失败不影响主流程 */ }
-
-          updateDirectoryStatus("up-to-date");
-          log("INFO", "AI 生成目录数据并持久化");
-          return;
+      try {
+        const allCached = await invoke<string>("load_canvas_directory", {
+          projectName: project.name,
+        });
+        const parsedAll = allCached && allCached !== "null" ? JSON.parse(allCached) : {};
+        const hasStructure = parsedAll.structure && parsedAll.structure.nodes && parsedAll.structure.nodes.length > 0;
+        if (!hasStructure) {
+          const structureResult = await generateStructureCanvas(project.name);
+          await saveDirectoryModeData(
+            project.name,
+            "structure",
+            structureResult.nodes,
+            structureResult.edges,
+            snapshot,
+            new Date().toISOString(),
+          );
+          log("INFO", "逻辑模式生成时自动补全结构模式缓存");
         }
-      }
+      } catch { /* 补全结构缓存失败不影响主流程 */ }
+
+      updateDirectoryStatus("up-to-date");
+      log("INFO", "基于感知索引生成逻辑目录数据并持久化");
+      return;
     } catch (e) {
       log("ERROR", `加载项目画布失败: ${e}`);
       // 失败时显示根节点，禁止画布为空
@@ -4463,6 +4925,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       updateDirectoryStatus("needs-update");
     }
   }
+  void aiGenerateCanvas;
 
   /** 收集当前目录快照（所有文件/文件夹路径的排序列表） */
   async function collectDirectorySnapshot(projectName: string): Promise<string[]> {
@@ -4521,16 +4984,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     switch (status) {
       case "up-to-date":
-        textEl.textContent = "无需更新";
+        textEl.textContent = "已同步";
         btn.disabled = true;
         break;
       case "needs-update":
-        textEl.textContent = "更新";
+        textEl.textContent = "待同步";
         btn.classList.add("needs-update");
         btn.disabled = false;
         break;
       case "updating":
-        textEl.textContent = "更新中...";
+        textEl.textContent = "同步中...";
         btn.classList.add("spinning");
         btn.disabled = true;
         break;
@@ -4549,17 +5012,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   const dirStatusBtn = document.getElementById("canvas-directory-status-btn");
   dirStatusBtn?.addEventListener("click", async () => {
     const activeProject = sidebar.getActiveChat();
-    const canvas = getCanvas();
-    if (!activeProject || !canvas) return;
+    if (!activeProject || !getCanvas()) return;
 
     updateDirectoryStatus("updating");
 
     try {
-      if (directoryMode === "structure") {
-        await incrementalStructureUpdate(activeProject.name, canvas);
-      } else {
-        await aiGenerateCanvas(activeProject, canvas);
-      }
+      await checkAndBuildIndex(activeProject.name, true);
+      await refreshProjectCanvasCaches(activeProject.name, true);
     } finally {
       // 状态由具体更新函数设置
     }
@@ -4575,16 +5034,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 收集并保存快照
       const snapshot = await collectDirectorySnapshot(projectName);
       const now = new Date().toISOString();
-      await invoke("save_canvas_directory", {
-        projectName,
-        data: JSON.stringify({
-          nodes: result.nodes,
-          edges: result.edges,
-          updatedAt: now,
-          mode: "structure",
-          directorySnapshot: snapshot,
-        }),
-      });
+      await saveDirectoryModeData(projectName, "structure", result.nodes, result.edges, snapshot, now);
       updateDirectoryStatus("up-to-date");
       log("INFO", "结构模式增量更新完成");
     } catch (e) {
@@ -4592,6 +5042,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       updateDirectoryStatus("needs-update");
     }
   }
+  void incrementalStructureUpdate;
 
   // 绑定目录卡片页签切换
   const tabStructure = document.getElementById("dir-tab-structure");
@@ -4626,13 +5077,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const snapshot = await collectDirectorySnapshot(activeProject.name);
     const now = new Date().toISOString();
     try {
-      await invoke("save_canvas_directory", {
-        projectName: activeProject.name,
-        data: JSON.stringify({
-          nodes: result.nodes, edges: result.edges,
-          updatedAt: now, mode: "structure", directorySnapshot: snapshot,
-        }),
-      });
+      await saveDirectoryModeData(
+        activeProject.name,
+        "structure",
+        result.nodes,
+        result.edges,
+        snapshot,
+        now,
+      );
     } catch { /* 保存失败不影响显示 */ }
     updateDirectoryStatus("up-to-date");
   });
@@ -4659,10 +5111,27 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }
     } catch { /* ignore */ }
-    // 无缓存或模式不匹配：先显示根节点，等用户点更新时调用 AI
-    const rootResult = makeRootOnlyResult(activeProject.name);
-    canvas.setData(rootResult.nodes, rootResult.edges);
-    updateDirectoryStatus("needs-update");
+    updateDirectoryStatus("updating");
+    try {
+      await checkAndBuildIndex(activeProject.name);
+      const logicResult = await generateLogicCanvas(activeProject.name);
+      canvas.setData(logicResult.nodes, logicResult.edges);
+      const snapshot = await collectDirectorySnapshot(activeProject.name);
+      await saveDirectoryModeData(
+        activeProject.name,
+        "logic",
+        logicResult.nodes,
+        logicResult.edges,
+        snapshot,
+        logicResult.updatedAt,
+      );
+      updateDirectoryStatus("up-to-date");
+    } catch (e) {
+      log("ERROR", `逻辑模式切换生成失败: ${e}`);
+      const rootResult = makeRootOnlyResult(activeProject.name);
+      canvas.setData(rootResult.nodes, rootResult.edges);
+      updateDirectoryStatus("needs-update");
+    }
   });
 
   // 初始化显示
@@ -4788,24 +5257,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /** 进入 Wiki 模式 */
   async function enterWikiMode() {
-    exitTokenMode();
-    exitGitMode();
-    exitImageMode();
-    exitVideoMode();
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
       log("WARN", "Wiki: 没有活跃项目");
       return;
     }
-
-    // 更新浮动按钮激活状态
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-    const repoBtn = document.getElementById("btn-repo");
-    if (repoBtn) repoBtn.classList.add("active");
-
-    // 隐藏画布
-    if (canvasContainer) canvasContainer.style.visibility = "hidden";
-    if (floatingActions) floatingActions.style.visibility = "visible";
+    exitDraftMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
 
     // 显示 Wiki 面板和仓库管理器
     if (wikiPanel) {
@@ -4816,18 +5280,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       repoBrowser.style.display = "flex";
       repoBrowser.classList.add("active");
     }
-
-    // 隐藏文件预览面板
-    const fileBrowserCard = document.getElementById("file-browser-card");
-    const filePreviewCard = document.getElementById("file-preview-card");
-    if (fileBrowserCard) {
-      fileBrowserCard.classList.remove("active");
-      fileBrowserCard.style.display = "none";
-    }
-    if (filePreviewCard) {
-      filePreviewCard.classList.remove("active");
-      filePreviewCard.style.display = "none";
-    }
+    clearViewTabs("btn-repo");
+    if (floatingActions) floatingActions.style.visibility = "visible";
 
     // 加载仓库导航
     await loadRepoBrowser(activeProject.name);
@@ -4853,14 +5307,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       repoBrowser.style.display = "none";
     }
 
-    // 恢复画布
-    if (canvasContainer) canvasContainer.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
-
-    // 更新浮动按钮激活状态
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-    const dirBtn = document.getElementById("btn-directory");
-    if (dirBtn) dirBtn.classList.add("active");
+    showDirectoryWorkspace();
+    clearViewTabs("btn-directory");
 
     log("INFO", "退出 Wiki 模式");
   }
@@ -5230,6 +5678,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitImageMode();
     exitVideoMode();
     exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
     isDraftMode = true;
 
     // 恢复目录画布可见（草稿模式下仍需要底层目录画布作为背景）
@@ -5238,9 +5688,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (cc) cc.style.visibility = "visible";
     if (dirCard) dirCard.style.display = "";
 
-    // 更新页签状态
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-    document.getElementById("btn-draft")?.classList.add("active");
+    clearViewTabs("btn-draft");
 
     // 激活草稿画布和工具栏
     draftCanvas.activate();
@@ -5266,9 +5714,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     draftToolbox.hide();
     draftSidebar.hide();
 
-    // 恢复目录按钮激活状态
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-    document.getElementById("btn-directory")?.classList.add("active");
+    showDirectoryWorkspace();
+    clearViewTabs("btn-directory");
 
     log("INFO", "退出草稿模式");
   }
@@ -5801,18 +6248,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function enterTokenMode() {
     if (isTokenMode) return;
-    // 退出其他互斥模式
     exitDraftMode();
     exitWikiMode();
     exitGitMode();
     exitImageMode();
     exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
 
     isTokenMode = true;
-
-    // 隐藏主界面元素
-    if (canvasContainer) canvasContainer.style.visibility = "hidden";
-    if (floatingActions) floatingActions.style.visibility = "visible";
 
     // 显示中央仪表盘卡片
     const tokenPanel = document.getElementById("token-panel");
@@ -5833,15 +6278,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       renderTimeManager("today", "project");
     }
 
-    // 隐藏文件预览面板
-    const fileBrowserCard = document.getElementById("file-browser-card");
-    const filePreviewCard = document.getElementById("file-preview-card");
-    if (fileBrowserCard) { fileBrowserCard.classList.remove("active"); fileBrowserCard.style.display = "none"; }
-    if (filePreviewCard) { filePreviewCard.classList.remove("active"); filePreviewCard.style.display = "none"; }
-
     // 更新按钮active状态
-    document.querySelectorAll("#floating-actions .view-tab").forEach((btn) => btn.classList.remove("active"));
-    document.getElementById("btn-token")?.classList.add("active");
+    clearViewTabs("btn-token");
+    if (floatingActions) floatingActions.style.visibility = "visible";
 
     log("INFO", "进入词元模式");
   }
@@ -5856,13 +6295,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (tokenPanel) tokenPanel.style.display = "none";
     if (tokenBrowser) tokenBrowser.style.display = "none";
 
-    // 恢复主界面元素
-    if (canvasContainer) canvasContainer.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
-
-    // 恢复默认按钮active（目录按钮）
-    document.getElementById("btn-token")?.classList.remove("active");
-    document.getElementById("btn-directory")?.classList.add("active");
+    showDirectoryWorkspace();
+    clearViewTabs("btn-directory");
 
     log("INFO", "退出词元模式");
   }
@@ -6001,26 +6435,24 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function enterGitMode() {
     if (isGitMode) return;
-    exitDraftMode();
-    exitWikiMode();
-    exitTokenMode();
-    exitImageMode();
-    exitVideoMode();
-
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) {
       log("WARN", "Git: 没有活跃项目");
       return;
     }
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
 
     isGitMode = true;
 
     // 更新浮动按钮状态
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-    document.getElementById("btn-git")?.classList.add("active");
-
-    // 隐藏画布
-    if (canvasContainer) canvasContainer.style.visibility = "hidden";
+    clearViewTabs("btn-git");
     if (floatingActions) floatingActions.style.visibility = "visible";
 
     // 显示 Git 面板
@@ -6034,14 +6466,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       gitBrowser.style.display = "flex";
       gitBrowser.classList.add("active");
     }
-
-    // 隐藏文件预览面板
-    const fileBrowserCard = document.getElementById("file-browser-card");
-    const filePreviewCard = document.getElementById("file-preview-card");
-    const previewChatCard = document.getElementById("preview-chat-card");
-    if (fileBrowserCard) { fileBrowserCard.classList.remove("active"); fileBrowserCard.style.display = "none"; }
-    if (filePreviewCard) { filePreviewCard.classList.remove("active"); filePreviewCard.style.display = "none"; }
-    if (previewChatCard) { previewChatCard.style.display = "none"; }
 
     // 加载 Git 配置
     await loadGitConfig(activeProject.name);
@@ -6070,12 +6494,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (gitPanel) { gitPanel.classList.remove("active"); gitPanel.style.display = "none"; }
     if (gitBrowser) { gitBrowser.classList.remove("active"); gitBrowser.style.display = "none"; }
 
-    // 恢复画布
-    if (canvasContainer) canvasContainer.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
-
-    // 恢复按钮
-    document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
+    showDirectoryWorkspace();
+    clearViewTabs("btn-directory");
 
     log("INFO", "退出 Git 模式");
   }
@@ -6153,6 +6573,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  // btn-file 进入文件工作台
+  document.getElementById("btn-file")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    enterFileMode();
+  });
+
   // 词元面板返回按钮
   document.getElementById("token-panel-back")?.addEventListener("click", () => {
     exitTokenMode();
@@ -6190,17 +6616,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // btn-directory 退出所有模式，回到目录
   document.getElementById("btn-directory")?.addEventListener("click", () => {
-    exitDraftMode();
-    exitWikiMode();
-    exitTokenMode();
-    exitGitMode();
-    exitImageMode();
-    exitVideoMode();
-    exitDataMode();
-    const dirCard = document.getElementById("canvas-directory-card");
-    if (dirCard) dirCard.style.display = "";
-    document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
-    document.getElementById("btn-directory")?.classList.add("active");
+    enterDirectoryMode();
   });
 
   type ImageCard = {
@@ -6398,17 +6814,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 保留全局API（兼宼ACTION系统）
   (window as any).__switchView = (view: string) => {
-    if (view === "image") enterImageMode();
+    if (view === "file") enterFileMode();
+    else if (view === "directory") enterDirectoryMode();
+    else if (view === "image") enterImageMode();
     else if (view === "video") enterVideoMode();
     else if (view === "data-analysis") enterDataMode();
     else {
-      exitImageMode();
-      exitVideoMode();
-      exitDataMode();
-      const dirCard = document.getElementById("canvas-directory-card");
-      if (dirCard) dirCard.style.display = "";
-      document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
-      document.getElementById("btn-directory")?.classList.add("active");
+      enterDirectoryMode();
     }
   };
 
@@ -6498,6 +6910,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const filePreviewSaveStatus = document.getElementById("file-preview-save-status");
   const fileCanvasSvg = document.getElementById("file-canvas-svg");
   const filePreviewImage = document.getElementById("file-preview-image");
+  const filePreviewVideo = document.getElementById("file-preview-video") as HTMLVideoElement | null;
+  const filePreviewWeb = document.getElementById("file-preview-web") as HTMLIFrameElement | null;
   const fileBrowserTree = document.getElementById("file-browser-tree");
   const filePreviewBack = document.getElementById("file-preview-back");
   const filePreviewHighlight = document.getElementById("file-preview-highlight");
@@ -6505,17 +6919,215 @@ document.addEventListener("DOMContentLoaded", async () => {
   const filePreviewLang = document.getElementById("file-preview-lang");
   const langLabel = document.getElementById("lang-label");
   const filePreviewThemeToggle = document.getElementById("file-preview-theme-toggle");
+  const fileCanvasToolbar = document.getElementById("file-canvas-toolbar");
+  const fileCanvasStatusText = document.getElementById("file-canvas-status-text");
+  const fileCanvasStatusTime = document.getElementById("file-canvas-status-time");
+  const fileCanvasRefresh = document.getElementById("file-canvas-refresh") as HTMLButtonElement | null;
 
   // 子画布实例（延迟初始化）
   let fileCanvas: FileCanvas | null = null;
+  let fileCanvasRequestSeq = 0;
 
   // 当前预览的文件路径（用于侧边栏高亮）
   let currentPreviewFile: string | null = null;
   // 当前预览模式：source | preview | canvas | image | highlight
-  let currentPreviewMode: "source" | "preview" | "canvas" | "image" | "highlight" = "source";
+  let currentPreviewMode: "source" | "preview" | "canvas" | "image" | "video" | "web" | "highlight" = "source";
 
   // 高亮主题：dark | light
   let highlightTheme: "dark" | "light" = "dark";
+
+  function clearViewTabs(activeId: string | null = null) {
+    document.querySelectorAll(".view-tab").forEach((btn) => btn.classList.remove("active"));
+    if (activeId) {
+      document.getElementById(activeId)?.classList.add("active");
+    }
+  }
+
+  function setElementVisible(el: HTMLElement | null, visible: boolean, display = "flex") {
+    if (!el) return;
+    el.style.display = visible ? display : "none";
+  }
+
+  function resetFilePreviewSurfaces() {
+    if (filePreviewEditor) filePreviewEditor.style.display = "none";
+    if (filePreviewMd) filePreviewMd.classList.remove("active");
+    if (filePreviewHighlight) filePreviewHighlight.classList.remove("active");
+    if (filePreviewImage) {
+      filePreviewImage.classList.remove("active");
+      filePreviewImage.innerHTML = "";
+    }
+    if (filePreviewVideo) {
+      filePreviewVideo.classList.remove("active");
+      filePreviewVideo.removeAttribute("src");
+      filePreviewVideo.load?.();
+    }
+    if (filePreviewWeb) {
+      filePreviewWeb.classList.remove("active");
+      filePreviewWeb.src = "about:blank";
+    }
+    if (fileCanvasSvg) fileCanvasSvg.classList.remove("active");
+    if (fileCanvasToolbar) fileCanvasToolbar.classList.remove("active");
+    if (filePreviewTabs) filePreviewTabs.style.display = "none";
+    if (filePreviewLang) filePreviewLang.style.display = "none";
+    if (filePreviewThemeToggle) filePreviewThemeToggle.style.display = "none";
+    currentPreviewMode = "source";
+  }
+
+  function hideAllWorkspacePanels() {
+    setElementVisible(fileBrowserCard as HTMLElement | null, false);
+    setElementVisible(filePreviewCard as HTMLElement | null, false);
+    setElementVisible(document.getElementById("wiki-panel"), false);
+    setElementVisible(document.getElementById("repo-browser"), false);
+    setElementVisible(document.getElementById("git-panel"), false);
+    setElementVisible(document.getElementById("git-browser"), false);
+    setElementVisible(document.getElementById("token-panel"), false);
+    setElementVisible(document.getElementById("token-browser"), false);
+    setElementVisible(document.getElementById("image-panel"), false);
+    setElementVisible(document.getElementById("video-panel"), false);
+    setElementVisible(document.getElementById("data-panel"), false);
+    setElementVisible(document.getElementById("data-browser"), false);
+    setElementVisible(document.getElementById("preview-chat-card"), false);
+    hideCanvasFileCard();
+    resetFilePreviewSurfaces();
+  }
+
+  function showDirectoryWorkspace() {
+    if (canvasContainer) canvasContainer.style.visibility = "visible";
+    if (floatingActions) floatingActions.style.visibility = "visible";
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (dirCard) dirCard.style.display = "";
+  }
+
+  function hideDirectoryWorkspace() {
+    if (canvasContainer) canvasContainer.style.visibility = "hidden";
+    const dirCard = document.getElementById("canvas-directory-card");
+    if (dirCard) dirCard.style.display = "none";
+  }
+
+  function enterFileMode() {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
+    setElementVisible(fileBrowserCard as HTMLElement | null, true);
+    setElementVisible(filePreviewCard as HTMLElement | null, true);
+    if (floatingActions) floatingActions.style.visibility = "visible";
+    clearViewTabs("btn-file");
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "file" } }));
+  }
+
+  function enterDirectoryMode() {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    showDirectoryWorkspace();
+    clearViewTabs("btn-directory");
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "directory" } }));
+  }
+
+  function setFileCanvasSyncState(
+    state: "idle" | "building" | "ready" | "error",
+    text: string,
+    timeText: string,
+  ) {
+    if (fileCanvasStatusText) {
+      fileCanvasStatusText.textContent = text;
+      fileCanvasStatusText.style.color = state === "error"
+        ? "#dc2626"
+        : state === "building"
+          ? "#d97706"
+          : "#2563eb";
+    }
+    if (fileCanvasStatusTime) {
+      fileCanvasStatusTime.textContent = timeText;
+    }
+    if (fileCanvasRefresh) {
+      fileCanvasRefresh.classList.toggle("spinning", state === "building");
+      fileCanvasRefresh.disabled = state === "building";
+    }
+  }
+
+  function mapFileLogicCanvasToBlocks(payload: FileLogicCanvasPayload): {
+    blocks: DocBlock[];
+    edges: { from: string; to: string }[];
+  } {
+    const blocks: DocBlock[] = payload.nodes.map((node, index) => {
+      let column = 1;
+      let accent = "symbol";
+      let staticHeight = 132;
+      let collapsed = true;
+
+      if (node.kind === "file-root") {
+        column = 1;
+        accent = "file-root";
+        staticHeight = 124;
+        collapsed = false;
+      } else if (node.kind === "group-upstream") {
+        column = 0;
+        accent = "group-upstream";
+        staticHeight = 92;
+        collapsed = false;
+      } else if (node.kind === "group-downstream") {
+        column = 2;
+        accent = "group-downstream";
+        staticHeight = 92;
+        collapsed = false;
+      } else if (node.kind === "group-symbols") {
+        column = 1;
+        accent = "group-symbols";
+        staticHeight = 92;
+        collapsed = false;
+      } else if (node.kind === "inbound-file") {
+        column = 0;
+        accent = "inbound-file";
+      } else if (node.kind === "outbound-file") {
+        column = 2;
+        accent = "outbound-file";
+      }
+
+      const lineMeta = node.line_start
+        ? node.line_end && node.line_end !== node.line_start
+          ? `L${node.line_start}-L${node.line_end}`
+          : `L${node.line_start}`
+        : "";
+      const pathMeta = node.file_path && node.file_path !== payload.file_path ? node.file_path : "";
+      const meta = [lineMeta, pathMeta].filter(Boolean).join(" · ");
+
+      return {
+        id: node.id,
+        title: node.label,
+        level: column + 1,
+        content: node.detail,
+        meta,
+        children: [],
+        x: 0,
+        y: 0,
+        w: 280,
+        h: 100,
+        collapsed,
+        accent,
+        column,
+        order: node.line_start || index,
+        openPath: node.file_path || undefined,
+        staticHeight,
+      };
+    });
+
+    return {
+      blocks,
+      edges: payload.edges.map((edge) => ({ from: edge.from, to: edge.to })),
+    };
+  }
 
   // ========== Markdown 渲染器 ==========
   function renderMarkdown(md: string): string {
@@ -6597,6 +7209,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function saveCurrentFile(): Promise<void> {
     const activeProject = sidebar.getActiveChat();
     if (!activeProject || !currentPreviewFile || !filePreviewEditor) return;
+    if (isImageFile(currentPreviewFile) || isVideoFile(currentPreviewFile) || isWebPreviewFile(currentPreviewFile)) return;
     try {
       await invoke("sandbox_write_file", {
         projectName: activeProject.name,
@@ -6606,7 +7219,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 同步更新 MD 预览
       if (currentPreviewMode === "preview") updateMdPreview();
       showSaveStatus("已保存");
-      // 文件变更后重建感知索引（防抖：仅 Ctrl+S 手动保存触发）
+      scheduleProjectIntelligenceSync(activeProject.name, [currentPreviewFile], "editor-save");
     } catch (e) {
       showSaveStatus("保存失败");
       console.error("保存文件失败:", e);
@@ -6616,7 +7229,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function reloadCurrentPreviewFile(): Promise<void> {
     const activeProject = sidebar.getActiveChat();
     if (!activeProject || !currentPreviewFile || !filePreviewEditor) return;
-    if (isImageFile(currentPreviewFile)) return;
+    if (isImageFile(currentPreviewFile) || isVideoFile(currentPreviewFile) || isWebPreviewFile(currentPreviewFile)) return;
 
     try {
       const content = await invoke<string>("sandbox_read_file", {
@@ -6628,7 +7241,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         updateMdPreview();
       } else {
         updateHighlight();
-        triggerCanvasRefresh();
+        if (currentPreviewMode === "canvas") {
+          triggerCanvasRefresh();
+        }
       }
     } catch (e) {
       console.error("刷新当前预览文件失败:", e);
@@ -6646,10 +7261,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
       if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
-      saveCurrentFile().then(() => {
-        const activeProject = sidebar.getActiveChat();
-        if (activeProject) checkAndBuildIndex(activeProject.name, true);
-      });
+      void saveCurrentFile();
     }
   });
 
@@ -6739,21 +7351,67 @@ document.addEventListener("DOMContentLoaded", async () => {
     return { blocks, edges };
   }
 
-  // 刷新画布（从编辑器内容重新解析）
-  function refreshFileCanvas() {
-    if (!fileCanvasSvg || !filePreviewEditor) return;
+  async function refreshFileCanvas(forceRebuild: boolean = false) {
+    if (!fileCanvasSvg || !filePreviewEditor || !currentPreviewFile) return;
     if (!fileCanvas) fileCanvas = new FileCanvas();
-    const { blocks, edges } = parseMdToBlocks(filePreviewEditor.value);
-    fileCanvas.setData(blocks, edges);
+
+    if (isMarkdownFile(currentPreviewFile)) {
+      const { blocks, edges } = parseMdToBlocks(filePreviewEditor.value);
+      fileCanvas.setData(blocks, edges);
+      setFileCanvasSyncState("ready", "文档结构图已更新", "Markdown 实时解析");
+      return;
+    }
+
+    const activeProject = sidebar.getActiveChat();
+    if (!activeProject) return;
+
+    const requestSeq = ++fileCanvasRequestSeq;
+    setFileCanvasSyncState(
+      "building",
+      forceRebuild ? "正在重建逻辑图谱..." : "正在同步逻辑图谱...",
+      "自动联动代码检索与目录图谱",
+    );
+
+    try {
+      await checkAndBuildIndex(activeProject.name, forceRebuild);
+      const graphJson = await invoke<string>("perceptual_index_file_logic_graph", {
+        projectName: activeProject.name,
+        relativePath: currentPreviewFile,
+      });
+      if (requestSeq !== fileCanvasRequestSeq) return;
+
+      const payload = JSON.parse(graphJson) as FileLogicCanvasPayload;
+      const { blocks, edges } = mapFileLogicCanvasToBlocks(payload);
+      fileCanvas.setData(blocks, edges, { layout: "columns" });
+      setFileCanvasSyncState(
+        "ready",
+        `已联动 ${payload.nodes.length} 个节点 / ${payload.edges.length} 条链路`,
+        `最近同步：${formatGraphTimestamp(payload.updated_at)}`,
+      );
+    } catch (e) {
+      if (requestSeq !== fileCanvasRequestSeq) return;
+      console.error("生成文件逻辑图谱失败:", e);
+      setFileCanvasSyncState("error", "逻辑图谱生成失败", String(e));
+    }
   }
 
-  // 画布防抖
   let canvasRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   function triggerCanvasRefresh() {
     if (currentPreviewMode !== "canvas") return;
     if (canvasRefreshTimer) clearTimeout(canvasRefreshTimer);
-    canvasRefreshTimer = setTimeout(() => refreshFileCanvas(), 1000);
+    canvasRefreshTimer = setTimeout(() => {
+      void refreshFileCanvas();
+    }, 700);
   }
+
+  fileCanvasRefresh?.addEventListener("click", () => {
+    const activeProject = sidebar.getActiveChat();
+    if (activeProject && currentPreviewFile && !isMarkdownFile(currentPreviewFile) && !isImageFile(currentPreviewFile)) {
+      scheduleProjectIntelligenceSync(activeProject.name, [currentPreviewFile], "manual-refresh");
+    } else {
+      void refreshFileCanvas(true);
+    }
+  });
 
   // ========== 语法高亮 ==========
   function getHighlightLang(filename: string): string | undefined {
@@ -6812,7 +7470,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   filePreviewThemeToggle?.addEventListener("click", toggleHighlightTheme);
 
   // ========== 三模式切换 ==========
-  function switchMode(mode: "source" | "preview" | "canvas" | "image" | "highlight") {
+  function switchMode(mode: "source" | "preview" | "canvas" | "image" | "video" | "web" | "highlight") {
     currentPreviewMode = mode;
 
     // 更新标签激活态
@@ -6825,7 +7483,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (filePreviewMd) filePreviewMd.classList.remove("active");
     if (fileCanvasSvg) fileCanvasSvg.classList.remove("active");
     if (filePreviewImage) filePreviewImage.classList.remove("active");
+    if (filePreviewVideo) filePreviewVideo.classList.remove("active");
+    if (filePreviewWeb) filePreviewWeb.classList.remove("active");
     if (filePreviewHighlight) filePreviewHighlight.classList.remove("active");
+    if (fileCanvasToolbar) fileCanvasToolbar.classList.remove("active");
 
     switch (mode) {
       case "source":
@@ -6843,10 +7504,21 @@ document.addEventListener("DOMContentLoaded", async () => {
         break;
       case "canvas":
         if (fileCanvasSvg) fileCanvasSvg.classList.add("active");
-        refreshFileCanvas();
+        if (fileCanvasToolbar) fileCanvasToolbar.classList.add("active");
+        if (currentPreviewFile && isImageFile(currentPreviewFile)) {
+          setFileCanvasSyncState("idle", "当前文件不支持逻辑图谱", "请切换到源码或预览模式");
+        } else {
+          void refreshFileCanvas();
+        }
         break;
       case "image":
         if (filePreviewImage) filePreviewImage.classList.add("active");
+        break;
+      case "video":
+        if (filePreviewVideo) filePreviewVideo.classList.add("active");
+        break;
+      case "web":
+        if (filePreviewWeb) filePreviewWeb.classList.add("active");
         break;
       case "highlight":
         updateHighlight();
@@ -6859,7 +7531,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   filePreviewTabs?.addEventListener("click", (e) => {
     const tab = (e.target as HTMLElement).closest(".preview-tab") as HTMLElement;
     if (!tab) return;
-    const mode = tab.dataset.tab as "source" | "preview" | "canvas" | "image" | "highlight";
+    const mode = tab.dataset.tab as "source" | "preview" | "canvas" | "image" | "video" | "web" | "highlight";
     if (!mode) return;
     switchMode(mode);
   });
@@ -6868,6 +7540,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   filePreviewEditor?.addEventListener("input", () => {
     triggerAutoSave();
     triggerCanvasRefresh();
+    if (currentPreviewFile && currentPreviewMode === "canvas" && !isMarkdownFile(currentPreviewFile) && !isImageFile(currentPreviewFile)) {
+      setFileCanvasSyncState("building", "检测到修改，保存后自动刷新图谱", "无需手动逐个更新");
+    }
     if (currentPreviewMode === "source" || currentPreviewMode === "highlight") updateHighlight();
   });
 
@@ -6879,6 +7554,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 判断是否为图片文件
   function isImageFile(filename: string): boolean {
     return /\.(png|jpg|jpeg|gif|bmp|webp|svg)$/i.test(filename);
+  }
+
+  // 判断是否为视频文件
+  function isVideoFile(filename: string): boolean {
+    return /\.(mp4|webm|ogg|mov|m4v)$/i.test(filename);
+  }
+
+  // 判断是否为网页预览文件
+  function isWebPreviewFile(filename: string): boolean {
+    return /\.(html?|xhtml)$/i.test(filename);
   }
 
   // 获取图片 MIME 类型
@@ -6896,29 +7581,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function getVideoMimeType(filename: string): string {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case "mp4": return "video/mp4";
+      case "webm": return "video/webm";
+      case "ogg": return "video/ogg";
+      case "mov": return "video/quicktime";
+      case "m4v": return "video/x-m4v";
+      default: return "video/mp4";
+    }
+  }
+
   // 打开文件预览
   (window as any).openFilePreview = async function(filename: string) {
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) return;
 
+    enterFileMode();
     currentPreviewFile = filename;
 
     // 显示画布文件预览卡片
     showCanvasFileCard(filename);
-
-    // 隐藏画布和悬浮按钮（AI对话卡片保持可见）
-    if (canvasContainer) canvasContainer.style.visibility = "hidden";
-    if (floatingActions) floatingActions.style.visibility = "hidden";
-
-    // 显示文件预览面板
-    if (fileBrowserCard) {
-      fileBrowserCard.style.display = "flex";
-      fileBrowserCard.classList.add("active");
-    }
-    if (filePreviewCard) {
-      filePreviewCard.style.display = "flex";
-      filePreviewCard.classList.add("active");
-    }
 
     // 加载目录树
     await loadFileBrowser(activeProject.name);
@@ -6929,10 +7613,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 判断文件类型
     const isMd = isMarkdownFile(filename);
     const isImg = isImageFile(filename);
+    const isVideo = isVideoFile(filename);
+    const isWeb = isWebPreviewFile(filename);
 
-    // 显示标签：MD → 三段，代码 → 三段（源码/高亮/画布），图片 → 隐藏标签栏
+    // 显示标签：MD/代码保留标签，媒体文件隐藏标签栏
     if (filePreviewTabs) {
-      if (isImg) {
+      if (isImg || isVideo || isWeb) {
         filePreviewTabs.style.display = "none";
       } else {
         filePreviewTabs.style.display = "flex";
@@ -6942,7 +7628,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // 显示/隐藏语言标签和主题切换
     if (filePreviewLang) {
-      if (isImg || isMd) {
+      if (isImg || isMd || isVideo || isWeb) {
         filePreviewLang.style.display = "none";
       } else {
         filePreviewLang.style.display = "flex";
@@ -6950,11 +7636,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
     if (filePreviewThemeToggle) {
-      filePreviewThemeToggle.style.display = (isImg || isMd) ? "none" : "flex";
+      filePreviewThemeToggle.style.display = (isImg || isMd || isVideo || isWeb) ? "none" : "flex";
+    }
+    if (!isImg && !isMd && !isVideo && !isWeb) {
+      setFileCanvasSyncState("idle", "逻辑图谱待联动", "切到画布页后会自动生成");
+      void checkAndBuildIndex(activeProject.name);
     }
 
     // 加载文件内容
     if (filePreviewTitle) filePreviewTitle.textContent = filename;
+    if (filePreviewEditor && (isImg || isVideo || isWeb)) {
+      filePreviewEditor.value = "";
+    }
 
     if (isImg) {
       // 图片文件：通过 Base64 读取并显示
@@ -6971,6 +7664,42 @@ document.addEventListener("DOMContentLoaded", async () => {
       } catch (e) {
         if (filePreviewImage) filePreviewImage.innerHTML = `<div style="color:#fff;text-align:center;">无法读取图片: ${e}</div>`;
         switchMode("image");
+      }
+      return;
+    }
+
+    if (isVideo) {
+      try {
+        const base64 = await invoke<string>("sandbox_read_file_base64", {
+          projectName: activeProject.name,
+          relativePath: filename,
+        });
+        if (filePreviewVideo) {
+          filePreviewVideo.src = `data:${getVideoMimeType(filename)};base64,${base64}`;
+          filePreviewVideo.load();
+        }
+        switchMode("video");
+      } catch (e) {
+        if (filePreviewVideo) filePreviewVideo.removeAttribute("src");
+        showSaveStatus(`无法读取视频: ${e}`);
+        switchMode("video");
+      }
+      return;
+    }
+
+    if (isWeb) {
+      try {
+        const content = await invoke<string>("sandbox_read_file", {
+          projectName: activeProject.name,
+          relativePath: filename,
+        });
+        if (filePreviewWeb) {
+          filePreviewWeb.srcdoc = content;
+        }
+        switchMode("web");
+      } catch (e) {
+        if (filePreviewWeb) filePreviewWeb.srcdoc = `<pre style="padding:16px;color:#b91c1c;">无法读取网页文件: ${String(e)}</pre>`;
+        switchMode("web");
       }
       return;
     }
@@ -7015,21 +7744,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 返回画布
   filePreviewBack?.addEventListener("click", () => {
-    if (fileBrowserCard) {
-      fileBrowserCard.classList.remove("active");
-      fileBrowserCard.style.display = "none";
-    }
-    if (filePreviewCard) {
-      filePreviewCard.classList.remove("active");
-      filePreviewCard.style.display = "none";
-    }
-
-    // 恢复画布和悬浮按钮
-    if (canvasContainer) canvasContainer.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
-
-    // 隐藏文件预览卡片
-    hideCanvasFileCard();
+    currentPreviewFile = null;
+    enterDirectoryMode();
   });
 
   // 加载目录树
@@ -7094,76 +7810,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         if (!isFolder) {
-          // 点击文件，加载预览
-          const activeProject = sidebar.getActiveChat();
-          if (!activeProject) return;
-          currentPreviewFile = item.path || item.name;
-          if (filePreviewTitle) filePreviewTitle.textContent = item.name;
-
-          const isMd = isMarkdownFile(item.name);
-          const isImg = isImageFile(item.name);
-
-          // 显示标签
-          if (filePreviewTabs) {
-            if (isImg) {
-              filePreviewTabs.style.display = "none";
-            } else {
-              filePreviewTabs.style.display = "flex";
-              if (isMd) {
-                filePreviewTabs.classList.remove("code-only");
-              } else {
-                filePreviewTabs.classList.add("code-only");
-              }
-            }
-          }
-
-          if (isImg) {
-            // 图片文件
-            try {
-              const base64 = await invoke<string>("sandbox_read_file_base64", {
-                projectName: activeProject.name,
-                relativePath: currentPreviewFile,
-              });
-              const mime = getImageMimeType(item.name);
-              if (filePreviewImage) {
-                filePreviewImage.innerHTML = `<img src="data:${mime};base64,${base64}" alt="${item.name}" />`;
-              }
-            } catch (err) {
-              if (filePreviewImage) filePreviewImage.innerHTML = `<div style="color:#fff;text-align:center;">无法读取图片: ${err}</div>`;
-            }
-            // 高亮当前选中
-            fileBrowserTree?.querySelectorAll(".file-tree-item").forEach((el) => el.classList.remove("active"));
-            div.classList.add("active");
-            switchMode("image");
-            return;
-          }
-
-          // 文本文件
-          try {
-            const content = await invoke<string>("sandbox_read_file", {
-              projectName: activeProject.name,
-              relativePath: currentPreviewFile,
-            });
-            if (filePreviewEditor) filePreviewEditor.value = content;
-            if (isMd) updateMdPreview();
-          } catch (err) {
-            if (filePreviewEditor) filePreviewEditor.value = `无法读取文件: ${err}`;
-          }
-          // 更新语言标签
-          if (filePreviewLang && !isMd) {
-            filePreviewLang.style.display = "flex";
-            if (langLabel) langLabel.textContent = getLangLabel(item.name);
-          } else if (filePreviewLang) {
-            filePreviewLang.style.display = "none";
-          }
-          if (filePreviewThemeToggle) {
-            filePreviewThemeToggle.style.display = isMd ? "none" : "flex";
-          }
-          // 高亮当前选中
-          fileBrowserTree?.querySelectorAll(".file-tree-item").forEach((el) => el.classList.remove("active"));
-          div.classList.add("active");
-          // MD 默认预览，代码默认源码
-          switchMode(isMd ? "preview" : "source");
+          void (window as any).openFilePreview?.(item.path || item.name);
+          return;
         }
       });
 

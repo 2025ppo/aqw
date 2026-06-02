@@ -463,6 +463,84 @@ fn is_common_stopword(word: &str) -> bool {
     stopwords.contains(word.to_lowercase().as_str())
 }
 
+// ---- 增强搜索：共现词加权 + 专家维度 + Token预算 ----
+
+/// 增强搜索：在现有关键词匹配基础上增加共现词相关度和专家维度过滤
+pub fn search_memories_enhanced(
+    project_dir: &Path,
+    query: &MemoryQuery,
+    expert_id_filter: Option<&str>,
+    max_tokens: Option<usize>,
+) -> Result<Vec<MemorySearchResult>, String> {
+    // 1. 基础关键词搜索（复用现有逻辑，取双倍结果供重排序）
+    let mut extended_query = query.clone();
+    extended_query.limit = query.limit * 2;
+    let mut results = search_memories(project_dir, &extended_query)?;
+
+    // 2. 共现词加权：如果query中的多个词在同一记忆中都出现，额外加分
+    let query_words: HashSet<String> = tfidf::tokenize(query.query_text.trim())
+        .into_iter()
+        .collect();
+
+    for result in &mut results {
+        let memory_words: HashSet<String> = tfidf::tokenize(&result.entry.content)
+            .into_iter()
+            .collect();
+        let co_occurrence = query_words.iter()
+            .filter(|w| memory_words.contains(*w))
+            .count();
+        if co_occurrence >= 2 {
+            result.score *= 1.0 + (co_occurrence as f64 * 0.15);
+        }
+    }
+
+    // 3. 专家维度过滤：如果指定了expert_id，优先返回该专家相关的记忆
+    if let Some(eid) = expert_id_filter {
+        for result in &mut results {
+            if result.entry.expert_id == eid {
+                result.score *= 1.3; // 相关专家的记忆加权30%
+            }
+        }
+    }
+
+    // 4. 重新排序
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 5. Token预算截断
+    if let Some(budget) = max_tokens {
+        let mut token_count = 0usize;
+        results = results.into_iter().take_while(|r| {
+            let est = estimate_tokens(&r.entry.content);
+            token_count += est;
+            token_count <= budget
+        }).collect();
+    }
+
+    results.truncate(query.limit);
+    Ok(results)
+}
+
+/// 估算文本的Token数(简单版)
+fn estimate_tokens(text: &str) -> usize {
+    let chinese_count = text.chars().filter(|c| *c >= '\u{4e00}' && *c <= '\u{9fff}').count();
+    let rest_words = text.split_whitespace().count().saturating_sub(chinese_count);
+    (chinese_count as f64 * 2.5 + rest_words as f64 * 1.5) as usize
+}
+
+/// 记忆相似度合并检测
+#[allow(dead_code)]
+pub fn find_similar_memories(project_dir: &Path, memory_type: &str, new_content: &str, threshold: f64) -> Result<Vec<String>, String> {
+    let entries = load_memory_entries(project_dir, memory_type)?;
+    let new_keywords: HashSet<String> = tfidf::tokenize(new_content).into_iter().collect();
+    let similar_ids: Vec<String> = entries.iter().filter_map(|m| {
+        let existing_keywords: HashSet<String> = tfidf::tokenize(&m.content).into_iter().collect();
+        let overlap = new_keywords.iter().filter(|w| existing_keywords.contains(*w)).count();
+        let similarity = overlap as f64 / (new_keywords.len().max(1) as f64);
+        if similarity > threshold { Some(m.id.clone()) } else { None }
+    }).collect();
+    Ok(similar_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -300,3 +300,37 @@ function isStopWord(word: string): boolean {
   ]);
   return stopwords.has(word);
 }
+
+// ========== Token感知记忆检索 ==========
+
+/**
+ * Token感知的记忆检索
+ * 自动根据剩余Token预算截断结果
+ */
+export async function searchMemoryWithBudget(
+  projectName: string,
+  query: MemoryQuery,
+  expertId: string | null,
+  tokenBudget: number,
+): Promise<MemorySearchResult[]> {
+  try {
+    const raw = await invoke<string>('memory_search_enhanced', {
+      projectName,
+      query: {
+        project_id: query.project_id,
+        expert_id: query.expert_id,
+        query_text: query.query_text,
+        memory_type: query.memory_type,
+        limit: query.limit ?? 10,
+      },
+      expertIdFilter: expertId,
+      maxTokens: tokenBudget,
+    });
+    return JSON.parse(raw) as MemorySearchResult[];
+  } catch (e) {
+    console.warn('Enhanced memory search failed, falling back:', e);
+    // fallback到现有搜索
+    return searchMemory(projectName, query);
+  }
+}
+

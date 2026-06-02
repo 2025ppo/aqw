@@ -38,12 +38,15 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 用户请求 → 主管（江星图）分析意图 → 制定调度计划 → 派遣专家 → 专家执行 → 主管审核 → 输出结果
 ```
 
-- **主管层**：专职理解需求、选择场景、派遣专家、审核结果，绝不亲自写代码
+- **主管层**：专职理解需求、自动识别 12 种场景、派遣专家、中途审核纠错、最终总结，绝不亲自写代码
 - **专家层**：调研员、设计师、前端/后端/通用工程师、审查员、翻译官、写作家、数据分析师等，各司其职
 - **流水线执行**：调研 → 设计（可选）→ 开发 → 审查，严格按照软件工程流程
 - **动态替换**：根据任务类型自动选择前端/后端/通用工程师
 
-**技术实现**：基于 TypeScript 实现的完整 Pipeline 引擎，支持顺序执行、并行执行、条件跳过（如可选设计师），每个专家接收前序专家的完整输出作为上下文。
+**技术实现**：
+- **Pipeline 编排器**：独立的流水线执行引擎，支持顺序/并行/条件执行，内置 Hook 系统（Pre/Post Expert/Tool 四个阶段拦截），支持主管中途决策（继续/重试/跳过/中止/动态增减步骤），通过 Tauri Event 实时推送进度
+- **Agent 执行循环**：借鉴 Codex 的 run_turn 机制，模型自主决定工具调用轮数（上限 20 轮），不再硬编码 3 轮。包含死循环检测（连续 3 次相同调用自动阻断）、Token 预算管理（超出阈值自动压缩）、file_patch 重试上限保护（3 次失败后提示改用 file_write）
+- **双轨工具协议**：同时支持 OpenAI function calling 格式和 ACTION 标记格式（向后兼容），工具调用支持并行执行
 
 ---
 
@@ -63,6 +66,11 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 - **瞬时记忆**（ephemeral）：当前对话的短期上下文
 - **工作记忆**（working）：本次会话中专家的重要输出
 - **长期记忆**（longterm）：跨会话沉淀的项目知识
+
+**上下文管理器（新增）**：
+- **Token 预算管控**：基于中英文混合估算算法，实时追踪消息 Token 用量
+- **自动压缩**：超出阈值时自动将早期对话压缩为摘要，保留最近 N 轮完整上下文
+- **Fragment 系统**：按优先级管理多种上下文片段（System/RAG/Memory/Blackboard/ToolSchema），低优先级片段在预算紧张时自动剔除
 
 **自动检索**：每次调用专家前，系统自动从感知索引和记忆系统中检索相关上下文，注入到专家 prompt 中，实现"越用越懂你"。
 
@@ -160,6 +168,24 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 - **插件系统**：支持插件扩展，对接企业内部的 CI/CD、项目管理工具
 - **多模态**：未来可以扩展支持图片、视频、音频的分析
 
+### 首创 5：统一工具系统 + 层叠配置（Codex 级架构规范）
+
+**友商的问题**：工具调用硬编码在 prompt 里，没有统一管理；配置散落在各处，无法针对不同项目定制行为。
+
+**我们的解决方案**：
+
+**统一工具系统（前后端双注册表）**：
+- **8 个内置工具**：shell_exec、file_read、file_write、file_patch、file_list、web_search、memory_query、index_search
+- **专家-工具权限映射**：每个专家只能调用其角色允许的工具（工程师可写文件，调研员只读+搜索）
+- **Trait 抽象**：Rust 端通过 `ToolExecutor` Trait 实现可扩展的工具架构，新增工具只需实现 Trait 并注册
+- **file_patch 结构化补丁**：支持 Add/Delete/Update/Move 四种操作，四级容错匹配（精确→右trim→双侧trim→Unicode归一化），Delta 跟踪确保部分失败时反馈精确
+- **Hook 管控**：PreTool/PostTool/PreExpert/PostExpert 四个拦截点，可注入上下文、跳过、重试
+
+**层叠配置系统（四级优先级）**：
+- 内置默认 < 用户全局（~/.xt/config.json）< 项目级（.xt/project-config.json）< 运行时覆盖
+- 涵盖 LLM（Provider/模型/温度/重试）、Shell（超时/输出上限）、Agent（最大轮数/Token预算/死循环检测）、Pipeline（专家超时/最大步骤/并行开关）、UI（流式输出/工具调用可见/进度条）六大配置域
+- Rust 端 JSON 深度合并，TypeScript 端同步单例，前后端一致
+
 ---
 
 ## 五、技术架构
@@ -174,17 +200,31 @@ graph TB
         Canvas["无限画布引擎<br/>SVG + 视口变换"]
         Chat["对话系统<br/>消息渲染 + 流式输出"]
         Settings["设置面板<br/>密钥池 + 专家配置 + 主题"]
+        ConfigFE["层叠配置<br/>内置默认 < 用户 < 项目 < 运行时"]
     end
 
     subgraph 调度核心层["调度核心层 (TypeScript)"]
-        Supervisor["主管意图分析<br/>江星图 - 需求理解 + 场景选择"]
-        Pipeline["Pipeline 引擎<br/>顺序/并行/条件执行"]
+        Supervisor["主管意图分析<br/>江星图 - 场景分类 + 中途决策"]
+        PipelineOrch["Pipeline 编排器<br/>流水线执行 + Hook系统 + 进度推送"]
+        AgentLoop["Agent 执行循环<br/>自主工具调用 + 死循环检测 + Token预算"]
         Router["专家路由器<br/>动态替换 + 上下文传递"]
         Quota["词元配额系统<br/>日/月/年三级检查 + 前置阻断"]
         RBAC["RBAC 权限系统<br/>专家级 + 路径级控制"]
+        ContextMgr["上下文管理器<br/>Token预算 + 自动压缩 + Fragment系统"]
     end
 
     subgraph 后端服务层["后端服务层 (Rust)"]
+        subgraph LLM通信["LLM通信模块"]
+            ProviderReg["Provider注册表<br/>DeepSeek/OpenAI/Anthropic/阿里云/Ollama"]
+            LLMStream["流式LLM客户端<br/>SSE解析 + 指数退避重试 + Tauri Event推送"]
+        end
+
+        subgraph 工具系统["统一工具系统"]
+            ToolRouter["工具路由器<br/>8个内置工具 + 权限映射 + Trait抽象"]
+            FilePatch["结构化补丁<br/>四级容错匹配 + Delta跟踪 + 路径安全"]
+            HookMgr["Hook管理器<br/>Pre/Post Expert/Tool 拦截与决策"]
+        end
+
         subgraph 智能检索["智能检索模块"]
             Index["感知索引<br/>代码分段 + TF-IDF + 代码图谱"]
             Memory["记忆系统<br/>瞬时/工作/长期 三级模型"]
@@ -209,9 +249,9 @@ graph TB
     subgraph 外部服务层["外部服务层"]
         DeepSeek["DeepSeek API"]
         OpenAI["OpenAI API"]
-        Aliyun["阿里云 API"]
-        Tencent["腾讯云 API"]
-        Custom["自定义中转"]
+        Anthropic["Anthropic API"]
+        Aliyun["阿里云百炼 API"]
+        Ollama["Ollama 本地"]
     end
 
     UI --> Canvas
@@ -219,13 +259,22 @@ graph TB
     UI --> Settings
 
     Chat --> Supervisor
-    Supervisor --> Pipeline
-    Pipeline --> Router
+    Supervisor --> PipelineOrch
+    PipelineOrch --> AgentLoop
+    AgentLoop --> Router
     Router --> Quota
     Quota --> RBAC
-    RBAC --> Index
-    RBAC --> Memory
-    RBAC --> Sandbox
+    RBAC --> ContextMgr
+    RBAC --> ToolRouter
+    ContextMgr --> Index
+    ContextMgr --> Memory
+
+    ToolRouter --> Sandbox
+    ToolRouter --> FilePatch
+    ToolRouter --> HookMgr
+    ToolRouter --> FS
+    AgentLoop --> LLMStream
+    LLMStream --> ProviderReg
 
     Index --> SQLite
     Memory --> LocalFS
@@ -233,15 +282,16 @@ graph TB
     Wiki --> LocalFS
     Analyzer --> FS
 
-    Router --> DeepSeek
-    Router --> OpenAI
-    Router --> Aliyun
-    Router --> Tencent
-    Router --> Custom
+    ProviderReg --> DeepSeek
+    ProviderReg --> OpenAI
+    ProviderReg --> Anthropic
+    ProviderReg --> Aliyun
+    ProviderReg --> Ollama
 
     Canvas --> LocalFS
     Settings --> SQLite
     Settings --> LocalFS
+    ConfigFE --> Settings
 ```
 
 ---

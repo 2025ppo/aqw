@@ -6,6 +6,7 @@ export interface CanvasNode {
   name: string;
   x: number;
   y: number;
+  path?: string;
 }
 
 export interface CanvasEdge {
@@ -291,7 +292,7 @@ export class InfiniteCanvas {
         g.style.cursor = "pointer";
         g.addEventListener("click", (e) => {
           e.stopPropagation();
-          (window as any).openFilePreview?.(node.name);
+          (window as any).openFilePreview?.(node.path || node.id || node.name);
         });
       }
 
@@ -327,6 +328,12 @@ export interface DocBlock {
   w: number;
   h: number;
   collapsed: boolean;
+  meta?: string;
+  accent?: string;
+  column?: number;
+  order?: number;
+  openPath?: string;
+  staticHeight?: number;
 }
 
 interface FCViewport {
@@ -346,6 +353,7 @@ export class FileCanvas {
   private viewport: SVGGElement;
   private blocks: DocBlock[] = [];
   private edges: { from: string; to: string }[] = [];
+  private layoutMode: "tree" | "columns" = "tree";
 
   private view: FCViewport = { x: 0, y: 0, scale: 1 };
   private isPanning = false;
@@ -423,14 +431,24 @@ export class FileCanvas {
     );
   }
 
-  setData(blocks: DocBlock[], edges: { from: string; to: string }[]) {
+  setData(
+    blocks: DocBlock[],
+    edges: { from: string; to: string }[],
+    options?: { layout?: "tree" | "columns" },
+  ) {
     this.blocks = blocks;
     this.edges = edges;
+    this.layoutMode = options?.layout || (blocks.some((b) => typeof b.column === "number") ? "columns" : "tree");
     this.autoLayout();
     this.render();
   }
 
   private autoLayout() {
+    if (this.layoutMode === "columns") {
+      this.autoLayoutByColumns();
+      return;
+    }
+
     const rootBlocks = this.blocks.filter((b) => b.level === 1);
     let maxH = 0;
 
@@ -447,6 +465,40 @@ export class FileCanvas {
       const totalH = this.layoutChildren(children, root.x, root.y + root.h + BLOCK_GAP_Y);
       const blockH = root.h + BLOCK_GAP_Y + totalH;
       if (blockH > maxH) maxH = blockH;
+    });
+    void maxH;
+  }
+
+  private autoLayoutByColumns() {
+    const columnGroups = new Map<number, DocBlock[]>();
+    const defaultColumn = 1;
+
+    this.blocks.forEach((block) => {
+      const column = typeof block.column === "number" ? block.column : defaultColumn;
+      const list = columnGroups.get(column) || [];
+      list.push(block);
+      columnGroups.set(column, list);
+    });
+
+    const sortedColumns = [...columnGroups.keys()].sort((a, b) => a - b);
+    sortedColumns.forEach((column) => {
+      const blocks = columnGroups.get(column) || [];
+      blocks.sort((a, b) => {
+        const orderA = typeof a.order === "number" ? a.order : 9999;
+        const orderB = typeof b.order === "number" ? b.order : 9999;
+        return orderA - orderB || a.title.localeCompare(b.title);
+      });
+
+      let y = 24;
+      const x = 36 + column * (BLOCK_WIDTH + BLOCK_GAP_X + 20);
+      blocks.forEach((block) => {
+        block.x = x;
+        block.y = y;
+        block.w = BLOCK_WIDTH;
+        const baseHeight = block.collapsed ? BLOCK_COLLAPSED_HEIGHT : BLOCK_MIN_HEIGHT;
+        block.h = Math.max(baseHeight, block.staticHeight || 0);
+        y += block.h + 22;
+      });
     });
   }
 
@@ -512,7 +564,9 @@ export class FileCanvas {
       const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
       fo.setAttribute("width", String(block.w));
       // 为展开态预留更大高度
-      const renderH = block.collapsed ? BLOCK_COLLAPSED_HEIGHT : Math.max(block.h, 200);
+      const renderH = block.collapsed
+        ? BLOCK_COLLAPSED_HEIGHT
+        : Math.max(block.h, block.staticHeight || 200);
       fo.setAttribute("height", String(renderH));
 
       const contentHtml = this.buildBlockHtml(block);
@@ -520,18 +574,9 @@ export class FileCanvas {
       g.appendChild(fo);
 
       this.viewport.appendChild(g);
-
-      // 绑定展开/折叠事件
-      setTimeout(() => {
-        const toggleBtn = this.svg.querySelector(`[data-toggle-id="${block.id}"]`);
-        if (toggleBtn) {
-          toggleBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.toggleBlock(block.id);
-          });
-        }
-      }, 0);
     });
+
+    setTimeout(() => this.bindEmbeddedActions(), 0);
   }
 
   private buildBlockHtml(block: DocBlock): string {
@@ -539,9 +584,23 @@ export class FileCanvas {
     const bodyHtml = this.renderMdInline(block.content);
     const hasContent = block.content.trim().length > 0;
     const bodyClass = block.collapsed ? "doc-block-body" : "doc-block-body expanded";
+    const classes = ["doc-block"];
+    if (block.accent) {
+      classes.push(`doc-block-${block.accent}`);
+    }
+    if (block.openPath) {
+      classes.push("doc-block-link");
+    }
 
-    let html = `<div class="doc-block" xmlns="http://www.w3.org/1999/xhtml">`;
+    let html = `<div class="${classes.join(" ")}" data-block-id="${this.escapeHtml(block.id)}"`;
+    if (block.openPath) {
+      html += ` data-open-path="${this.escapeHtml(block.openPath)}"`;
+    }
+    html += ` xmlns="http://www.w3.org/1999/xhtml">`;
     html += `<div class="doc-block-title">${this.escapeHtml(block.title)}</div>`;
+    if (block.meta) {
+      html += `<div class="doc-block-meta">${this.escapeHtml(block.meta)}</div>`;
+    }
     html += `<div class="${bodyClass}">${bodyHtml}</div>`;
     if (hasContent) {
       const toggleLabel = block.collapsed ? "展开" : "折叠";
@@ -572,5 +631,33 @@ export class FileCanvas {
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  private bindEmbeddedActions() {
+    this.svg.querySelectorAll(".doc-block-toggle").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const target = e.currentTarget as HTMLElement;
+        const blockId = target.dataset.toggleId;
+        if (blockId) {
+          this.toggleBlock(blockId);
+        }
+      });
+    });
+
+    this.svg.querySelectorAll(".doc-block[data-open-path]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest(".doc-block-toggle")) {
+          return;
+        }
+        const wrap = e.currentTarget as HTMLElement;
+        const openPath = wrap.dataset.openPath;
+        if (openPath) {
+          e.stopPropagation();
+          (window as any).openFilePreview?.(openPath);
+        }
+      });
+    });
   }
 }

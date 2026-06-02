@@ -76,6 +76,8 @@ const EXPERT_STATIC_PROMPT_MODULES = {
     "jiang-yumo": ["code-tool-primer"],
     "jiang-subai": ["code-tool-primer"],
     "jiang-yingqiu": ["code-tool-primer"],
+    "jiang-jianheng": ["code-tool-primer"],
+    "jiang-cexun": ["code-tool-primer", "command-guidance"],
     "jiang-zhilan": ["document-tool-primer"],
     "jiang-huaying": ["media-tool-primer"],
 };
@@ -85,6 +87,8 @@ const EXPERT_SUPPORTED_PROMPT_MODULES = {
     "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance"],
     "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance"],
     "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+    "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+    "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
     "jiang-zhilan": ["document-tool-primer"],
     "jiang-huaying": ["media-tool-primer", "video-workflow"],
 };

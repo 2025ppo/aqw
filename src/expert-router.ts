@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tokenData, type TokenUsageRecord, type Expert } from "./main";
+import { PipelineOrchestrator, type PipelineCallbacks, type OrchestratorPipelineStep } from './pipeline-orchestrator';
+import { Supervisor } from './supervisor';
 
 // 使用 getter 获取 experts，避免模块导入时绑定空数组引用
 let _expertsRef: Expert[] = [];
@@ -44,6 +46,7 @@ function getDataSource(source: "project" | "user"): TokenData {
 
 /** 豁免配额限制的核心角色 */
 const QUOTA_EXEMPT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
+const SUPERVISOR_EXPERT_ID = "jiang-xingtu";
 
 /** 检查专家配额是否允许继续调用 */
 export function checkQuota(expertId: string): { allowed: boolean; reason?: string } {
@@ -515,7 +518,26 @@ interface ExpertCommandRequest {
   workingDir: string;
 }
 
-type ExpertToolRequest = ExpertWebSearchRequest | ExpertCommandRequest;
+interface ExpertFileReadRequest {
+  kind: "file-read";
+  path: string;
+  reason: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+interface ExpertFileListRequest {
+  kind: "file-list";
+  path: string;
+  reason: string;
+  recursive: boolean;
+}
+
+type ExpertToolRequest =
+  | ExpertWebSearchRequest
+  | ExpertCommandRequest
+  | ExpertFileReadRequest
+  | ExpertFileListRequest;
 
 /** 流水线步骤 */
 interface PipelineStep {
@@ -587,6 +609,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 你只负责调研和分析，不编写代码，不做设计
 - 如需读取文件了解现状，使用 [ACTION:READ_FILE:相对路径]
+- 如果还不清楚文件具体位置，先使用 [ACTION:LIST_FILES path="目录"] 缩小范围，再读取目标文件
 - 输出结构清晰，便于后续专家快速理解
 - 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
@@ -605,6 +628,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 
 变更输出规范：
 - 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
@@ -612,6 +636,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 严格按照调研报告的技术约束进行实现
 - 代码必须有完整导入、依赖，确保可直接运行
+- 如果文件位置不确定，先使用 [ACTION:LIST_FILES path="目录"]，确认后再读文件和修改
 - 不做不必要的重构，聚焦于当前任务
 - 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
@@ -630,6 +655,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 
 变更输出规范：
 - 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
@@ -637,6 +663,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 严格遵循项目已有的 UI 规范和样式变量
 - 代码必须完整，包含所有必要的导入和类型声明
+- 如果文件位置不确定，先使用 [ACTION:LIST_FILES path="目录"]，确认后再读文件和修改
 - 关注无障碍访问和性能
 - 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
@@ -655,6 +682,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 
 变更输出规范：
 - 直接输出可执行文件动作，系统会按动作直接落盘，不走补丁提案合并。
+- 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
@@ -662,6 +690,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 注意：
 - 严格遵循项目后端技术栈和架构模式
 - 确保数据验证和错误处理完整
+- 如果文件位置不确定，先使用 [ACTION:LIST_FILES path="目录"]，确认后再读文件和修改
 - 关注安全性和可扩展性
 - 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
@@ -721,6 +750,71 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 你只负责审查，不直接修改代码
 - 问题描述要具体，修改建议要可操作
 - 如发现问题严重，明确标注「不通过」并说明原因
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
+  },
+  {
+    id: "jiang-jianheng",
+    name: "江鉴衡",
+    title: "质量审核专家",
+    description: "负责多角度质量审核，覆盖正确性、稳定性、性能、安全与可维护性",
+    systemPrompt: `你是「江鉴衡」，专家团质量审核专家。
+
+你的核心职责：
+1. 对实现进行多角度审核：正确性、边界条件、稳定性、性能、安全性、可维护性
+2. 检查是否存在“看起来能跑但长期不稳”的隐患（竞态、脆弱替换、回归风险）
+3. 给出可执行的修正建议，明确优先级和影响范围
+4. 对关键改动给出通过/不通过建议，并说明条件
+
+输出格式：
+## 审核维度
+- 正确性：
+- 稳定性：
+- 性能：
+- 安全性：
+- 可维护性：
+
+## 关键风险
+- [严重级别] [文件:行号] 风险描述 → 修正建议
+
+## 结论
+通过 / 有条件通过 / 不通过
+
+注意：
+- 你只负责审核，不直接改代码
+- 如果发现高风险缺陷，必须明确阻断并说明原因
+- 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
+  },
+  {
+    id: "jiang-cexun",
+    name: "江测巡",
+    title: "测试专家",
+    description: "负责命令级验证与回归测试，确保改动可执行、可复现、可验收",
+    systemPrompt: `你是「江测巡」，专家团测试专家。
+
+你的核心职责：
+1. 基于当前改动制定最小充分测试计划（构建、单测、集成、回归、关键路径冒烟）
+2. 必须通过命令执行进行验证，不能只口头建议“可以测试”
+3. 记录每条命令的目的、结果、失败原因与修复建议
+4. 对是否可交付给出明确测试结论
+
+命令执行规范：
+- 需要执行测试时，直接发起 [ACTION:EXECUTE_CMD command="..." dir="..." reason="..."]。
+- 命令应从低成本到高成本分层推进（如 lint/build -> targeted test -> full test）。
+- 若环境限制导致无法执行，要明确写出“未执行项、原因、替代验证”。
+
+输出格式：
+## 测试计划
+- [测试项] [命令] [目的]
+
+## 执行结果
+- [命令] 结果：通过/失败（关键输出）
+
+## 回归评估
+- 风险等级：低/中/高
+- 是否可交付：是/否（若否，列阻断项）
+
+注意：
+- 不要修改源码，只做验证与结论输出
 - 工具能力会按当前任务按需加载；未加载的能力不要臆造格式`,
   },
   {
@@ -822,14 +916,20 @@ const PIPELINES: Pipeline[] = [
       { expertIds: ["jiang-ruoxi"] },                                    // 调研员先行
       { expertIds: ["jiang-dingchu"], optional: true },                   // 设计师（可选）
       { expertIds: ["jiang-qinglan"] },                                   // 工程师（动态替换）
+      { expertIds: ["jiang-jianheng"] },                                  // 多维质量审核
+      { expertIds: ["jiang-cexun"] },                                     // 命令测试验证
       { expertIds: ["jiang-yingqiu"] },                                   // 审查员收尾
     ],
-    description: "完整开发流程：调研 → 设计（可选）→ 开发 → 审查",
+    description: "完整开发流程：调研 → 设计（可选）→ 开发 → 质量审核 → 命令测试 → 审查",
   },
   {
     scene: "code-review",
-    steps: [{ expertIds: ["jiang-yingqiu"] }],
-    description: "代码审查：审查员独立执行",
+    steps: [
+      { expertIds: ["jiang-jianheng"] },
+      { expertIds: ["jiang-cexun"] },
+      { expertIds: ["jiang-yingqiu"] },
+    ],
+    description: "代码审查：质量审核 → 命令测试 → 审查结论",
   },
   {
     scene: "technical-research",
@@ -1162,7 +1262,30 @@ function updateBlackboardFromTask(blackboard: BlackboardTask, task: ExpertTask):
     });
   }
 
-  if (task.expertTitle.includes("审查")) {
+  if (task.expertTitle.includes("测试")) {
+    const commandMatches = output.match(/(?:npm|pnpm|yarn|cargo|python|pytest|go test|mvn|gradle|dotnet)\s+[^\n]+/gi) || [];
+    const summary = output.replace(/<think>[\s\S]*?<\/think>/g, "").slice(0, 220);
+    if (commandMatches.length > 0) {
+      for (const command of commandMatches.slice(0, 6)) {
+        blackboard.validationRuns.push({
+          command: command.trim(),
+          passed: !/(失败|error|未通过|阻断)/i.test(summary),
+          summary,
+        });
+      }
+    } else {
+      blackboard.validationRuns.push({
+        command: "未提取到命令",
+        passed: !/(失败|error|未通过|阻断)/i.test(summary),
+        summary,
+      });
+    }
+    if (/(失败|error|未通过|阻断|不可交付|是否可交付[：:]\s*否)/i.test(summary)) {
+      blackboard.blockers.push(`${task.expertName}: 测试阶段发现阻断问题 - ${summary}`);
+    }
+  }
+
+  if (task.expertTitle.includes("审查") || task.expertTitle.includes("审核")) {
     const decision: ReviewDecision["decision"] = /不通过|阻断|block/i.test(output)
       ? "block"
       : /修改|返工|revise/i.test(output)
@@ -1190,11 +1313,14 @@ function renderBlackboardContext(blackboard: BlackboardTask): string {
   const patches = blackboard.patchProposals.length
     ? blackboard.patchProposals.slice(-6).map((p) => `- ${p.id}: ${p.files.join(", ")} (${p.risk})`).join("\n")
     : "- 暂无文件变更动作";
+  const validations = blackboard.validationRuns.length
+    ? blackboard.validationRuns.slice(-6).map((v) => `- ${v.command} => ${v.passed ? "通过" : "失败"}；${v.summary}`).join("\n")
+    : "- 暂无测试记录";
   const blockers = blackboard.blockers.length
     ? blackboard.blockers.slice(-5).map((b) => `- ${b}`).join("\n")
     : "- 暂无";
 
-  return `\n\n【共享黑板 · 所有专家必须围绕它协作】\n任务目标：${blackboard.goal}\n\n必检/候选文件：\n${required}\n\n证据：\n${evidence}\n\n文件变更动作：\n${patches}\n\n阻塞项：\n${blockers}\n\n协作规则：\n- 不要假装看过未列入证据的文件；需要文件时先把它加入必检/候选文件。\n- 工程实现必须输出可执行文件动作（ACTION 或结构化 changes），系统会直接执行。\n- 审查必须审查文件动作覆盖范围、局部编辑可定位性、是否存在漏改文件。\n`;
+  return `\n\n【共享黑板 · 所有专家必须围绕它协作】\n任务目标：${blackboard.goal}\n\n必检/候选文件：\n${required}\n\n证据：\n${evidence}\n\n文件变更动作：\n${patches}\n\n测试记录：\n${validations}\n\n阻塞项：\n${blockers}\n\n协作规则：\n- 不要假装看过未列入证据的文件；需要文件时先把它加入必检/候选文件。\n- 工程实现必须输出可执行文件动作（ACTION 或结构化 changes），系统会直接执行。\n- 测试专家必须通过命令验证关键路径，不得只给口头建议。\n- 审查必须审查文件动作覆盖范围、局部编辑可定位性、是否存在漏改文件。\n`;
 }
 
 function parseActionParams(paramsStr: string): Record<string, string> {
@@ -1232,6 +1358,16 @@ function resolveToolCommandAuthMode(
   return /管理员权限/.test(authReason) ? "admin" : "restricted";
 }
 
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt((value || "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function truncateToolText(text: string, maxChars: number = 12000): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...(truncated)`;
+}
+
 function extractExpertToolRequests(text: string, projectWorkspacePath?: string): ExpertToolRequest[] {
   const requests: ExpertToolRequest[] = [];
   const actionRegex = /\[ACTION:(WEB_SEARCH|EXECUTE_CMD)((?:\s+\w+="[^"]*")*)\]/g;
@@ -1259,12 +1395,59 @@ function extractExpertToolRequests(text: string, projectWorkspacePath?: string):
       workingDir: resolveToolWorkingDir(params.dir, projectWorkspacePath),
     });
   }
+
+  const readFileLegacyRegex = /\[ACTION:READ_FILE:([^\]]+)\]/g;
+  while ((match = readFileLegacyRegex.exec(text)) !== null) {
+    const path = match[1]?.trim();
+    if (!path) continue;
+    requests.push({
+      kind: "file-read",
+      path,
+      reason: "需要基于真实文件内容继续分析或生成增量修改",
+    });
+  }
+
+  const readFileParamRegex = /\[ACTION:READ_FILE((?:\s+\w+="[^"]*")*)\]/g;
+  while ((match = readFileParamRegex.exec(text)) !== null) {
+    const params = parseActionParams(match[1] || "");
+    const path = params.path?.trim();
+    if (!path) continue;
+    requests.push({
+      kind: "file-read",
+      path,
+      reason: params.reason?.trim() || "需要基于真实文件内容继续分析或生成增量修改",
+      startLine: parseOptionalPositiveInt(params.start_line || params.startLine),
+      endLine: parseOptionalPositiveInt(params.end_line || params.endLine),
+    });
+  }
+
+  const listFilesLegacyRegex = /\[ACTION:LIST_FILES:([^\]]+)\]/g;
+  while ((match = listFilesLegacyRegex.exec(text)) !== null) {
+    const path = match[1]?.trim() || ".";
+    requests.push({
+      kind: "file-list",
+      path,
+      reason: "需要先确认目录结构和候选文件位置",
+      recursive: true,
+    });
+  }
+
+  const listFilesParamRegex = /\[ACTION:LIST_FILES((?:\s+\w+="[^"]*")*)\]/g;
+  while ((match = listFilesParamRegex.exec(text)) !== null) {
+    const params = parseActionParams(match[1] || "");
+    requests.push({
+      kind: "file-list",
+      path: params.path?.trim() || ".",
+      reason: params.reason?.trim() || "需要先确认目录结构和候选文件位置",
+      recursive: /^(1|true|yes)$/i.test((params.recursive || "").trim()),
+    });
+  }
   return requests;
 }
 
 function stripInlineToolActions(text: string): string {
   return text
-    .replace(/\[ACTION:(?:WEB_SEARCH|EXECUTE_CMD)(?:\s+\w+="[^"]*")*\]/g, "")
+    .replace(/\[ACTION:(?:WEB_SEARCH|EXECUTE_CMD|READ_FILE|LIST_FILES)(?:[:][^\]]+|(?:\s+\w+="[^"]*")*)\]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -1620,6 +1803,114 @@ async function callExpert(
           continue;
         }
 
+        if (request.kind === "file-read") {
+          if (!projectWorkspacePath && !projectName) {
+            toolContexts.push(`[文件读取失败]
+发起理由：${request.reason}
+文件：${request.path}
+错误：当前项目未提供可读取的工作区路径`);
+            continue;
+          }
+
+          if (onProgress) onProgress({ expertId, phase: "reading-file", detail: "读取真实文件中..." });
+          try {
+            let content = "";
+            if (projectWorkspacePath) {
+              const rawToolResult = await invoke<string>("dispatch_tool", {
+                toolName: "file_read",
+                argsJson: JSON.stringify({
+                  path: request.path,
+                  ...(request.startLine ? { start_line: request.startLine } : {}),
+                  ...(request.endLine ? { end_line: request.endLine } : {}),
+                }),
+                projectDir: projectWorkspacePath,
+                expertId,
+              });
+              const parsedToolResult = JSON.parse(rawToolResult) as { success?: boolean; result?: string };
+              if (!parsedToolResult.success) {
+                throw new Error(parsedToolResult.result || "读取文件失败");
+              }
+              content = String(parsedToolResult.result || "");
+            } else if (projectName) {
+              content = await invoke<string>("sandbox_read_file", {
+                projectName,
+                relativePath: request.path,
+              });
+              if (request.startLine || request.endLine) {
+                const lines = content.split(/\r?\n/);
+                const startIndex = Math.max((request.startLine || 1) - 1, 0);
+                const endIndex = request.endLine ? Math.min(request.endLine, lines.length) : lines.length;
+                content = lines.slice(startIndex, endIndex).join("\n");
+              }
+            }
+            toolContexts.push(`[文件读取结果]
+发起理由：${request.reason}
+文件：${request.path}
+范围：${request.startLine || 1}-${request.endLine || "EOF"}
+内容：
+\`\`\`
+${truncateToolText(content)}
+\`\`\``);
+          } catch (e) {
+            toolContexts.push(`[文件读取失败]
+发起理由：${request.reason}
+文件：${request.path}
+错误：${String(e)}`);
+          }
+          continue;
+        }
+
+        if (request.kind === "file-list") {
+          if (!projectWorkspacePath && !projectName) {
+            toolContexts.push(`[目录读取失败]
+发起理由：${request.reason}
+目录：${request.path}
+错误：当前项目未提供可读取的工作区路径`);
+            continue;
+          }
+
+          if (onProgress) onProgress({ expertId, phase: "listing-files", detail: "读取目录结构中..." });
+          try {
+            let listing = "";
+            if (projectWorkspacePath) {
+              const rawToolResult = await invoke<string>("dispatch_tool", {
+                toolName: "file_list",
+                argsJson: JSON.stringify({
+                  path: request.path,
+                  recursive: request.recursive,
+                  max_depth: request.recursive ? 4 : 1,
+                }),
+                projectDir: projectWorkspacePath,
+                expertId,
+              });
+              const parsedToolResult = JSON.parse(rawToolResult) as { success?: boolean; result?: string };
+              if (!parsedToolResult.success) {
+                throw new Error(parsedToolResult.result || "读取目录失败");
+              }
+              listing = String(parsedToolResult.result || "");
+            } else if (projectName) {
+              listing = await invoke<string>("sandbox_list_dir", {
+                projectName,
+                relativePath: request.path || ".",
+              });
+            }
+            toolContexts.push(`[目录读取结果]
+发起理由：${request.reason}
+目录：${request.path || "."}
+递归：${request.recursive ? "是" : "否"}
+结果：
+\`\`\`
+${truncateToolText(listing)}
+\`\`\``);
+          } catch (e) {
+            toolContexts.push(`[目录读取失败]
+发起理由：${request.reason}
+目录：${request.path}
+错误：${String(e)}`);
+          }
+          continue;
+        }
+
         learnedModuleIds.add("command-guidance");
         triggerSources.add("command");
         if (onProgress) onProgress({ expertId, phase: "running-command", detail: "命令执行中..." });
@@ -1847,6 +2138,98 @@ ${stderr || "(空)"}`);
 
 // ========== 流水线执行 ==========
 
+/** 新版Pipeline编排器开关 — 设为true使用Hook系统增强版 */
+const USE_NEW_PIPELINE = false; // TODO: 从config读取，灰度切换
+
+/** 新版编排器执行路径 */
+async function executeWithNewOrchestrator(
+  plan: DispatchPlan,
+  onProgress: (tasks: ExpertTask[]) => void,
+  onExpertProgress?: (progress: { expertId: string; phase: string; detail: string }) => void,
+): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
+  const orchestrator = new PipelineOrchestrator();
+  const supervisor = new Supervisor();
+
+  // 将现有Pipeline steps转换为新版格式
+  const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
+  if (!pipeline) return { tasks: [], pipelineId: '' };
+
+  const orchestratorSteps: OrchestratorPipelineStep[] = pipeline.steps.flatMap((step) =>
+    step.expertIds.map((id) => {
+      const expert = ROUTER_EXPERTS.find((e) => e.id === id);
+      return {
+        expertId: id,
+        role: expert?.title || id,
+        optional: step.optional,
+        parallel: step.expertIds.length > 1,
+      };
+    })
+  );
+
+  const pipelineId = `pipeline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const callbacks: PipelineCallbacks = {
+    onStepStart: (index, step) => {
+      onExpertProgress?.({
+        expertId: step.expertId,
+        phase: 'start',
+        detail: `步骤 ${index + 1}: ${step.role} 开始执行`,
+      });
+    },
+    onStepComplete: (index, step) => {
+      onExpertProgress?.({
+        expertId: step.expertId,
+        phase: 'complete',
+        detail: `步骤 ${index + 1}: ${step.role} 执行完成`,
+      });
+    },
+    onStepError: (index, step, error) => {
+      onExpertProgress?.({
+        expertId: step.expertId,
+        phase: 'error',
+        detail: `步骤 ${index + 1}: ${step.role} 执行失败 - ${error}`,
+      });
+    },
+    supervisorCheck: async (blackboard, results) => {
+      return supervisor.midCheck(blackboard, results);
+    },
+  };
+
+  const systemPromptBuilder = (expertId: string) => {
+    const expert = ROUTER_EXPERTS.find((e) => e.id === expertId);
+    return expert?.systemPrompt || `你是专家 ${expertId}，请完成指定任务。`;
+  };
+
+  const result = await orchestrator.execute(
+    plan.scene,
+    orchestratorSteps,
+    plan.taskDescription,
+    systemPromptBuilder,
+    callbacks,
+  );
+
+  // 将新版结果转换为现有ExpertTask格式
+  const tasks: ExpertTask[] = result.steps.map((stepResult, idx) => {
+    const expert = ROUTER_EXPERTS.find((e) => e.id === stepResult.expertId);
+    return {
+      id: `task-${++taskCounter}`,
+      expertId: stepResult.expertId,
+      expertName: expert?.name || stepResult.expertId,
+      expertTitle: expert?.title || '未知',
+      status: stepResult.success ? 'done' : 'error',
+      input: plan.taskDescription,
+      output: stepResult.success ? stepResult.output : undefined,
+      error: stepResult.success ? undefined : stepResult.output,
+      startTime: Date.now(),
+      endTime: Date.now(),
+      dispatchWave: idx + 1,
+    } as ExpertTask;
+  });
+
+  onProgress(tasks);
+  return { tasks, pipelineId };
+}
+
 /** 执行流水线（专家依次/并行执行），每步完成后由主管中途检查 */
 export async function executePipeline(
   plan: DispatchPlan,
@@ -1864,6 +2247,12 @@ export async function executePipeline(
   onToolEvent?: (event: ExpertToolEvent) => void,
   onCommandAuthorization?: (request: ExpertCommandAuthorizationRequest) => Promise<boolean>
 ): Promise<{ tasks: ExpertTask[]; pipelineId: string }> {
+  // 新版Pipeline编排器路径（通过开关控制，原有逻辑完整保留作为fallback）
+  if (USE_NEW_PIPELINE) {
+    return executeWithNewOrchestrator(plan, onProgress, onExpertProgress);
+  }
+
+  // === 以下为原有流水线执行逻辑 ===
   const pipeline = PIPELINES.find((p) => p.scene === plan.scene);
   if (!pipeline) return { tasks: [], pipelineId: "" };
 
@@ -2047,6 +2436,7 @@ export async function executePipeline(
         blackboard.requiredFiles.files.length,
         blackboard.evidence.length,
         blackboard.patchProposals.length,
+        blackboard.validationRuns.length,
         blackboard.reviewDecisions.length,
         blackboard.blockers.length,
       ].join(":");
@@ -2209,7 +2599,7 @@ export async function supervisorReview(
   taskDescription: string,
   expertResults: ExpertTask[],
   apiKey: string,
-  keyId: string = "supervisor",
+  keyId: string = SUPERVISOR_EXPERT_ID,
   model: string = "deepseek-chat"
 ): Promise<string> {
   const reviewPrompt = `你是「江星图」，项目主管。专家团已完成任务，现在向用户交付结果。
@@ -2244,7 +2634,7 @@ export async function supervisorReview(
   ];
 
   // === 配额前置校验（主管）===
-  const quotaCheck = checkQuota("supervisor");
+  const quotaCheck = checkQuota(SUPERVISOR_EXPERT_ID);
   if (!quotaCheck.allowed) {
     displayQuotaBlockMessage(quotaCheck.reason!);
     return `专家团已执行完毕，但主管审核被配额阻断：${quotaCheck.reason}\n\n各专家结果：\n${summary}`;
@@ -2277,7 +2667,7 @@ export async function supervisorReview(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
+      recordTokenUsage(SUPERVISOR_EXPERT_ID, "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     return reply;
@@ -2308,14 +2698,14 @@ ${expertList}
 【场景与派遣规则】
 
 1. code-development（代码开发）
-   - 流程：调研员 → [设计师（可选）] → 工程师 → 审查员
+   - 流程：调研员 → [设计师（可选）] → 工程师 → 质量审核专家 → 测试专家 → 审查员
    - 工程师从 江青澜（通用）/ 江予墨（前端）/ 江素白（后端）中选择
    - 复杂度较高时设置 requiresDesign=true 引入设计师
    - 如果用户是在已有网站、网页、代码产物基础上提出修改要求，一律视为增量开发任务，必须选择 code-development，不能只分配 design
-   - expertIds 顺序：["jiang-ruoxi", 工程师ID, "jiang-yingqiu"]
+   - expertIds 顺序建议：["jiang-ruoxi", 工程师ID, "jiang-jianheng", "jiang-cexun", "jiang-yingqiu"]
 
 2. code-review（代码审查）
-   - 只需审查员：expertIds: ["jiang-yingqiu"]
+   - 质量审核 + 命令测试 + 审查结论：expertIds: ["jiang-jianheng", "jiang-cexun", "jiang-yingqiu"]
 
 3. technical-research（技术调研）
    - 只需调研员：expertIds: ["jiang-ruoxi"]
@@ -2378,7 +2768,7 @@ export async function supervisorAnalyze(
   conversationHistory: { role: string; content: string }[],
   availableExperts: ExpertInfo[],
   supervisorApiKey: string,
-  keyId: string = "supervisor",
+  keyId: string = SUPERVISOR_EXPERT_ID,
   model: string = "deepseek-chat"
 ): Promise<DispatchPlan> {
   const systemPrompt = buildSupervisorPrompt(availableExperts);
@@ -2400,7 +2790,7 @@ export async function supervisorAnalyze(
   });
 
   // === 配额前置校验（主管）===
-  const quotaCheck = checkQuota("supervisor");
+  const quotaCheck = checkQuota(SUPERVISOR_EXPERT_ID);
   if (!quotaCheck.allowed) {
     displayQuotaBlockMessage(quotaCheck.reason!);
     return { scene: "quick-answer", taskDescription: userMessage, expertIds: [] };
@@ -2433,7 +2823,7 @@ export async function supervisorAnalyze(
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
+      recordTokenUsage(SUPERVISOR_EXPERT_ID, "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     return parseDispatchPlan(reply);
@@ -2449,7 +2839,7 @@ export async function analyzeFollowupIntent(
   followupMessage: string,
   currentPlan: DispatchPlan,
   supervisorApiKey: string,
-  keyId: string = "supervisor",
+  keyId: string = SUPERVISOR_EXPERT_ID,
   model: string = "deepseek-chat"
 ): Promise<{
   action: "append" | "replace" | "respond" | "respond-and-append" | "respond-and-replace";
@@ -2519,7 +2909,7 @@ ${activeTaskSummary}
 仅输出 JSON。`;
 
   // === 配额前置校验（主管）===
-  const quotaCheck = checkQuota("supervisor");
+  const quotaCheck = checkQuota(SUPERVISOR_EXPERT_ID);
   if (!quotaCheck.allowed) {
     displayQuotaBlockMessage(quotaCheck.reason!);
     return { action: "append", taskDescription: followupMessage };
@@ -2552,7 +2942,7 @@ ${activeTaskSummary}
 
     // 记录词元使用（fire-and-forget）
     if (usage) {
-      recordTokenUsage("supervisor", "江星图", model, keyId, usage, "主管").catch(console.error);
+      recordTokenUsage(SUPERVISOR_EXPERT_ID, "江星图", model, keyId, usage, "主管").catch(console.error);
     }
 
     const parsed = extractJson(reply);
@@ -2681,9 +3071,29 @@ function parseDispatchPlan(raw: string): DispatchPlan {
     "code-development", "code-review", "technical-research", "design", "quick-answer",
     "translation", "writing", "office", "data-analysis", "document-processing", "media-creation", "video-production", "research-with-search",
   ];
-  const expertIds = Array.isArray(parsed.expertIds)
+  const requestedExpertIds = Array.isArray(parsed.expertIds)
     ? (parsed.expertIds as unknown[]).filter((v): v is string => typeof v === "string")
     : [];
+  const normalizedScene: SceneType = validScenes.includes(scene) ? scene : "quick-answer";
+  const requiresDesign = parsed.requiresDesign === true;
+  const engineerCandidates = ["jiang-qinglan", "jiang-yumo", "jiang-subai"];
+  let expertIds = [...new Set(requestedExpertIds)];
+
+  if (normalizedScene === "code-development") {
+    const selectedEngineer = expertIds.find((id) => engineerCandidates.includes(id)) || "jiang-qinglan";
+    const includeDesigner = requiresDesign || expertIds.includes("jiang-dingchu");
+    expertIds = [
+      "jiang-ruoxi",
+      ...(includeDesigner ? ["jiang-dingchu"] : []),
+      selectedEngineer,
+      "jiang-jianheng",
+      "jiang-cexun",
+      "jiang-yingqiu",
+    ];
+  } else if (normalizedScene === "code-review") {
+    expertIds = ["jiang-jianheng", "jiang-cexun", "jiang-yingqiu"];
+  }
+
   const rawPromptModuleHints = normalizePromptModuleHintMap(parsed.promptModuleHints);
   const promptModuleHints: PromptModuleHintMap = {};
   for (const expertId of expertIds) {
@@ -2694,10 +3104,10 @@ function parseDispatchPlan(raw: string): DispatchPlan {
   }
 
   return {
-    scene: validScenes.includes(scene) ? scene : "quick-answer",
+    scene: normalizedScene,
     taskDescription: typeof parsed.taskDescription === "string" ? parsed.taskDescription : "",
     expertIds,
-    requiresDesign: parsed.requiresDesign === true,
+    requiresDesign,
     promptModuleHints,
   };
 }

@@ -385,13 +385,25 @@ class Sidebar {
     const index = this.chats.findIndex((c) => c.id === id);
     if (index === -1) return;
 
+    // 先删除持久化记录，成功后再更新前端状态，避免“看起来删了，重启又回来”
+    try {
+      await invoke("db_delete_project", { id });
+    } catch (e) {
+      console.error("[Sidebar] 删除项目数据库记录失败:", e);
+      window.dispatchEvent(
+        new CustomEvent("show-error", {
+          detail: { message: `删除项目失败: ${e}` },
+        })
+      );
+      return;
+    }
+
     // 从内存列表移除
     this.chats.splice(index, 1);
 
     // 如果删除的是当前活跃项目，清空活跃状态
     if (this.activeChatId === id) {
       this.activeChatId = null;
-      // 通知外部项目已切换为空
       window.dispatchEvent(
         new CustomEvent("chat-changed", { detail: { chatId: null } })
       );
@@ -399,15 +411,13 @@ class Sidebar {
 
     this.renderChatList();
 
-    // 从数据库删除项目记录（级联删除会话和消息）
-    try {
-      await invoke("db_delete_project", { id });
-    } catch (e) {
-      console.error("[Sidebar] 删除项目数据库记录失败:", e);
-    }
+    // 立即同步 projects.json，避免应用关闭/重装后把已删项目重新带回来
+    await this.saveProjects();
 
-    // 重新保存 projects.json
-    this.debouncedSave();
+    // 如果删掉的是当前项目，顺手恢复到一个仍存在的项目
+    if (this.activeChatId === null && this.chats.length > 0) {
+      this.setActiveChat(this.chats[0].id);
+    }
   }
 
   /** 重命名对话 */

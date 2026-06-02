@@ -16,13 +16,20 @@ mod deliverables;
 mod doc_processor;
 mod experience;
 mod health_score;
+mod llm_provider;
+mod llm_stream;
 mod memory;
 mod perceptual_index;
 mod rbac;
 mod repo_wiki;
 mod shell_executor;
 mod tfidf;
+mod tool_system;
+mod approval_store;
 mod web_search;
+mod config;
+mod file_patch;
+mod hooks;
 
 /// 全局数据库连接池（应用级共享）
 struct AppState {
@@ -53,6 +60,11 @@ async fn init_db_pool(app_handle: &tauri::AppHandle) -> Result<Pool<Sqlite>, Str
         .connect(&db_url)
         .await
         .map_err(|e| format!("数据库连接失败: {}", e))?;
+
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("启用外键失败: {}", e))?;
 
     // 创建表
     sqlx::query(
@@ -2098,6 +2110,20 @@ async fn db_clear_messages(
     Ok(())
 }
 
+/// 删除某个会话（级联删除其消息）
+#[tauri::command]
+async fn db_delete_session(
+    session_id: i64,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 保存项目聊天会话到 .xt/chat_sessions.json（项目级持久化）
 #[tauri::command]
 fn save_chat_sessions(
@@ -2361,8 +2387,26 @@ async fn db_load_project_data(
 /// 删除项目（级联删除会话和消息）
 #[tauri::command]
 async fn db_delete_project(id: i64, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    sqlx::query("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query("DELETE FROM sessions WHERE project_id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
     sqlx::query("DELETE FROM projects WHERE id = ?")
         .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query("DELETE FROM app_state WHERE key = 'lastProjectId' AND value = ?")
+        .bind(id.to_string())
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
@@ -2476,6 +2520,24 @@ fn memory_get_stats(project_name: String, app_handle: tauri::AppHandle) -> Resul
     serde_json::to_string(&stats).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn memory_search_enhanced(
+    project_name: String,
+    query: memory::MemoryQuery,
+    expert_id_filter: Option<String>,
+    max_tokens: Option<usize>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let results = memory::search_memories_enhanced(
+        &project_dir,
+        &query,
+        expert_id_filter.as_deref(),
+        max_tokens,
+    )?;
+    serde_json::to_string(&results).map_err(|e| e.to_string())
+}
+
 /// 解析项目目录：优先使用 DB 中的 workspace_path（支持外部项目），否则 fallback 到 workspaces/
 async fn resolve_project_dir(
     project_name: &str,
@@ -2545,6 +2607,47 @@ async fn perceptual_index_search(
     perceptual_index::search_formatted(&project_dir, &query)
 }
 
+/// 读取项目级逻辑图（供目录画布与自动链路分析使用）
+#[tauri::command]
+async fn perceptual_index_project_logic_graph(
+    project_name: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let project_dir = resolve_project_dir(&project_name, &app_handle, &state).await?;
+
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+
+    let result = tokio::task::spawn_blocking(move || perceptual_index::build_project_logic_canvas(&project_dir))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(serde_json::to_string(&result).map_err(|e| e.to_string())?)
+}
+
+/// 读取文件级逻辑图（供文件预览画布与链路验证使用）
+#[tauri::command]
+async fn perceptual_index_file_logic_graph(
+    project_name: String,
+    relative_path: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let project_dir = resolve_project_dir(&project_name, &app_handle, &state).await?;
+
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        perceptual_index::build_file_logic_canvas(&project_dir, &relative_path)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(serde_json::to_string(&result).map_err(|e| e.to_string())?)
+}
+
 /// 查询感知索引状态
 #[tauri::command]
 async fn perceptual_index_status(
@@ -2560,6 +2663,46 @@ async fn perceptual_index_status(
 
     let status = perceptual_index::get_index_status(&project_dir);
     Ok(serde_json::to_string(&status).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+async fn perceptual_index_incremental_update(
+    project_name: String,
+    changed_files: Vec<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let project_dir = resolve_project_dir(&project_name, &app_handle, &state).await?;
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+    let count = tokio::task::spawn_blocking(move || {
+        perceptual_index::incremental_update(&project_dir, &changed_files)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(serde_json::json!({ "updated_files": count }).to_string())
+}
+
+#[tauri::command]
+async fn fuzzy_file_search(
+    project_name: String,
+    query: String,
+    max_results: Option<usize>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let project_dir = resolve_project_dir(&project_name, &app_handle, &state).await?;
+    if !project_dir.exists() {
+        return Err("项目不存在".to_string());
+    }
+    let max = max_results.unwrap_or(15);
+    let results = tokio::task::spawn_blocking(move || {
+        perceptual_index::fuzzy_file_search(&project_dir, &query, max)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    serde_json::to_string(&results).map_err(|e| e.to_string())
 }
 
 // ========== Wiki 知识库命令 ==========
@@ -3041,6 +3184,12 @@ async fn web_search_query(query: String, max_results: Option<usize>) -> Result<S
 }
 
 #[tauri::command]
+async fn web_search_enhanced(query: String, max_results: Option<usize>, max_tokens: Option<usize>) -> Result<String, String> {
+    let results = web_search::web_search_enhanced(&query, max_results.unwrap_or(5), max_tokens).await?;
+    serde_json::to_string(&results).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn fetch_webpage_content(url: String) -> Result<String, String> {
     web_search::fetch_page(&url).await
 }
@@ -3064,6 +3213,67 @@ async fn execute_command(
 ) -> Result<String, String> {
     let result = shell_executor::execute(&command, &args, &working_dir)?;
     serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn dispatch_tool(
+    tool_name: String,
+    args_json: String,
+    project_dir: String,
+    expert_id: String,
+) -> Result<String, String> {
+    let args: serde_json::Value =
+        serde_json::from_str(&args_json).map_err(|e| e.to_string())?;
+    let ctx = tool_system::ToolContext {
+        working_dir: project_dir.clone(),
+        project_dir: project_dir.clone(),
+        expert_id,
+        session_id: uuid::Uuid::new_v4().to_string(),
+    };
+    let router = tool_system::ToolRouter::with_builtin_tools(&project_dir);
+    let result = router
+        .dispatch(&tool_name, args, &ctx)
+        .await
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_tools(expert_id: String) -> Result<String, String> {
+    let router = tool_system::ToolRouter::with_builtin_tools(".");
+    let tools = router.registry.get_tools_for_expert(&expert_id);
+    serde_json::to_string(&tools).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_tool_approval(command: String) -> Result<String, String> {
+    let store = approval_store::ApprovalStore::new();
+    let result = store.check_approval(&command);
+    let decision = match result {
+        approval_store::ApprovalCheckResult::Auto => {
+            serde_json::json!({ "decision": "auto" })
+        }
+        approval_store::ApprovalCheckResult::NeedsConfirmation => {
+            serde_json::json!({ "decision": "needs_confirmation" })
+        }
+        approval_store::ApprovalCheckResult::Blocked(reason) => {
+            serde_json::json!({ "decision": "blocked", "reason": reason })
+        }
+    };
+    serde_json::to_string(&decision).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn record_tool_approval(command: String, decision: String) -> Result<String, String> {
+    let store = approval_store::ApprovalStore::new();
+    let approval_decision = match decision.as_str() {
+        "approved" => approval_store::ApprovalDecision::Approved,
+        "approved_always" => approval_store::ApprovalDecision::ApprovedAlways,
+        "denied" => approval_store::ApprovalDecision::Denied,
+        _ => return Err(format!("Unknown decision: {}", decision)),
+    };
+    store.record_decision(&command, approval_decision);
+    Ok(serde_json::json!({ "success": true }).to_string())
 }
 
 #[tauri::command]
@@ -3482,6 +3692,109 @@ mod tests {
     }
 }
 
+#[tauri::command]
+async fn load_config(project_dir: Option<String>) -> Result<String, String> {
+    let cfg = config::ConfigLoader::load(project_dir.as_deref());
+    serde_json::to_string(&cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_config(config_json: String, scope: String, project_dir: Option<String>) -> Result<String, String> {
+    let cfg: config::AppConfig = serde_json::from_str(&config_json).map_err(|e| e.to_string())?;
+    let path = match scope.as_str() {
+        "global" => config::ConfigLoader::global_config_path(),
+        "project" => {
+            let dir = project_dir.ok_or("project_dir required for project scope")?;
+            config::ConfigLoader::project_config_path(&dir)
+        }
+        _ => return Err("Invalid scope: use 'global' or 'project'".into()),
+    };
+    config::ConfigLoader::save_config(&cfg, &path)?;
+    Ok("saved".into())
+}
+
+#[tauri::command]
+async fn get_default_config() -> Result<String, String> {
+    Ok(config::ConfigLoader::get_default_json())
+}
+
+#[tauri::command]
+async fn run_hooks(context_json: String) -> Result<String, String> {
+    let ctx: hooks::HookContext = serde_json::from_str(&context_json).map_err(|e| e.to_string())?;
+    hooks::ensure_hooks_initialized().await;
+    let manager = hooks::get_hook_manager();
+    let decisions = manager.run_hooks(&ctx).await;
+    serde_json::to_string(&decisions).map_err(|e| e.to_string())
+}
+
+// ============== 新版多Provider流式LLM命令 ==============
+
+/// 流式调用LLM，通过Tauri Event推送token到前端
+#[tauri::command]
+async fn llm_call_streaming(
+    request_json: String,
+    stream_id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let request: llm_provider::LLMRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("请求JSON解析失败: {}", e))?;
+
+    let registry = llm_provider::ProviderRegistry::new();
+    let provider = registry.get_provider(&request.provider_id)
+        .ok_or_else(|| format!("Provider不存在: {}", request.provider_id))?;
+
+    let client = llm_stream::StreamingLLMClient::new(None);
+    let response = client.call_streaming(&app_handle, provider, &request, &stream_id).await?;
+
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+/// 非流式调用LLM（兼容短回复场景）
+#[tauri::command]
+async fn llm_call_blocking(
+    request_json: String,
+) -> Result<String, String> {
+    let request: llm_provider::LLMRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("请求JSON解析失败: {}", e))?;
+
+    let registry = llm_provider::ProviderRegistry::new();
+    let provider = registry.get_provider(&request.provider_id)
+        .ok_or_else(|| format!("Provider不存在: {}", request.provider_id))?;
+
+    let client = llm_stream::StreamingLLMClient::new(None);
+    let response = client.call_blocking(provider, &request).await?;
+
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+/// 列出所有可用的LLM Provider
+#[tauri::command]
+async fn list_llm_providers() -> Result<String, String> {
+    let registry = llm_provider::ProviderRegistry::new();
+    let providers = registry.list_providers();
+    serde_json::to_string(&providers).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_file_patch(patch_text: String, project_dir: String) -> Result<String, String> {
+    let result = file_patch::parse_and_apply_patch(&patch_text, &project_dir)
+        .map_err(|e| format!("Patch解析失败: {}", e))?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn verify_file_patch(patch_text: String, project_dir: String) -> Result<String, String> {
+    let patch = file_patch::parse_patch(&patch_text)
+        .map_err(|e| format!("Patch解析失败: {}", e))?;
+    match file_patch::verify_patch(&patch, &project_dir) {
+        Ok(()) => Ok(r#"{"valid": true, "errors": []}"#.into()),
+        Err(errors) => {
+            let json = serde_json::to_string(&errors).unwrap_or_default();
+            Ok(format!(r#"{{"valid": false, "errors": {}}}"#, json))
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3544,6 +3857,7 @@ pub fn run() {
             db_save_session,
             db_save_message,
             db_clear_messages,
+            db_delete_session,
             db_load_project_data,
             db_delete_project,
             db_save_state,
@@ -3555,7 +3869,11 @@ pub fn run() {
             append_prompt_module_trace,
             perceptual_index_build,
             perceptual_index_search,
+            perceptual_index_project_logic_graph,
+            perceptual_index_file_logic_graph,
             perceptual_index_status,
+            perceptual_index_incremental_update,
+            fuzzy_file_search,
             repo_list_items,
             repo_read_cards,
             repo_read_wiki,
@@ -3570,6 +3888,7 @@ pub fn run() {
             load_user_token_data,
             memory_save,
             memory_search,
+            memory_search_enhanced,
             memory_delete,
             memory_clear_type,
             memory_run_lifecycle,
@@ -3589,15 +3908,29 @@ pub fn run() {
             list_project_files_all,
             git_push,
             web_search_query,
+            web_search_enhanced,
             fetch_webpage_content,
             check_command_safety,
             execute_command,
+            dispatch_tool,
+            list_tools,
+            check_tool_approval,
+            record_tool_approval,
             read_document,
             write_document,
             chat_multimodal,
             generate_image,
             transcribe_audio,
             text_to_speech,
+            load_config,
+            save_config,
+            get_default_config,
+            run_hooks,
+            llm_call_streaming,
+            llm_call_blocking,
+            list_llm_providers,
+            apply_file_patch,
+            verify_file_patch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

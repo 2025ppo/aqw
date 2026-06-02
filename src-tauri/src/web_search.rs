@@ -1,7 +1,12 @@
 use scraper::{Html, Selector};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-#[derive(Serialize, Clone)]
+use once_cell::sync::Lazy;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SearchResult {
     pub title: String,
     pub url: String,
@@ -243,4 +248,150 @@ fn decode_xml_entities(input: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
+}
+
+// ========== 增强版搜索（带缓存 + 多源fallback + 结构化返回） ==========
+
+/// 搜索结果缓存
+struct SearchCache {
+    entries: HashMap<String, CacheEntry>,
+    max_age: Duration,
+}
+
+struct CacheEntry {
+    results: Vec<SearchResult>,
+    created_at: Instant,
+}
+
+impl SearchCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            max_age: Duration::from_secs(3600),
+        }
+    }
+
+    fn get(&self, query: &str) -> Option<&Vec<SearchResult>> {
+        self.entries.get(query).and_then(|e| {
+            if e.created_at.elapsed() < self.max_age {
+                Some(&e.results)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn set(&mut self, query: String, results: Vec<SearchResult>) {
+        // 清理过期条目
+        self.entries.retain(|_, v| v.created_at.elapsed() < self.max_age);
+        self.entries.insert(query, CacheEntry {
+            results,
+            created_at: Instant::now(),
+        });
+    }
+}
+
+static SEARCH_CACHE: Lazy<Mutex<SearchCache>> =
+    Lazy::new(|| Mutex::new(SearchCache::new()));
+
+/// 增强版搜索（带缓存+多源fallback+结构化返回）
+pub async fn web_search_enhanced(
+    query: &str,
+    max_results: usize,
+    max_tokens: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    // 1. 检查缓存
+    {
+        let cache = SEARCH_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(query) {
+            return Ok(truncate_results(cached.clone(), max_tokens));
+        }
+    }
+
+    // 2. 多源尝试: 优先Bing
+    let results = match search(query, max_results).await {
+        Ok(r) if !r.is_empty() => r,
+        _ => {
+            // Bing失败，尝试DuckDuckGo
+            match duckduckgo_search(query, max_results).await {
+                Ok(r) if !r.is_empty() => r,
+                _ => {
+                    // 最后fallback：直接构造搜索URL
+                    vec![SearchResult {
+                        title: format!("搜索: {}", query),
+                        url: format!("https://www.bing.com/search?q={}", urlencode(query)),
+                        snippet: "所有搜索引擎均不可用，请手动搜索".into(),
+                    }]
+                }
+            }
+        }
+    };
+
+    // 3. 写入缓存
+    {
+        let mut cache = SEARCH_CACHE.lock().unwrap();
+        cache.set(query.to_string(), results.clone());
+    }
+
+    Ok(truncate_results(results, max_tokens))
+}
+
+/// DuckDuckGo HTML搜索 (免费fallback)
+async fn duckduckgo_search(query: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencode(query));
+    let resp = client.get(&url)
+        .send().await.map_err(|e| e.to_string())?;
+
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+
+    // 解析HTML结果
+    let document = Html::parse_document(&html);
+    let result_selector = Selector::parse(".result").unwrap();
+    let title_selector = Selector::parse(".result__title a, .result__a").unwrap();
+    let snippet_selector = Selector::parse(".result__snippet").unwrap();
+
+    let mut results = Vec::new();
+    for element in document.select(&result_selector).take(max_results) {
+        let title = element.select(&title_selector).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let href = element.select(&title_selector).next()
+            .and_then(|e| e.value().attr("href"))
+            .unwrap_or("").to_string();
+        let snippet = element.select(&snippet_selector).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        if !title.is_empty() {
+            results.push(SearchResult { title, url: href, snippet });
+        }
+    }
+
+    Ok(results)
+}
+
+/// 根据Token预算截断结果
+fn truncate_results(results: Vec<SearchResult>, max_tokens: Option<usize>) -> Vec<SearchResult> {
+    if let Some(budget) = max_tokens {
+        let mut token_count = 0usize;
+        results.into_iter().take_while(|r| {
+            let est = (r.title.len() + r.snippet.len()) / 3; // 粗略估算
+            token_count += est;
+            token_count <= budget
+        }).collect()
+    } else {
+        results
+    }
+}
+
+/// 将搜索结果格式化为模型友好的文本
+#[allow(dead_code)]
+pub fn format_results_for_model(results: &[SearchResult]) -> String {
+    results.iter().enumerate().map(|(i, r)| {
+        format!("[{}] {}\n    URL: {}\n    {}", i + 1, r.title, r.url, r.snippet)
+    }).collect::<Vec<_>>().join("\n\n")
 }

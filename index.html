@@ -112,7 +112,7 @@
                 <polyline points="23 4 23 10 17 10"/>
                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
-              <span id="canvas-directory-status-text">未生成</span>
+              <span id="canvas-directory-status-text">待同步</span>
             </button>
           </div>
         </div>
@@ -302,6 +302,13 @@
           </svg>
           <span>目录</span>
         </button>
+        <button class="view-tab" id="btn-file" title="文件" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <span>文件</span>
+        </button>
         <button class="view-tab" id="btn-repo" title="仓库" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"/>
@@ -335,29 +342,6 @@
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
           </svg>
           <span>草稿</span>
-        </button>
-        <button class="view-tab" id="btn-image" title="图像" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-            <circle cx="8.5" cy="8.5" r="1.5"/>
-            <polyline points="21 15 16 10 5 21"/>
-          </svg>
-          <span>图像</span>
-        </button>
-        <button class="view-tab" id="btn-video" title="视频" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="23 7 16 12 23 17 23 7"/>
-            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-          </svg>
-          <span>视频</span>
-        </button>
-        <button class="view-tab" id="btn-data" title="数据分析" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="20" x2="18" y2="10"/>
-            <line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-          </svg>
-          <span>数据</span>
         </button>
       </div>
       <!-- AI 对话卡片 -->
@@ -501,11 +485,6 @@
       <div id="file-preview-card" style="display:none;">
         <div class="file-preview-header">
           <span class="file-preview-title" id="file-preview-title">文件名</span>
-          <div class="file-preview-tabs" id="file-preview-tabs" style="display:none;">
-            <button class="preview-tab" data-tab="source" type="button">源码</button>
-            <button class="preview-tab active" data-tab="preview" type="button">预览</button>
-            <button class="preview-tab" data-tab="canvas" type="button">画布</button>
-          </div>
           <div class="file-preview-lang" id="file-preview-lang" style="display:none;">
             <span class="lang-label" id="lang-label">TEXT</span>
           </div>
@@ -521,12 +500,21 @@
             返回
           </button>
         </div>
+        <div class="file-preview-tabbar">
+          <div class="file-preview-tabs" id="file-preview-tabs" style="display:none;">
+            <button class="preview-tab" data-tab="source" type="button">源码</button>
+            <button class="preview-tab active" data-tab="preview" type="button">预览</button>
+            <button class="preview-tab" data-tab="canvas" type="button">画布</button>
+          </div>
+        </div>
         <div class="file-preview-divider"></div>
         <div class="file-preview-body">
           <textarea class="file-preview-editor" id="file-preview-editor" spellcheck="false"></textarea>
           <div class="file-preview-highlight" id="file-preview-highlight"><pre><code id="highlight-code" class="hljs"></code></pre></div>
           <div class="file-preview-md" id="file-preview-md"></div>
           <div class="file-preview-image" id="file-preview-image"></div>
+          <video class="file-preview-video" id="file-preview-video" controls playsinline></video>
+          <iframe class="file-preview-web" id="file-preview-web" title="文件预览"></iframe>
           <svg class="file-canvas-svg" id="file-canvas-svg" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <marker id="fc-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
@@ -535,6 +523,20 @@
             </defs>
             <g id="file-canvas-viewport"></g>
           </svg>
+          <div class="file-canvas-toolbar" id="file-canvas-toolbar">
+            <div class="file-canvas-toolbar-meta">
+              <span class="file-canvas-toolbar-title">文件逻辑图谱</span>
+              <span class="file-canvas-toolbar-status" id="file-canvas-status-text">等待生成</span>
+              <span class="file-canvas-toolbar-time" id="file-canvas-status-time">自动联动 AI 检索链路</span>
+            </div>
+            <button class="file-canvas-toolbar-btn" id="file-canvas-refresh" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span>重建图谱</span>
+            </button>
+          </div>
         </div>
       </div>
       <!-- ========== 设置页面 ========== -->

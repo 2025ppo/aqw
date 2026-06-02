@@ -100,6 +100,15 @@ const moduleScenarios: ModuleScenario[] = [
     expectedExcluded: ["web-search-guidance"],
   },
   {
+    name: "测试专家默认携带命令细则",
+    expertId: "jiang-cexun",
+    scene: "code-development",
+    task: "执行一次回归验证并给出是否可交付结论。",
+    basePrompt: "你是测试专家。",
+    expectedIncluded: ["code-tool-primer", "command-guidance"],
+    expectedExcluded: ["video-workflow"],
+  },
+  {
     name: "媒体专家普通海报任务不加载视频工作流",
     expertId: "jiang-huaying",
     scene: "media-creation",
@@ -367,7 +376,7 @@ function assert(condition: boolean, message: string) {
 }
 
 function getNaiveBaselineModules(expertId: string): PromptModuleId[] {
-  if (["jiang-ruoxi", "jiang-qinglan", "jiang-yumo", "jiang-subai", "jiang-yingqiu"].includes(expertId)) {
+  if (["jiang-ruoxi", "jiang-qinglan", "jiang-yumo", "jiang-subai", "jiang-yingqiu", "jiang-jianheng", "jiang-cexun"].includes(expertId)) {
     return ["code-tool-primer", "web-search-guidance", "command-guidance"];
   }
   if (expertId === "jiang-huaying") {
