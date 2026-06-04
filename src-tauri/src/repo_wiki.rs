@@ -228,8 +228,8 @@ fn scan_files_recursive(
 
                 let language = code_chunker::detect_language(&relative);
                 let chunk_count = code_chunker::chunk_file(&relative, &content).len();
-                let snippet = if content.len() > 500 {
-                    format!("{}...", &content[..500])
+                let snippet = if content.chars().count() > 500 {
+                    format!("{}...", content.chars().take(500).collect::<String>())
                 } else {
                     content.clone()
                 };
@@ -269,8 +269,8 @@ fn read_chat_summaries(project_dir: &Path) -> Result<Vec<ChatSummary>, String> {
             .and_then(|msgs| msgs.last())
             .and_then(|msg| msg["content"].as_str())
             .map(|s| {
-                if s.len() > 200 {
-                    format!("{}...", &s[..200])
+                if s.chars().count() > 200 {
+                    format!("{}...", s.chars().take(200).collect::<String>())
                 } else {
                     s.to_string()
                 }
@@ -519,6 +519,8 @@ pub async fn call_ai(api_key: &str, model: &str, prompt: &str) -> Result<String,
             content: prompt.to_string(),
         }],
         stream: false,
+        max_tokens: Some(1600),
+        temperature: Some(0.1),
     };
 
     let response = client

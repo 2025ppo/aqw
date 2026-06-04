@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "prompt:check": "tsc -p tsconfig.prompt-check.json && node .prompt-check-dist/scripts/prompt-module-replay.js",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "cli:test": "node scripts/cli-workbench.mjs test-scenario",
+    "restore:test-baseline": "node scripts/restore-frontend-test-baseline.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

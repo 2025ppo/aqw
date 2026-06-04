@@ -47,6 +47,7 @@ dependencies = [
  "mime_guess",
  "once_cell",
  "rand",
+ "regex",
  "reqwest 0.12.28",
  "scraper",
  "serde",

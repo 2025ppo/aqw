@@ -66,6 +66,7 @@
             <line x1="12" y1="5" x2="12" y2="19"/>
             <line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
+          <span class="sidebar-btn-text">添加项目</span>
         </button>
       </div>
       <div class="sidebar-divider"></div>
@@ -423,13 +424,37 @@
                 </div>
               </div>
             </div>
-            <textarea class="chat-input" id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+            <button class="chat-action-trigger" id="chat-action-trigger" title="添加文件或切换执行方式" type="button" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+            <div class="chat-composer-main">
+              <div class="chat-composer-meta" id="chat-composer-meta"></div>
+              <textarea class="chat-input" id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+            </div>
             <button class="chat-send-btn" id="chat-send-btn" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"/>
                 <polygon points="22 2 15 22 11 13 2 9 22 2"/>
               </svg>
             </button>
+            <div class="chat-action-menu" id="chat-action-menu">
+              <button class="chat-action-menu-item" data-chat-action="file" type="button">
+                <span class="chat-action-menu-title">文件</span>
+                <span class="chat-action-menu-desc">图片、视频、文档等外部文件与文本一起发送</span>
+              </button>
+              <button class="chat-action-menu-item" data-chat-action="plan" type="button">
+                <span class="chat-action-menu-title">按计划进行</span>
+                <span class="chat-action-menu-desc">先产出计划，再按步骤推进执行</span>
+              </button>
+              <button class="chat-action-menu-item" data-chat-action="goal" type="button">
+                <span class="chat-action-menu-title">按目标进行</span>
+                <span class="chat-action-menu-desc">围绕目标自主拆解、推进并判断是否完成</span>
+              </button>
+            </div>
+            <input id="chat-file-input" type="file" multiple hidden />
           </div>
         </div>
       </div>

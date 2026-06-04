@@ -21,7 +21,8 @@ export type PromptModuleId =
   | "media-tool-primer"
   | "video-workflow"
   | "approval-guidance"
-  | "patch-guidance";
+  | "patch-guidance"
+  | "deliverable-guidance";
 
 export type PromptModuleHintMap = Partial<Record<string, PromptModuleId[]>>;
 
@@ -63,7 +64,18 @@ export const PROMPT_MODULES: Record<PromptModuleId, PromptModuleDefinition> = {
     id: "command-guidance",
     text: `【命令执行细则】
 - 适用于测试、构建、lint、依赖检查、日志排查、环境确认、版本核验与复现问题。
-- dir 填最小必要工作目录；命令可能涉及受限或管理员授权，系统会拦截，你只需如实提出。
+- dir 填最小必要工作目录，并且只能写 \`.\`、\`src\`、\`src/components\` 这种真实相对目录；不要写“项目根目录”“当前项目”“工作区”这类展示用描述。
+- 如果要在项目根目录执行，dir 直接写 \`.\`。
+- 当前环境如果明显是 Windows 路径（如 \`C:\\...\`），优先使用 \`rg\`、\`dir\`、\`Get-ChildItem\`、\`Get-Content\`、\`Select-String\` 等可在 Windows 直接运行的命令；不要默认使用 \`grep\`、\`sed\`、\`awk\`、\`bash\`。
+- Windows 命令里做文本搜索时，优先用双引号，不要写 Unix 风格单引号命令，例如优先 \`rg -n "pattern" app.js\`，不要写 \`rg -n 'pattern' app.js\`。
+- 不要使用 \`head\`、\`tail -n\` 这类 Unix 管道习惯；在 Windows 里改用 \`Select-Object -First 5\`、\`Get-Content -Tail 20\`。
+- 使用 \`findstr\` 时不要写 C 风格转义引号 \`\\\"\`；直接写 Windows 可执行形式，如 \`findstr /C:"function renderFunctionCalculator" app.js\`。
+- 大文件排查时不要默认 \`Get-Content app.js -Raw\` 整体读回；优先用 \`rg -n\`、\`Select-String -Context\`、\`Get-Content -TotalCount\` 这类定点读取，避免把整文件输出塞回后续分析。
+- 使用 \`Select-String\` 时，如果 pattern 里包含 \`|\` 这类正则分支，不要再加 \`-SimpleMatch\`，否则会被当成字面文本。
+- 如果任务要求“全部替换 / 全局替换 / 所有地方”，验证时必须覆盖所有主文件，而不是只查一个文件就下结论；前端项目至少要核对 \`index.html\`、\`app.js\`、\`styles.css\` 以及资源目录。
+- 当前 Windows 壳层里不要用 \`pwd\`，改用 \`cd\` 或 \`Get-Location\`。
+- PowerShell 的 \`Select-String\` 不支持 \`\\x{1F300}\` 这类 Unicode 区间写法；检查 emoji 残留时请直接列出目标字符，或分文件用 \`rg\` / \`Select-String\` 搜显式字符列表。
+- 命令可能涉及受限或管理员授权，系统会拦截，你只需如实提出。
 - 收到执行结果后，要把结果转化为结论，不要只复述输出。`,
   },
   "document-tool-primer": {
@@ -123,81 +135,31 @@ export const PROMPT_MODULES: Record<PromptModuleId, PromptModuleDefinition> = {
   },
   "patch-guidance": {
     id: "patch-guidance",
-    text: `## File Patch Format Instructions
+    text: `【精确修改细则】
+- 当前系统不会执行 \`file_patch\` / \`*** Begin Patch\` 这类补丁文本；不要输出补丁语法。
+- 你必须输出系统可直接落盘的文件动作：\`[ACTION:CREATE_FILE ...]\`、\`[ACTION:WRITE_FILE ...]\`、\`[ACTION:EDIT_FILE ...]\`、\`[ACTION:CREATE_FOLDER ...]\`、\`[ACTION:DELETE ...]\`，或结构化 JSON \`changes\`。
+- 修改已有文件前，先读取真实文件内容，再给出精确的 \`searchText\` / \`replaceText\`；不要凭空编造上下文。
+- 如果是局部修改，优先用 \`[ACTION:EDIT_FILE ...]\`，并提供稳定、可唯一定位的 search/replace 片段。
+- 如果一个任务涉及多个文件，逐个输出可执行动作，不要把修改藏在说明文字里。
+- 不要虚构 \`task-1-patch.md\`、\`task-3-patch-1.md\` 之类中间补丁文件；除非你真的用 \`[ACTION:CREATE_FILE]\` 明确创建它们，否则后续专家不得把它们当成已存在的交付物。
+- 永远使用相对项目根目录的路径，不要输出绝对路径。`,
+  },
+  "deliverable-guidance": {
+    id: "deliverable-guidance",
+    text: `【交付物落盘硬约束】
+关键原则：你不能只在文字里宣称完成。凡是设计/文档/代码交付物，仅口头描述、只输出代码块、只说“已保存”都被视为未完成。
 
-You have access to a \`file_patch\` tool that can create, modify, delete, and move files using a structured patch format.
-
-### Patch Format Syntax
-
-\`\`\`
-*** Begin Patch
-[operations...]
-*** End Patch
-\`\`\`
-
-### Operations
-
-#### Create a new file:
-\`\`\`
-*** Add File: path/to/new/file.ts
-+line 1 of new content
-+line 2 of new content
-+line 3 of new content
-\`\`\`
-
-#### Modify an existing file:
-\`\`\`
-*** Update File: path/to/existing/file.ts
-@@ context_line_to_locate_position
- unchanged line (context, prefix with space)
--old line to remove
-+new line to add
- another unchanged line
-\`\`\`
-
-#### Delete a file:
-\`\`\`
-*** Delete File: path/to/file.ts
-\`\`\`
-
-#### Move/Rename a file:
-\`\`\`
-*** Move to: path/to/new/location.ts
-*** Update File: path/to/old/location.ts
-\`\`\`
-
-### Critical Rules
-
-1. **Always use relative paths** — never use absolute paths like \`C:\\...\` or \`/home/...\`
-2. **Every new/added line MUST have a \`+\` prefix** — even when creating a brand new file
-3. **Context lines MUST have a space prefix** — not no prefix
-4. **Provide exactly 3 lines of context** before and after each change for accurate positioning
-5. **Use multiple \`@@\` sections** when the same file has changes in different locations
-6. **For repeated/similar code blocks**, include enough unique context lines so the system can unambiguously locate the correct position
-7. **Do NOT wrap the patch in JSON or markdown code fences** — output it directly as plain text
-8. **End of file operations**: Use \`*** End of File\` marker when changes are at the very end
-
-### Multiple Changes in One File
-
-When a file needs changes in multiple locations, use multiple @@ sections:
-\`\`\`
-*** Update File: src/main.ts
-@@ import { something } from
- import { something } from './module';
-+import { newThing } from './new-module';
-
-@@ function handleRequest
- function handleRequest(req: Request) {
--  const result = oldMethod(req);
-+  const result = newMethod(req);
-   return result;
- }
-\`\`\`
-
-### Important Tips
-- If your patch fails, you will receive an error message with the actual file content near the target area. Use this to correct your context lines and retry.
-- When editing large files, ensure your @@ context line is unique enough to avoid matching the wrong location.
-- Prefer small, focused patches over large ones — split complex changes into multiple patches if needed.`,
+必须遵守的规则：
+1. 凡需产生文件内容的交付物（设计文档、源代码、配置、 README 等），必须使用下列动作之一真实落盘：
+   - \`[ACTION:CREATE_FILE path="相对路径" content="..."]\`
+   - \`[ACTION:WRITE_FILE path="相对路径" content="..." allowOverwrite=true]\`
+   - \`[ACTION:EDIT_FILE path="相对路径" searchText="..." replaceText="..."]\`
+   - \`[ACTION:CREATE_FOLDER path="相对路径"]\`
+2. **严禁**：使用 \`echo ... > file\`、\`type ... > file\`、\`Set-Content -Value ...\`、\`@"..."@ | Out-File ...\` 这类 shell 重定向作为文件创建手段。Shell 重定向会被字面量中的 \`&\` / \`|\` / \`>\` / \`<\` 等特殊字符截断，导致文件为空。
+3. 如果需要创建目录中的文件，直接 \`[ACTION:CREATE_FILE path="designs/xxx.md" ...]\`，系统会自动创建上级目录，不需要提前调用 \`mkdir\`。
+4. **不完整发送成本低于不发送的成本**：如果你在单轮内产出的文档/代码过长，必须用多个 [ACTION:WRITE_FILE] 拆成多个文件或分次调用，不要“说明文档已生成但未附上”。
+5. 宣称“完成”前请自查：本轮 output 是否至少包含一个 [ACTION:CREATE_FILE/WRITE_FILE/EDIT_FILE/CREATE_FOLDER]？如果没有，**不要**说“已完成”“已保存”“已部署”，改为指出阻塞并请求下一轮补交。
+6. 审核员如果发现上游交付物缺失，不得用 shell echo/Set-Content “兜底”创建占位文件；**唯一允许的是调用 [ACTION:CREATE_FILE] 创建补齐内容，或直接报阻塞要求设计师重新输出**。`,
   },
 };
 
@@ -205,11 +167,12 @@ const ALL_PROMPT_MODULE_IDS = Object.keys(PROMPT_MODULES) as PromptModuleId[];
 
 const EXPERT_STATIC_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
   "jiang-ruoxi": ["code-tool-primer"],
-  "jiang-qinglan": ["code-tool-primer", "patch-guidance"],
-  "jiang-yumo": ["code-tool-primer", "patch-guidance"],
-  "jiang-subai": ["code-tool-primer", "patch-guidance"],
+  "jiang-dingchu": ["code-tool-primer", "deliverable-guidance"],
+  "jiang-qinglan": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
+  "jiang-yumo": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
+  "jiang-subai": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
   "jiang-yingqiu": ["code-tool-primer"],
-  "jiang-jianheng": ["code-tool-primer"],
+  "jiang-jianheng": ["code-tool-primer", "deliverable-guidance"],
   "jiang-cexun": ["code-tool-primer", "command-guidance"],
   "jiang-zhilan": ["document-tool-primer"],
   "jiang-huaying": ["media-tool-primer"],
@@ -217,11 +180,12 @@ const EXPERT_STATIC_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = 
 
 const EXPERT_SUPPORTED_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
   "jiang-ruoxi": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
-  "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
-  "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance"],
+  "jiang-dingchu": ["code-tool-primer", "web-search-guidance", "deliverable-guidance"],
+  "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
+  "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
+  "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
   "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+  "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"],
   "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
   "jiang-zhilan": ["document-tool-primer"],
   "jiang-huaying": ["media-tool-primer", "video-workflow"],

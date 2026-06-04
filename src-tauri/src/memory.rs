@@ -418,10 +418,10 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
 /// 生成上下文摘要（取前 100 字符）
 #[allow(dead_code)]
 pub fn generate_summary(text: &str) -> String {
-    if text.len() <= 100 {
+    if text.chars().count() <= 100 {
         text.to_string()
     } else {
-        format!("{}...", &text[..100])
+        format!("{}...", text.chars().take(100).collect::<String>())
     }
 }
 

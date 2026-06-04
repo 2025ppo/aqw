@@ -40,11 +40,24 @@ class Sidebar {
     this.createBtn = this.sidebarEl.querySelector(".sidebar-create-btn")!;
     this.toggleBtn = this.sidebarEl.querySelector(".sidebar-toggle-btn")!;
 
+    // 供 expert-router 等跨模块逻辑读取当前活跃项目。
+    (window as typeof window & { sidebar?: Sidebar }).sidebar = this;
+
     this.toggleBtn.addEventListener("click", () => this.toggle());
     this.createBtn.addEventListener("click", () => this.showProjectDialog());
+    document.addEventListener("click", () => this.closeItemMenus());
 
     // 加载持久化的项目列表。DB 在 Tauri 启动早期可能尚未就绪，因此这里带重试。
     this.ready = this.loadProjectsWithRetry();
+  }
+
+  private closeItemMenus(exceptId?: number): void {
+    this.chatListEl.querySelectorAll<HTMLElement>(".chat-item-actions").forEach((menu) => {
+      const ownerId = Number(menu.dataset.chatId);
+      if (!exceptId || ownerId !== exceptId) {
+        menu.classList.remove("open");
+      }
+    });
   }
 
   /** 从数据库加载项目列表 */
@@ -363,10 +376,38 @@ class Sidebar {
     // 保存最后打开的项目
     this.saveAppState({ lastProjectId: id });
 
+    // 验证工作目录连接
+    const chat = this.chats.find((c) => c.id === id);
+    if (chat) {
+      this.validateWorkspaceConnection(chat);
+    }
+
     // 触发自定义事件，通知外部
     window.dispatchEvent(
       new CustomEvent("chat-changed", { detail: { chatId: id } })
     );
+  }
+
+  /** 验证工作目录连接是否正常 */
+  private async validateWorkspaceConnection(chat: ChatItem): Promise<void> {
+    try {
+      const result = await invoke<string>("validate_workspace_connection", {
+        projectName: chat.name,
+        projectPath: chat.workspacePath,
+      });
+      const info = JSON.parse(result);
+      console.log("[Sidebar] 工作目录连接验证通过:", info.path);
+    } catch (e) {
+      console.error("[Sidebar] 工作目录连接验证失败:", e);
+      // 延迟显示，避免阻断 UI 初始化
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent("show-error", {
+            detail: { message: `工作目录连接异常: ${e}` },
+          })
+        );
+      }, 1000);
+    }
   }
 
   /** 保存应用状态 */
@@ -501,19 +542,48 @@ class Sidebar {
         }
       });
 
-      // 删除按钮（展开时显示）
-      const deleteBtn = document.createElement("button");
-      deleteBtn.className = "chat-delete-btn";
-      deleteBtn.title = "删除项目";
-      deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-      deleteBtn.addEventListener("click", (e) => {
+      const actionsWrap = document.createElement("div");
+      actionsWrap.className = "chat-item-actions";
+      actionsWrap.dataset.chatId = String(chat.id);
+
+      const actionsBtn = document.createElement("button");
+      actionsBtn.className = "chat-actions-btn";
+      actionsBtn.title = "项目操作";
+      actionsBtn.type = "button";
+      actionsBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>`;
+      actionsBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        const confirmed = confirm(`确定要删除项目「${chat.name}」吗？\n\n注意：仅移除软件中的项目记录，不会删除本地文件夹。`);
+        const willOpen = !actionsWrap.classList.contains("open");
+        this.closeItemMenus(willOpen ? chat.id : undefined);
+        actionsWrap.classList.toggle("open", willOpen);
+      });
+      actionsWrap.appendChild(actionsBtn);
+
+      const actionsMenu = document.createElement("div");
+      actionsMenu.className = "chat-actions-menu";
+      actionsMenu.innerHTML = `
+        <button class="chat-actions-menu-item" data-action="rename" type="button">重命名项目</button>
+        <button class="chat-actions-menu-item danger" data-action="remove" type="button">从列表移除</button>
+      `;
+      actionsMenu.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const target = e.target as HTMLElement;
+        const action = target.closest<HTMLElement>(".chat-actions-menu-item")?.dataset.action;
+        if (!action) return;
+
+        actionsWrap.classList.remove("open");
+        if (action === "rename") {
+          item.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+          return;
+        }
+
+        const confirmed = confirm(`确定要从项目列表移除「${chat.name}」吗？\n\n仅会移除软件中的项目记录，不会删除本地文件夹。`);
         if (confirmed) {
-          this.deleteChat(chat.id);
+          void this.deleteChat(chat.id);
         }
       });
-      item.appendChild(deleteBtn);
+      actionsWrap.appendChild(actionsMenu);
+      item.appendChild(actionsWrap);
 
       // 双击重命名
       item.addEventListener("dblclick", () => {

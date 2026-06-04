@@ -1,9 +1,10 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+﻿// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dunce;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Row, Sqlite};
 use std::fs;
+use std::io::Write;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,17 +13,32 @@ use tauri::Manager;
 mod code_chunker;
 mod code_graph;
 mod code_retention;
+mod collaboration_engine;
 mod deliverables;
 mod doc_processor;
 mod experience;
+mod expert_context_engine;
+mod expert_postprocess_engine;
+mod expert_runtime_engine;
+mod expert_session_engine;
+mod expert_tool_engine;
+mod expert_tool_runtime_engine;
+mod blackboard_engine;
 mod health_score;
 mod llm_provider;
 mod llm_stream;
 mod memory;
+mod pipeline_engine;
+mod pipeline_progress_engine;
+mod pipeline_runtime_engine;
+mod pipeline_session_engine;
+mod pipeline_step_engine;
 mod perceptual_index;
+mod prompt_module_engine;
 mod rbac;
 mod repo_wiki;
 mod shell_executor;
+mod token_runtime_engine;
 mod tfidf;
 mod tool_system;
 mod approval_store;
@@ -30,10 +46,2492 @@ mod web_search;
 mod config;
 mod file_patch;
 mod hooks;
+mod supervisor_engine;
+mod workflow_engine;
 
 /// 全局数据库连接池（应用级共享）
 struct AppState {
     db: Pool<Sqlite>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmReplyEnvelope {
+    content: String,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorAnalyzeResponse {
+    plan: supervisor_engine::SupervisorDispatchPlan,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorReviewResponse {
+    reply: String,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorQuickAnswerResponse {
+    reply: String,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorRuntimeAnalyzeResponse {
+    plan: supervisor_engine::SupervisorDispatchPlan,
+    blocked_reason: Option<String>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorRuntimeReviewResponse {
+    reply: String,
+    blocked_reason: Option<String>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorRuntimeQuickAnswerResponse {
+    reply: String,
+    blocked_reason: Option<String>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineDeliveryFinalizeResponse {
+    reply: String,
+    blocked_reason: Option<String>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+    delivery_analysis: workflow_engine::DeliveryAnalysis,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorRuntimeFollowupResponse {
+    decision: supervisor_engine::FollowupIntentDecision,
+    blocked_reason: Option<String>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorTokenRuntimeContext {
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+    allocation: Option<token_runtime_engine::TokenAllocation>,
+    key_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExpertTokenRuntimeContext {
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+    key_id: String,
+    quota_exempt_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorFollowupResponse {
+    decision: supervisor_engine::FollowupIntentDecision,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorMidCheckResponse {
+    decision: supervisor_engine::MidCheckDecision,
+    usage: Option<DeepSeekUsage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineRoundSettleEnvelope {
+    state: pipeline_session_engine::PipelineSessionState,
+    decision: pipeline_step_engine::PipelineStepFinalizeDecision,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PipelineJoiningTask {
+    expert_id: String,
+    expert_name: String,
+    expert_title: String,
+    dispatch_wave: usize,
+    input: String,
+    status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineLaunchEnvelope {
+    pipeline_id: String,
+    layout: pipeline_engine::PipelineLayout,
+    state: pipeline_session_engine::PipelineSessionState,
+    narrative: String,
+    joining_tasks: Vec<PipelineJoiningTask>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineExecutionRoundEnvelope {
+    plan: pipeline_session_engine::PipelineExecutionRoundPlan,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineFollowupExecutionRoundEnvelope {
+    plan: pipeline_session_engine::PipelineFollowupExecutionRoundPlan,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenDashboardEnvelope {
+    snapshot: token_runtime_engine::TokenDashboardSnapshot,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineProgressEnvelope {
+    snapshot: pipeline_progress_engine::PipelineProgressSnapshot,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpertContextEnvelope {
+    context: expert_context_engine::ExpertContextResponse,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpertToolPlanEnvelope {
+    plan: expert_tool_engine::ToolRequestPlan,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolReminderEnvelope {
+    decision: expert_runtime_engine::ToolReminderDecision,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolFollowupEnvelope {
+    message: expert_runtime_engine::ToolFollowupMessage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpertToolExecutionEnvelope {
+    result: expert_tool_runtime_engine::ExpertToolExecutionResult,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptPlanEnvelope {
+    plan: prompt_module_engine::PromptPlanResponse,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExpertTaskRuntimeState {
+    postprocess_state: expert_postprocess_engine::ExpertPostprocessState,
+    task_description: String,
+    project_id: Option<i64>,
+    key_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpertTaskRuntimeEnvelope {
+    blocked_reason: Option<String>,
+    runtime_state: Option<ExpertTaskRuntimeState>,
+    response: Option<expert_postprocess_engine::ExpertPostprocessResponse>,
+    project_data: token_runtime_engine::TokenData,
+    user_data: token_runtime_engine::TokenData,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartExpertTaskRuntimeRequest {
+    session_request: expert_session_engine::StartExpertSessionRequest,
+    token_context: ExpertTokenRuntimeContext,
+    key_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContinueExpertTaskRuntimeRequest {
+    runtime_state: ExpertTaskRuntimeState,
+    approval_decision: Option<bool>,
+    token_context: ExpertTokenRuntimeContext,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinalizeExpertTaskRequest {
+    project_name: Option<String>,
+    project_id: Option<i64>,
+    expert_id: String,
+    expert_name: String,
+    scene: String,
+    task_description: String,
+    reply: String,
+    learned_module_ids: Vec<String>,
+    trigger_sources: Vec<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineStepFinalizeEnvelope {
+    decision: pipeline_step_engine::PipelineStepFinalizeDecision,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UiChatMessage {
+    role: String,
+    content: String,
+}
+
+fn parse_llm_reply_envelope(raw: &str) -> Result<LlmReplyEnvelope, String> {
+    serde_json::from_str(raw).map_err(|e| format!("解析 LLM 响应失败: {}", e))
+}
+
+fn supervisor_quota_guard(
+    context: &SupervisorTokenRuntimeContext,
+) -> Option<String> {
+    let decision = token_runtime_engine::check_quota(&token_runtime_engine::QuotaCheckRequest {
+        expert_id: "jiang-xingtu".to_string(),
+        expert_name: "江星图".to_string(),
+        allocations: context.allocation.clone().into_iter().collect(),
+        records: context.project_data.records.clone(),
+        exempt_expert_ids: vec![
+            "jiang-xingtu".to_string(),
+            "jiang-xinghe".to_string(),
+            "jiang-qinglan".to_string(),
+        ],
+        now_ms: None,
+    });
+    if decision.allowed { None } else { decision.reason }
+}
+
+fn build_current_project_context_text(
+    project_name: Option<&str>,
+    workspace_path: Option<&str>,
+    current_session_label: Option<&str>,
+) -> Option<String> {
+    let name = project_name?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let workspace = workspace_path
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未记录工作目录");
+    let session_label = current_session_label
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未命名对话");
+    Some(
+        [
+            "[当前项目上下文]".to_string(),
+            format!("- 项目名称：{}", name),
+            format!("- 工作目录：{}", workspace),
+            format!("- 当前会话：{}", session_label),
+            "- 说明：用户当前正在这个项目内发起提问、检索和修改，请不要忽略项目上下文。".to_string(),
+        ]
+        .join("\n"),
+    )
+}
+
+fn build_general_memory_context_text(
+    project_dir: &Path,
+    project_id: Option<i64>,
+    query_text: &str,
+) -> Option<String> {
+    let Some(project_id) = project_id else {
+        return None;
+    };
+    let query = memory::MemoryQuery {
+        project_id,
+        expert_id: None,
+        query_text: query_text.to_string(),
+        memory_type: None,
+        limit: 3,
+    };
+    match memory::search_memories(project_dir, &query) {
+        Ok(results) if !results.is_empty() => {
+            Some(expert_context_engine::format_memory_context(&results, "相关历史记忆"))
+        }
+        _ => None,
+    }
+}
+
+fn build_workspace_preflight_context_text(
+    user_message: &str,
+    workspace_path: Option<&str>,
+) -> Option<String> {
+    let path = workspace_path?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    match workflow_engine::verify_workspace_delivery(user_message, path) {
+        Ok(issues) if !issues.is_empty() => Some(format!(
+            "[当前工作区预检]\n{}",
+            issues
+                .iter()
+                .map(|item| format!("- {}", item))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+        _ => None,
+    }
+}
+
+fn summarize_expert_tasks_message(content: &str) -> String {
+    let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(content) else {
+        return "专家协作快照：解析失败。".to_string();
+    };
+    if tasks.is_empty() {
+        return "专家协作快照：暂无可用进展。".to_string();
+    }
+    let lines = tasks
+        .iter()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|task| {
+            let status = match task.get("status").and_then(|v| v.as_str()) {
+                Some("done") => "已完成".to_string(),
+                Some("running") => "执行中".to_string(),
+                Some("error") => format!(
+                    "失败：{}",
+                    task.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误")
+                ),
+                _ => "等待中".to_string(),
+            };
+            let detail = task
+                .get("output")
+                .or_else(|| task.get("error"))
+                .or_else(|| task.get("input"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect::<String>();
+            let expert_name = task
+                .get("expertName")
+                .and_then(|v| v.as_str())
+                .or_else(|| task.get("expertId").and_then(|v| v.as_str()))
+                .unwrap_or("未知专家");
+            let expert_title = task.get("expertTitle").and_then(|v| v.as_str()).unwrap_or("未知角色");
+            if detail.is_empty() {
+                format!("- {}（{}）：{}", expert_name, expert_title, status)
+            } else {
+                format!("- {}（{}）：{}；{}", expert_name, expert_title, status, detail)
+            }
+        })
+        .collect::<Vec<_>>();
+    format!("专家协作快照：\n{}", lines.join("\n"))
+}
+
+fn summarize_tool_event_message(content: &str) -> String {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(content) else {
+        return "工具调用记录：解析失败。".to_string();
+    };
+    let initiator = format!(
+        "{}（{}）",
+        event.get("initiator").and_then(|v| v.get("expertName")).and_then(|v| v.as_str()).unwrap_or("未知专家"),
+        event.get("initiator").and_then(|v| v.get("expertTitle")).and_then(|v| v.as_str()).unwrap_or("未知角色")
+    );
+    let status = match event.get("status").and_then(|v| v.as_str()) {
+        Some("success") => "成功",
+        Some("denied") => "被拒绝",
+        Some("blocked") => "受限",
+        _ => "失败",
+    };
+    if event.get("kind").and_then(|v| v.as_str()) == Some("web-search") {
+        return format!(
+            "工具调用记录：{} 因“{}”发起网络搜索「{}」，结果：{}。",
+            initiator,
+            event.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+            event.get("query").and_then(|v| v.as_str()).unwrap_or(""),
+            status
+        );
+    }
+    let auth_label = match event.get("authMode").and_then(|v| v.as_str()) {
+        Some("admin") => "管理员命令",
+        Some("restricted") => "受限命令",
+        _ => "命令",
+    };
+    let exit_code = event
+        .get("output")
+        .and_then(|v| v.get("exitCode"))
+        .and_then(|v| v.as_i64())
+        .map(|code| format!("，退出码 {}", code))
+        .unwrap_or_default();
+    format!(
+        "工具调用记录：{} 因“{}”发起{}「{}」，结果：{}{}。",
+        initiator,
+        event.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+        auth_label,
+        event.get("command").and_then(|v| v.as_str()).unwrap_or(""),
+        status,
+        exit_code
+    )
+}
+
+fn summarize_command_auth_message(content: &str) -> String {
+    let Ok(auth) = serde_json::from_str::<serde_json::Value>(content) else {
+        return "命令授权请求：解析失败。".to_string();
+    };
+    let initiator = format!(
+        "{}（{}）",
+        auth.get("initiator").and_then(|v| v.get("expertName")).and_then(|v| v.as_str()).unwrap_or("未知专家"),
+        auth.get("initiator").and_then(|v| v.get("expertTitle")).and_then(|v| v.as_str()).unwrap_or("未知角色")
+    );
+    let status = match auth.get("status").and_then(|v| v.as_str()) {
+        Some("approved") => "用户已同意",
+        Some("denied") => "用户已拒绝",
+        _ => "等待用户处理",
+    };
+    format!(
+        "命令授权请求：{} 请求执行命令「{}」，状态：{}。",
+        initiator,
+        auth.get("command").and_then(|v| v.as_str()).unwrap_or(""),
+        status
+    )
+}
+
+fn sanitize_chat_messages_for_supervisor(messages: &[UiChatMessage]) -> Vec<DeepSeekMessage> {
+    messages
+        .iter()
+        .filter_map(|message| match message.role.as_str() {
+            "user" | "assistant" => Some(DeepSeekMessage {
+                role: message.role.clone(),
+                content: message.content.clone(),
+            }),
+            "expert-tasks" => Some(DeepSeekMessage {
+                role: "assistant".to_string(),
+                content: summarize_expert_tasks_message(&message.content),
+            }),
+            "tool-event" => Some(DeepSeekMessage {
+                role: "assistant".to_string(),
+                content: summarize_tool_event_message(&message.content),
+            }),
+            "command-auth" => Some(DeepSeekMessage {
+                role: "assistant".to_string(),
+                content: summarize_command_auth_message(&message.content),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod supervisor_dispatch_prep_tests {
+    use super::{build_current_project_context_text, build_workspace_preflight_context_text};
+
+    #[test]
+    fn builds_current_project_context_text() {
+        let text = build_current_project_context_text(
+            Some("新建文件夹二"),
+            Some("C:/workspace/demo"),
+            Some("对话 3"),
+        )
+        .expect("should build context");
+        assert!(text.contains("项目名称：新建文件夹二"));
+        assert!(text.contains("工作目录：C:/workspace/demo"));
+        assert!(text.contains("当前会话：对话 3"));
+    }
+
+    #[test]
+    fn workspace_preflight_returns_none_without_path() {
+        let text = build_workspace_preflight_context_text("添加一个函数计算器", None);
+        assert!(text.is_none());
+    }
+}
+
+fn append_supervisor_usage(
+    context: &SupervisorTokenRuntimeContext,
+    model: &str,
+    usage: Option<DeepSeekUsage>,
+) -> (token_runtime_engine::TokenData, token_runtime_engine::TokenData) {
+    let Some(usage) = usage else {
+        return (context.project_data.clone(), context.user_data.clone());
+    };
+    let result = token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
+        project_data: context.project_data.clone(),
+        user_data: context.user_data.clone(),
+        expert_id: "jiang-xingtu".to_string(),
+        expert_name: "江星图".to_string(),
+        expert_title: Some("主管".to_string()),
+        model: model.to_string(),
+        key_id: context.key_id.clone(),
+        usage: token_runtime_engine::UsageSummary {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        },
+        timestamp: None,
+    });
+    (result.project_data, result.user_data)
+}
+
+fn check_expert_quota_internal(
+    context: &ExpertTokenRuntimeContext,
+    expert_id: &str,
+    expert_name: &str,
+) -> Option<String> {
+    let decision = token_runtime_engine::check_quota(&token_runtime_engine::QuotaCheckRequest {
+        expert_id: expert_id.to_string(),
+        expert_name: expert_name.to_string(),
+        allocations: context.project_data.allocations.clone(),
+        records: context.project_data.records.clone(),
+        exempt_expert_ids: context.quota_exempt_ids.clone(),
+        now_ms: None,
+    });
+    if decision.allowed { None } else { decision.reason }
+}
+
+fn append_expert_usage(
+    context: &ExpertTokenRuntimeContext,
+    expert_id: &str,
+    expert_name: &str,
+    expert_title: Option<&str>,
+    model: &str,
+    usage: Option<DeepSeekUsage>,
+) -> (token_runtime_engine::TokenData, token_runtime_engine::TokenData) {
+    let Some(usage) = usage else {
+        return (context.project_data.clone(), context.user_data.clone());
+    };
+    let result = token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
+        project_data: context.project_data.clone(),
+        user_data: context.user_data.clone(),
+        expert_id: expert_id.to_string(),
+        expert_name: expert_name.to_string(),
+        expert_title: expert_title.map(|value| value.to_string()),
+        model: model.to_string(),
+        key_id: context.key_id.clone(),
+        usage: token_runtime_engine::UsageSummary {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        },
+        timestamp: None,
+    });
+    (result.project_data, result.user_data)
+}
+
+fn workspace_looks_empty_for_direct_creation(project_path: Option<&str>) -> bool {
+    let Some(path) = project_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let root = Path::new(path);
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == ".xt" || name == ".git" {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+#[tauri::command]
+fn verify_workspace_delivery(user_task_text: String, workspace_path: String) -> Result<String, String> {
+    let issues = workflow_engine::verify_workspace_delivery(&user_task_text, &workspace_path)?;
+    serde_json::to_string(&issues).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn analyze_agent_delivery(
+    sources_json: String,
+    user_task_text: String,
+    workspace_path: Option<String>,
+) -> Result<String, String> {
+    let sources: Vec<workflow_engine::WorkflowInputSource> =
+        serde_json::from_str(&sources_json).map_err(|e| format!("解析专家输出失败: {}", e))?;
+    let analysis =
+        workflow_engine::analyze_agent_delivery(&sources, &user_task_text, workspace_path.as_deref())?;
+    serde_json::to_string(&analysis).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_analyze_dispatch(
+    user_message: String,
+    conversation_history_json: String,
+    available_experts_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let conversation_history: Vec<DeepSeekMessage> = serde_json::from_str(&conversation_history_json)
+        .map_err(|e| format!("解析主管历史上下文失败: {}", e))?;
+    let available_experts: Vec<supervisor_engine::SupervisorExpertInfo> = serde_json::from_str(&available_experts_json)
+        .map_err(|e| format!("解析可用专家失败: {}", e))?;
+    let system_prompt = supervisor_engine::build_supervisor_prompt(&available_experts);
+
+    let mut messages: Vec<DeepSeekMessage> = Vec::new();
+    let recent_history = if conversation_history.len() > 5 {
+        &conversation_history[conversation_history.len() - 5..]
+    } else {
+        &conversation_history[..]
+    };
+    if !recent_history.is_empty() {
+        let history_text = recent_history
+            .iter()
+            .map(|message| {
+                let role_label = if message.role == "user" { "用户" } else { "助手" };
+                let snippet: String = message.content.chars().take(300).collect();
+                format!("{}：{}", role_label, snippet)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        messages.push(DeepSeekMessage {
+            role: "user".to_string(),
+            content: format!("最近对话上下文：\n{}", history_text),
+        });
+    }
+    messages.push(DeepSeekMessage {
+        role: "user".to_string(),
+        content: format!(
+            "请分析以下需求并输出调度计划（仅输出 JSON，用自然亲切的语言理解用户需求）：\n{}",
+            user_message
+        ),
+    });
+
+    let raw_reply = call_llm(system_prompt, messages, supervisor_api_key, &model).await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let response = SupervisorAnalyzeResponse {
+        plan: supervisor_engine::parse_dispatch_plan(&envelope.content, &user_message),
+        usage: envelope.usage,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_review_delivery(
+    task_description: String,
+    expert_results_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let expert_results: Vec<supervisor_engine::SupervisorExpertResult> = serde_json::from_str(&expert_results_json)
+        .map_err(|e| format!("解析专家结果失败: {}", e))?;
+    let raw_reply = call_llm(
+        supervisor_engine::build_review_prompt().to_string(),
+        vec![
+            DeepSeekMessage {
+                role: "user".to_string(),
+                content: supervisor_engine::build_review_user_message(&task_description, &expert_results),
+            },
+        ],
+        supervisor_api_key,
+        &model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let response = SupervisorReviewResponse {
+        reply: supervisor_engine::enforce_review_fact(&envelope.content, &expert_results),
+        usage: envelope.usage,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_quick_answer(
+    messages_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let messages: Vec<DeepSeekMessage> =
+        serde_json::from_str(&messages_json).map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
+    let raw_reply = call_llm(
+        "你是「江星图」，项目主管。现在用户有一个简单问题，请直接回答。回答要简洁明了；如果问题涉及当前项目、当前目录、当前对话或当前正在处理的内容，必须优先依据提供的项目上下文直接回答，不要假装不知道当前项目。".to_string(),
+        messages,
+        supervisor_api_key,
+        &model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let response = SupervisorQuickAnswerResponse {
+        reply: envelope.content,
+        usage: envelope.usage,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_quick_answer_runtime(
+    messages_json: String,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let token_context: SupervisorTokenRuntimeContext =
+        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    if let Some(reason) = supervisor_quota_guard(&token_context) {
+        let response = SupervisorRuntimeQuickAnswerResponse {
+            reply: format!("主管快速回复被配额阻断：{}", reason),
+            blocked_reason: Some(reason),
+            project_data: token_context.project_data,
+            user_data: token_context.user_data,
+        };
+        return serde_json::to_string(&response).map_err(|e| e.to_string());
+    }
+    let raw = supervisor_quick_answer(messages_json, supervisor_api_key, model.clone()).await?;
+    let parsed: SupervisorQuickAnswerResponse =
+        serde_json::from_str(&raw).map_err(|e| format!("解析主管快速回复失败: {}", e))?;
+    let (project_data, user_data) = append_supervisor_usage(&token_context, &model, parsed.usage);
+    let response = SupervisorRuntimeQuickAnswerResponse {
+        reply: parsed.reply,
+        blocked_reason: None,
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_prepare_quick_answer_runtime(
+    chat_messages_json: String,
+    project_name: Option<String>,
+    project_path: Option<String>,
+    current_session_label: Option<String>,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let chat_messages: Vec<UiChatMessage> =
+        serde_json::from_str(&chat_messages_json).map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
+    let mut messages = sanitize_chat_messages_for_supervisor(&chat_messages);
+    if let Some(project_context) = build_current_project_context_text(
+        project_name.as_deref(),
+        project_path.as_deref(),
+        current_session_label.as_deref(),
+    ) {
+        messages.insert(
+            0,
+            DeepSeekMessage {
+                role: "user".to_string(),
+                content: project_context,
+            },
+        );
+    }
+    supervisor_quick_answer_runtime(
+        serde_json::to_string(&messages).map_err(|e| e.to_string())?,
+        supervisor_api_key,
+        model,
+        token_context_json,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn supervisor_analyze_followup(
+    request_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let request: supervisor_engine::FollowupIntentRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析跟进请求失败: {}", e))?;
+    let raw_reply = call_llm(
+        supervisor_engine::build_followup_prompt(&request),
+        vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: request.followup_message.clone(),
+        }],
+        supervisor_api_key,
+        &model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let response = SupervisorFollowupResponse {
+        decision: supervisor_engine::parse_followup_intent(&envelope.content, &request),
+        usage: envelope.usage,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_analyze_dispatch_runtime(
+    user_message: String,
+    conversation_history_json: String,
+    available_experts_json: String,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let token_context: SupervisorTokenRuntimeContext =
+        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    if let Some(reason) = supervisor_quota_guard(&token_context) {
+        let response = SupervisorRuntimeAnalyzeResponse {
+            plan: supervisor_engine::SupervisorDispatchPlan {
+                scene: "quick-answer".to_string(),
+                task_description: user_message,
+                expert_ids: vec![],
+                requires_design: Some(false),
+                prompt_module_hints: None,
+            },
+            blocked_reason: Some(reason),
+            project_data: token_context.project_data,
+            user_data: token_context.user_data,
+        };
+        return serde_json::to_string(&response).map_err(|e| e.to_string());
+    }
+    let raw = supervisor_analyze_dispatch(
+        user_message,
+        conversation_history_json,
+        available_experts_json,
+        supervisor_api_key,
+        model.clone(),
+    )
+    .await?;
+    let parsed: SupervisorAnalyzeResponse =
+        serde_json::from_str(&raw).map_err(|e| format!("解析主管调度响应失败: {}", e))?;
+    let (project_data, user_data) = append_supervisor_usage(&token_context, &model, parsed.usage);
+    let response = SupervisorRuntimeAnalyzeResponse {
+        plan: parsed.plan,
+        blocked_reason: None,
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_prepare_and_analyze_dispatch_runtime(
+    user_message: String,
+    chat_messages_json: String,
+    available_experts_json: String,
+    project_name: Option<String>,
+    project_path: Option<String>,
+    project_id: Option<i64>,
+    current_session_label: Option<String>,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let chat_messages: Vec<UiChatMessage> =
+        serde_json::from_str(&chat_messages_json).map_err(|e| format!("解析主管调度会话消息失败: {}", e))?;
+    let conversation_history =
+        serde_json::to_string(&sanitize_chat_messages_for_supervisor(&chat_messages)).map_err(|e| e.to_string())?;
+    let project_dir = if project_name.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
+        || project_path.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
+    {
+        Some(resolve_sandbox_project_dir(
+            project_name.as_deref().unwrap_or_default(),
+            project_path.as_deref(),
+            &app_handle,
+        )?)
+    } else {
+        None
+    };
+
+    let project_context = build_current_project_context_text(
+        project_name.as_deref(),
+        project_path.as_deref(),
+        current_session_label.as_deref(),
+    );
+    let search_context = project_dir
+        .as_ref()
+        .and_then(|dir| perceptual_index::search_formatted(dir, &user_message).ok())
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| format!("[项目相关代码]\n{}", text));
+    let memory_context = project_dir
+        .as_deref()
+        .and_then(|dir| build_general_memory_context_text(dir, project_id, &user_message));
+    let preflight_context =
+        build_workspace_preflight_context_text(&user_message, project_path.as_deref());
+
+    let enriched_user_message = [
+        project_context,
+        preflight_context,
+        search_context,
+        memory_context.filter(|text| !text.trim().is_empty()),
+        Some(format!("[用户需求]\n{}", user_message)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
+
+    supervisor_analyze_dispatch_runtime(
+        enriched_user_message,
+        conversation_history,
+        available_experts_json,
+        supervisor_api_key,
+        model,
+        token_context_json,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn supervisor_review_delivery_runtime(
+    task_description: String,
+    expert_results_json: String,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let token_context: SupervisorTokenRuntimeContext =
+        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let expert_results: Vec<supervisor_engine::SupervisorExpertResult> =
+        serde_json::from_str(&expert_results_json).map_err(|e| format!("解析专家结果失败: {}", e))?;
+    if let Some(reason) = supervisor_quota_guard(&token_context) {
+        let summary = expert_results
+            .iter()
+            .map(|r| format!("{}（{}）：{}", r.expert_name, r.expert_title, r.output.as_deref().unwrap_or(r.error.as_deref().unwrap_or("无输出"))))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let response = SupervisorRuntimeReviewResponse {
+            reply: format!("专家团已执行完毕，但主管审核被配额阻断：{}\n\n各专家结果：\n{}", reason, summary),
+            blocked_reason: Some(reason),
+            project_data: token_context.project_data,
+            user_data: token_context.user_data,
+        };
+        return serde_json::to_string(&response).map_err(|e| e.to_string());
+    }
+    let raw = supervisor_review_delivery(
+        task_description,
+        expert_results_json,
+        supervisor_api_key,
+        model.clone(),
+    )
+    .await?;
+    let parsed: SupervisorReviewResponse =
+        serde_json::from_str(&raw).map_err(|e| format!("解析主管审核响应失败: {}", e))?;
+    let (project_data, user_data) = append_supervisor_usage(&token_context, &model, parsed.usage);
+    let response = SupervisorRuntimeReviewResponse {
+        reply: parsed.reply,
+        blocked_reason: None,
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn finalize_pipeline_delivery_runtime(
+    task_description: String,
+    pending_followup_messages: Vec<String>,
+    expert_results_json: String,
+    action_sources_json: String,
+    workspace_path: Option<String>,
+    require_real_mutations: bool,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let final_task_description = if pending_followup_messages.is_empty() {
+        task_description
+    } else {
+        format!(
+            "{}\n\n用户补充要求：{}",
+            task_description,
+            pending_followup_messages.join("；")
+        )
+    };
+
+    let review_raw = supervisor_review_delivery_runtime(
+        final_task_description.clone(),
+        expert_results_json,
+        supervisor_api_key,
+        model,
+        token_context_json,
+    )
+    .await?;
+    let mut review: SupervisorRuntimeReviewResponse =
+        serde_json::from_str(&review_raw).map_err(|e| format!("解析主管审核收尾结果失败: {}", e))?;
+
+    let action_sources: Vec<workflow_engine::WorkflowInputSource> =
+        serde_json::from_str(&action_sources_json).map_err(|e| format!("解析交付动作源失败: {}", e))?;
+    let delivery_analysis = workflow_engine::analyze_agent_delivery(
+        &action_sources,
+        &final_task_description,
+        workspace_path.as_deref(),
+    )?;
+
+    if require_real_mutations && !delivery_analysis.has_executable_mutation {
+        review.reply = "未实际修改项目文件，当前前端工作流仍有阻塞，请重试。".to_string();
+    }
+
+    let response = PipelineDeliveryFinalizeResponse {
+        reply: review.reply,
+        blocked_reason: review.blocked_reason,
+        project_data: review.project_data,
+        user_data: review.user_data,
+        delivery_analysis,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_analyze_followup_runtime(
+    request_json: String,
+    supervisor_api_key: String,
+    model: String,
+    token_context_json: String,
+) -> Result<String, String> {
+    let token_context: SupervisorTokenRuntimeContext =
+        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let request: supervisor_engine::FollowupIntentRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析跟进请求失败: {}", e))?;
+    if let Some(reason) = supervisor_quota_guard(&token_context) {
+        let response = SupervisorRuntimeFollowupResponse {
+            decision: supervisor_engine::FollowupIntentDecision {
+                action: "append".to_string(),
+                task_description: Some(request.followup_message),
+                reply: None,
+                target_expert_ids: vec![],
+                delivery_mode: "next-relevant".to_string(),
+            },
+            blocked_reason: Some(reason),
+            project_data: token_context.project_data,
+            user_data: token_context.user_data,
+        };
+        return serde_json::to_string(&response).map_err(|e| e.to_string());
+    }
+    let raw = supervisor_analyze_followup(
+        serde_json::to_string(&request).map_err(|e| e.to_string())?,
+        supervisor_api_key,
+        model.clone(),
+    )
+    .await?;
+    let parsed: SupervisorFollowupResponse =
+        serde_json::from_str(&raw).map_err(|e| format!("解析主管跟进响应失败: {}", e))?;
+    let (project_data, user_data) = append_supervisor_usage(&token_context, &model, parsed.usage);
+    let response = SupervisorRuntimeFollowupResponse {
+        decision: parsed.decision,
+        blocked_reason: None,
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn supervisor_mid_check(
+    request_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let request: supervisor_engine::MidCheckRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析中途检查请求失败: {}", e))?;
+    let raw_reply = call_llm(
+        "你是项目主管，负责监督专家团执行。仅输出 JSON，不要其他内容。".to_string(),
+        vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: supervisor_engine::build_mid_check_prompt(&request),
+        }],
+        supervisor_api_key,
+        &model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let response = SupervisorMidCheckResponse {
+        decision: supervisor_engine::parse_mid_check_decision(&envelope.content),
+        usage: envelope.usage,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn finalize_pipeline_step_without_supervisor(request_json: String) -> Result<String, String> {
+    let request: pipeline_step_engine::PipelineStepFinalizeRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线步骤收尾请求失败: {}", e))?;
+    let response = PipelineStepFinalizeEnvelope {
+        decision: pipeline_step_engine::finalize_step_without_supervisor(&request),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn finalize_pipeline_step_with_supervisor(
+    request_json: String,
+    supervisor_api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let request: pipeline_step_engine::PipelineStepFinalizeRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线步骤主管收尾请求失败: {}", e))?;
+    let mut decision = pipeline_step_engine::finalize_step_without_supervisor(&request);
+    if decision.should_stop || decision.runtime_transition.should_stop {
+        let response = PipelineStepFinalizeEnvelope { decision };
+        return serde_json::to_string(&response).map_err(|e| e.to_string());
+    }
+
+    let blackboard_context = if request.scene == "code-development" {
+        blackboard_engine::render_blackboard_context(&decision.blackboard)
+    } else {
+        String::new()
+    };
+    let midcheck_request = pipeline_step_engine::build_midcheck_request(&request, &blackboard_context);
+    let raw_reply = call_llm(
+        "你是项目主管，负责监督专家团执行。仅输出 JSON，不要其他内容。".to_string(),
+        vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: supervisor_engine::build_mid_check_prompt(&midcheck_request),
+        }],
+        supervisor_api_key,
+        &model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+    let midcheck = supervisor_engine::parse_mid_check_decision(&envelope.content);
+    let transition = pipeline_runtime_engine::apply_decision(&pipeline_runtime_engine::PipelineRuntimeDecisionRequest {
+        state: request.runtime_state.clone(),
+        action: midcheck.action.clone(),
+        current_step_expert_ids: request.step_expert_ids.clone(),
+    });
+    let blocker_task = transition.breaker_message.clone().map(|message| pipeline_step_engine::PipelineTaskSnapshot {
+        expert_id: "pipeline-breaker".to_string(),
+        expert_name: "流水线熔断".to_string(),
+        expert_title: "协作门禁".to_string(),
+        dispatch_wave: Some(request.step_index + 1),
+        output: None,
+        error: Some(message),
+    });
+
+    decision.runtime_transition = transition.clone();
+    decision.supervisor_action = Some(midcheck.action);
+    decision.supervisor_reason = midcheck.reason;
+    decision.blocker_task = blocker_task;
+    decision.should_stop = transition.should_stop;
+
+    let response = PipelineStepFinalizeEnvelope { decision };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+fn collect_workspace_snapshot_from_dir(project_dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    fn walk(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<(), String> {
+        for entry in fs::read_dir(current).map_err(|e| format!("读取目录失败: {}", e))? {
+            let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+            let path = entry.path();
+            let metadata = entry.metadata().map_err(|e| format!("读取目录项元数据失败: {}", e))?;
+            if metadata.is_dir() {
+                walk(root, &path, files)?;
+            } else if metadata.is_file() {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    files.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            if files.len() >= 4000 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(project_dir, project_dir, &mut files)?;
+    files.sort();
+    files.dedup();
+
+    let roots = fs::read_dir(project_dir)
+        .map_err(|e| format!("读取根目录失败: {}", e))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().strip_prefix(project_dir).ok().map(|p| p.to_string_lossy().replace('\\', "/")))
+        .flatten()
+        .take(120)
+        .collect::<Vec<_>>();
+
+    Ok((files, roots))
+}
+
+#[tauri::command]
+async fn prepare_pipeline_launch(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PipelineLaunchRequest {
+        plan: pipeline_engine::PipelinePlanInput,
+        project_name: Option<String>,
+        project_path: Option<String>,
+        pending_followups: Option<Vec<collaboration_engine::PipelineFollowup>>,
+        max_step_retry: Option<usize>,
+        experts: Vec<pipeline_engine::PipelineExpertInfo>,
+    }
+
+    let request: PipelineLaunchRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线启动准备请求失败: {}", e))?;
+    let layout = pipeline_engine::compute_pipeline_layout(&request.plan);
+    let pipeline_id = format!(
+        "pipeline-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        uuid::Uuid::new_v4().simple()
+    );
+
+    let project_name = request.project_name.unwrap_or_default();
+    let project_dir = resolve_sandbox_project_dir(&project_name, request.project_path.as_deref(), &app_handle)?;
+    let (workspace_files, workspace_roots) = if project_dir.exists() {
+        collect_workspace_snapshot_from_dir(&project_dir)?
+    } else {
+        (vec![], vec![])
+    };
+    let blackboard = blackboard_engine::new_blackboard(
+        &request.plan.task_description,
+        workspace_files,
+        workspace_roots,
+        chrono::Utc::now().timestamp_millis() as u64,
+    );
+    let response = pipeline_session_engine::bootstrap_pipeline_session(&pipeline_session_engine::PipelineSessionBootstrapRequest {
+        pipeline_id: pipeline_id.clone(),
+        plan: request.plan.clone(),
+        layout: layout.clone(),
+        blackboard,
+        pending_followups: request.pending_followups.unwrap_or_default(),
+        max_step_retry: request.max_step_retry,
+    });
+    let narrative = pipeline_engine::build_dispatch_narrative(&layout, &request.experts);
+    let joining_tasks = layout
+        .waves
+        .iter()
+        .flat_map(|wave| {
+            wave.expert_ids.iter().map(|expert_id| PipelineJoiningTask {
+                expert_id: expert_id.clone(),
+                expert_name: request
+                    .experts
+                    .iter()
+                    .find(|expert| expert.id == *expert_id)
+                    .map(|expert| expert.name.clone())
+                    .unwrap_or_else(|| expert_id.clone()),
+                expert_title: request
+                    .experts
+                    .iter()
+                    .find(|expert| expert.id == *expert_id)
+                    .map(|expert| expert.title.clone())
+                    .unwrap_or_else(|| "未知".to_string()),
+                dispatch_wave: wave.wave,
+                input: response.state.task_description.clone(),
+                status: "pending".to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let envelope = PipelineLaunchEnvelope {
+        pipeline_id: response.pipeline_id,
+        layout: response.layout,
+        state: response.state,
+        narrative,
+        joining_tasks,
+    };
+    serde_json::to_string(&envelope).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_current_pipeline_execution_round(state_json: String) -> Result<String, String> {
+    let state: pipeline_session_engine::PipelineSessionState =
+        serde_json::from_str(&state_json).map_err(|e| format!("解析流水线会话失败: {}", e))?;
+    let response = PipelineExecutionRoundEnvelope {
+        plan: pipeline_session_engine::get_current_execution_round_plan(&state),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_current_pipeline_followup_execution_round(state_json: String) -> Result<String, String> {
+    let state: pipeline_session_engine::PipelineSessionState =
+        serde_json::from_str(&state_json).map_err(|e| format!("解析流水线会话失败: {}", e))?;
+    let response = PipelineFollowupExecutionRoundEnvelope {
+        plan: pipeline_session_engine::get_current_followup_execution_round_plan(&state),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn settle_pipeline_execution_round(
+    request_json: String,
+    supervisor_api_key: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PipelineRoundSettleRequest {
+        plan: pipeline_engine::PipelinePlanInput,
+        layout: pipeline_engine::PipelineLayout,
+        session_state: pipeline_session_engine::PipelineSessionState,
+        current_tasks: Vec<pipeline_session_engine::PipelineTaskOutcome>,
+        followup_tasks: Vec<pipeline_session_engine::PipelineTaskOutcome>,
+        has_workspace_context: bool,
+        experts: Vec<pipeline_engine::PipelineExpertInfo>,
+    }
+
+    let request: PipelineRoundSettleRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线轮次收尾请求失败: {}", e))?;
+
+    let settled_state = pipeline_session_engine::apply_pipeline_round_outcomes(
+        &request.session_state,
+        &pipeline_session_engine::PipelineRoundOutcomeBatch {
+            current_tasks: request.current_tasks,
+            followup_tasks: request.followup_tasks,
+        },
+    );
+
+    let finalize_request = pipeline_step_engine::build_finalize_request(&pipeline_step_engine::PipelineStepRuntimeFinalizeRequest {
+        plan: request.plan,
+        layout: request.layout,
+        session_state: settled_state.clone(),
+        has_workspace_context: request.has_workspace_context,
+        experts: request.experts,
+    });
+
+    let should_use_supervisor = supervisor_api_key
+        .as_ref()
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false)
+        && finalize_request.step_index < finalize_request.total_steps.saturating_sub(1);
+
+    let decision = if !should_use_supervisor {
+        pipeline_step_engine::finalize_step_without_supervisor(&finalize_request)
+    } else {
+        let response = finalize_pipeline_step_with_supervisor(
+            serde_json::to_string(&finalize_request).map_err(|e| e.to_string())?,
+            supervisor_api_key.unwrap_or_default(),
+            model.unwrap_or_else(|| "deepseek-chat".to_string()),
+        )
+        .await?;
+        let parsed: PipelineStepFinalizeEnvelope =
+            serde_json::from_str(&response).map_err(|e| format!("解析流水线轮次收尾结果失败: {}", e))?;
+        parsed.decision
+    };
+
+    let next_state = pipeline_session_engine::PipelineSessionState {
+        blackboard: decision.blackboard.clone(),
+        runtime_state: decision.runtime_transition.state.clone(),
+        ..settled_state
+    };
+
+    let response = PipelineRoundSettleEnvelope {
+        state: next_state,
+        decision,
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn build_token_dashboard_snapshot(request_json: String) -> Result<String, String> {
+    let request: token_runtime_engine::TokenDashboardRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析词元仪表盘请求失败: {}", e))?;
+    let response = TokenDashboardEnvelope {
+        snapshot: token_runtime_engine::build_dashboard_snapshot(&request),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn build_pipeline_progress_snapshot(request_json: String) -> Result<String, String> {
+    let request: pipeline_progress_engine::PipelineProgressSnapshotRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析流水线进度快照请求失败: {}", e))?;
+    let response = PipelineProgressEnvelope {
+        snapshot: pipeline_progress_engine::build_progress_snapshot(&request),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn build_expert_context(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let request: expert_context_engine::ExpertContextRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析专家上下文请求失败: {}", e))?;
+    let context = build_expert_context_internal(&request, &app_handle, &state).await?;
+    let response = ExpertContextEnvelope { context };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+async fn build_expert_context_internal(
+    request: &expert_context_engine::ExpertContextRequest,
+    app_handle: &tauri::AppHandle,
+    state: &tauri::State<'_, Arc<AppState>>,
+) -> Result<expert_context_engine::ExpertContextResponse, String> {
+    let mut negative_index: Vec<String> = Vec::new();
+    let mut cards_context: Option<String> = None;
+    let mut vector_context: Option<String> = None;
+    let mut expert_memory_context: Option<String> = None;
+    let mut shared_memory_context: Option<String> = None;
+
+    if let Some(project_name) = request.project_name.clone() {
+        let project_dir = resolve_project_dir(&project_name, app_handle, state).await?;
+        match repo_wiki::read_cards(&project_dir) {
+            Ok(cards) if !cards.is_empty() => {
+                cards_context = Some(expert_context_engine::format_cards_context(&cards));
+            }
+            Ok(_) => negative_index.push("仓库知识卡片为空，项目结构认知不完整".to_string()),
+            Err(_) => negative_index.push("仓库知识检索失败，无法获取项目全局视图".to_string()),
+        }
+
+        if request.project_id.is_some() {
+            match perceptual_index::search_formatted(&project_dir, &request.task_description) {
+                Ok(result) if !result.trim().is_empty() && result != "(未找到相关代码段)" => {
+                    vector_context = Some(result);
+                }
+                Ok(_) => negative_index.push("向量检索未命中相关代码段，可能存在索引覆盖盲区".to_string()),
+                Err(_) => negative_index.push("向量检索执行失败".to_string()),
+            }
+        }
+
+        if let Some(project_id) = request.project_id {
+            let expert_query = memory::MemoryQuery {
+                project_id,
+                expert_id: Some(request.expert_id.clone()),
+                query_text: request.task_description.clone(),
+                memory_type: None,
+                limit: 3,
+            };
+            match memory::search_memories(&project_dir, &expert_query) {
+                Ok(results) if !results.is_empty() => {
+                    expert_memory_context =
+                        Some(expert_context_engine::format_memory_context(&results, "相关历史记忆"));
+                }
+                Ok(_) => negative_index.push("无相关历史记忆，当前任务缺乏历史经验参照".to_string()),
+                Err(_) => negative_index.push("记忆检索失败".to_string()),
+            }
+
+            let shared_query = memory::MemoryQuery {
+                project_id,
+                expert_id: None,
+                query_text: request.task_description.clone(),
+                memory_type: None,
+                limit: 3,
+            };
+            if let Ok(results) = memory::search_memories(&project_dir, &shared_query) {
+                if !results.is_empty() {
+                    shared_memory_context =
+                        Some(expert_context_engine::format_memory_context(&results, "共享项目记忆"));
+                }
+            }
+        }
+    }
+
+    let retrieval_context = expert_context_engine::build_retrieval_context(
+        cards_context,
+        vector_context,
+        expert_memory_context,
+        shared_memory_context,
+        &negative_index,
+    );
+    let messages = expert_context_engine::build_initial_messages(
+        &request.previous_results,
+        &request.task_description,
+        &retrieval_context,
+    );
+    Ok(expert_context_engine::ExpertContextResponse {
+        retrieval_context,
+        negative_index,
+        messages,
+    })
+}
+
+#[tauri::command]
+fn build_expert_tool_plan(
+    text: String,
+    expert_title: String,
+    project_path: Option<String>,
+    project_name: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let workspace_root = if let Some(path) = project_path.filter(|value| !value.trim().is_empty()) {
+        Some(PathBuf::from(path))
+    } else if let Some(project_name) = project_name.filter(|value| !value.trim().is_empty()) {
+        Some(get_project_dir(&project_name, &app_handle)?)
+    } else {
+        None
+    };
+    let response = ExpertToolPlanEnvelope {
+        plan: expert_tool_engine::build_tool_request_plan(&text, &expert_title, workspace_root.as_deref()),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn evaluate_tool_reminder(request_json: String, has_tool_requests: bool) -> Result<String, String> {
+    let request: expert_runtime_engine::ToolReminderRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析工具提醒请求失败: {}", e))?;
+    let response = ToolReminderEnvelope {
+        decision: expert_runtime_engine::evaluate_tool_reminder(&request, has_tool_requests),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn build_tool_followup_message(request_json: String) -> Result<String, String> {
+    let request: expert_runtime_engine::ToolFollowupMessageRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析工具跟进消息失败: {}", e))?;
+    let response = ToolFollowupEnvelope {
+        message: expert_runtime_engine::build_tool_followup_message(&request),
+    };
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resolve_expert_prompt_plan(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let request: prompt_module_engine::PromptPlanRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析提示词模块计划失败: {}", e))?;
+    let plan = resolve_expert_prompt_plan_internal(&request, &app_handle)?;
+    serde_json::to_string(&PromptPlanEnvelope { plan }).map_err(|e| e.to_string())
+}
+
+fn resolve_expert_prompt_plan_internal(
+    request: &prompt_module_engine::PromptPlanRequest,
+    app_handle: &tauri::AppHandle,
+) -> Result<prompt_module_engine::PromptPlanResponse, String> {
+    let traces = if let Some(project_name) = request
+        .project_name
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let project_dir = get_project_dir(project_name, app_handle)?;
+        let trace_file = project_dir.join(".xt").join("prompt_module_traces.json");
+        if trace_file.exists() {
+            match fs::read_to_string(&trace_file) {
+                Ok(content) => serde_json::from_str::<Vec<prompt_module_engine::PromptModuleTrace>>(&content)
+                    .map(prompt_module_engine::dedupe_traces)
+                    .unwrap_or_default(),
+                Err(_) => vec![],
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+    Ok(prompt_module_engine::build_prompt_plan(request, &traces))
+}
+
+#[tauri::command]
+async fn execute_expert_tool_request(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let request: expert_tool_runtime_engine::ExpertToolExecutionRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析专家工具请求失败: {}", e))?;
+    let result = execute_expert_tool_request_internal(request, &app_handle).await?;
+    serde_json::to_string(&ExpertToolExecutionEnvelope { result }).map_err(|e| e.to_string())
+}
+
+async fn execute_expert_tool_request_internal(
+    request: expert_tool_runtime_engine::ExpertToolExecutionRequest,
+    app_handle: &tauri::AppHandle,
+) -> Result<expert_tool_runtime_engine::ExpertToolExecutionResult, String> {
+    let workspace_root = match request
+        .project_path
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(path) => Some(resolve_sandbox_project_dir(
+            request.project_name.as_deref().unwrap_or_default(),
+            Some(path.as_str()),
+            app_handle,
+        )?),
+        None => request
+            .project_name
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|project_name| get_project_dir(project_name, app_handle))
+            .transpose()?,
+    };
+
+    let result = match &request.request {
+        expert_tool_engine::ExpertToolRequest::WebSearch { query, .. } => {
+            match web_search::search(query, 5).await {
+                Ok(results) => {
+                    expert_tool_runtime_engine::build_web_search_success(&request, results)
+                }
+                Err(error) => {
+                    expert_tool_runtime_engine::build_web_search_error(&request, &error)
+                }
+            }
+        }
+        expert_tool_engine::ExpertToolRequest::FileRead {
+            path,
+            start_line,
+            end_line,
+            ..
+        } => {
+            let Some(project_dir) = workspace_root.as_ref() else {
+                return Ok(expert_tool_runtime_engine::build_file_read_error(
+                    &request,
+                    "当前项目未提供可读取的工作区路径",
+                ));
+            };
+            let raw_tool_result = dispatch_tool(
+                "file_read".to_string(),
+                serde_json::json!({
+                    "path": path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                })
+                .to_string(),
+                project_dir.to_string_lossy().to_string(),
+                request.expert_id.clone(),
+            )
+            .await;
+            match raw_tool_result {
+                Ok(raw) => {
+                    let parsed: tool_system::ToolOutput = serde_json::from_str(&raw)
+                        .map_err(|e| format!("解析文件读取结果失败: {}", e))?;
+                    if parsed.success {
+                        expert_tool_runtime_engine::build_file_read_result(&request, &parsed.result)
+                    } else {
+                        expert_tool_runtime_engine::build_file_read_error(&request, &parsed.result)
+                    }
+                }
+                Err(error) => {
+                    expert_tool_runtime_engine::build_file_read_error(&request, &error)
+                }
+            }
+        }
+        expert_tool_engine::ExpertToolRequest::FileList {
+            path, recursive, ..
+        } => {
+            let Some(project_dir) = workspace_root.as_ref() else {
+                return Ok(expert_tool_runtime_engine::build_file_list_error(
+                    &request,
+                    "当前项目未提供可读取的工作区路径",
+                ));
+            };
+            let raw_tool_result = dispatch_tool(
+                "file_list".to_string(),
+                serde_json::json!({
+                    "path": path,
+                    "recursive": recursive,
+                    "max_depth": if *recursive { 4 } else { 1 },
+                })
+                .to_string(),
+                project_dir.to_string_lossy().to_string(),
+                request.expert_id.clone(),
+            )
+            .await;
+            match raw_tool_result {
+                Ok(raw) => {
+                    let parsed: tool_system::ToolOutput = serde_json::from_str(&raw)
+                        .map_err(|e| format!("解析目录读取结果失败: {}", e))?;
+                    if parsed.success {
+                        expert_tool_runtime_engine::build_file_list_result(&request, &parsed.result)
+                    } else {
+                        expert_tool_runtime_engine::build_file_list_error(&request, &parsed.result)
+                    }
+                }
+                Err(error) => {
+                    expert_tool_runtime_engine::build_file_list_error(&request, &error)
+                }
+            }
+        }
+        expert_tool_engine::ExpertToolRequest::Command {
+            command,
+            working_dir,
+            ..
+        } => {
+            let project_dir = workspace_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| working_dir.clone());
+            let safety =
+                shell_executor::check_safety(command, &[], working_dir, &project_dir);
+            if safety.requires_auth {
+                match request.approval_decision {
+                    None => expert_tool_runtime_engine::build_command_authorization(
+                        &request,
+                        &safety,
+                        working_dir,
+                    ),
+                    Some(false) => expert_tool_runtime_engine::build_command_denied(
+                        &request,
+                        working_dir,
+                        &safety.auth_reason,
+                    ),
+                    Some(true) => match shell_executor::execute(command, &[], working_dir) {
+                        Ok(command_result) => expert_tool_runtime_engine::build_command_success(
+                            &request,
+                            &command_result,
+                            working_dir,
+                            &safety.auth_reason,
+                        ),
+                        Err(error) => expert_tool_runtime_engine::build_command_error(
+                            &request,
+                            working_dir,
+                            &error,
+                        ),
+                    },
+                }
+            } else {
+                match shell_executor::execute(command, &[], working_dir) {
+                    Ok(command_result) => expert_tool_runtime_engine::build_command_success(
+                        &request,
+                        &command_result,
+                        working_dir,
+                        "",
+                    ),
+                    Err(error) => {
+                        expert_tool_runtime_engine::build_command_error(&request, working_dir, &error)
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(result)
+}
+
+async fn advance_expert_postprocess_internal(
+    request: expert_postprocess_engine::ExpertPostprocessRequest,
+    app_handle: &tauri::AppHandle,
+) -> Result<expert_postprocess_engine::ExpertPostprocessResponse, String> {
+    let mut state = request.state;
+    let mut tool_events = Vec::new();
+    let mut progress_events = Vec::new();
+
+    loop {
+        if state.completed {
+            break;
+        }
+
+        if let Some(pending_request) = state.pending_request.clone() {
+            let execution = execute_expert_tool_request_internal(
+                state.pending_execution_request(pending_request.clone(), request.approval_decision),
+                &app_handle,
+            )
+            .await?;
+            state.pending_request = None;
+            if let Some(event) = execution.event {
+                tool_events.push(event);
+            }
+            if let Some(tool_context) = execution.tool_context {
+                state.current_tool_contexts.push(tool_context);
+            }
+            state.current_tool_index += 1;
+            continue;
+        }
+
+        if state.current_tool_requests.is_empty() {
+            let tool_plan = expert_tool_engine::build_tool_request_plan(
+                &state.reply,
+                &state.expert_title,
+                state.project_path.as_ref().map(Path::new),
+            );
+            if tool_plan.requests.is_empty() {
+                state.reply = tool_plan.stripped_reply;
+                let reply_guard = workflow_engine::evaluate_expert_reply_guard(
+                    &workflow_engine::ExpertReplyGuardRequest {
+                        expert_id: state.expert_id.clone(),
+                        has_workspace_context: state.has_workspace_context,
+                        workspace_looks_empty: workspace_looks_empty_for_direct_creation(state.project_path.as_deref()),
+                        reply: state.reply.clone(),
+                    },
+                );
+                if reply_guard.should_enforce && reply_guard.requires_retry {
+                    if state.deliverable_attempt >= state.max_deliverable_attempts {
+                        state.reply = reply_guard
+                            .final_failure_message
+                            .unwrap_or_else(|| "未交付任何可执行文件变更，当前实现失败，需要重试。".to_string());
+                        state.completed = true;
+                        break;
+                    }
+                    let detail = if state.deliverable_attempt == 0 {
+                        reply_guard
+                            .phase_detail
+                            .clone()
+                            .unwrap_or_else(|| "补交真实文件变更中...".to_string())
+                    } else {
+                        "逼近真实文件补丁中...".to_string()
+                    };
+                    state.push_progress(&mut progress_events, "analyzing", &detail);
+                    state.messages.push(DeepSeekMessage {
+                        role: "assistant".to_string(),
+                        content: state.reply.clone(),
+                    });
+                    state.messages.push(DeepSeekMessage {
+                        role: "user".to_string(),
+                        content: if state.deliverable_attempt == 0 {
+                            reply_guard
+                                .reminder_prompt
+                                .clone()
+                                .unwrap_or_else(|| "请补交真实文件变更。".to_string())
+                        } else {
+                            "你已经拿到了真实文件内容或工具结果。现在禁止继续只解释思路、只复述已读代码、只列命令，必须直接基于刚才读到的真实原文输出至少一个可执行文件动作：优先使用 [ACTION:EDIT_FILE]，必要时再用 [ACTION:CREATE_FILE] / [ACTION:WRITE_FILE]。如果你声称还缺内容，必须给出带 start_line/end_line 的精确 READ_FILE 分段请求，而不是再次泛泛地说“我需要继续读取”。".to_string()
+                        },
+                    });
+                    let raw_deliverable_reply = call_llm(
+                        state.system_prompt.clone(),
+                        state.messages.clone(),
+                        state.api_key.clone(),
+                        &state.model,
+                    )
+                    .await?;
+                    let envelope = parse_llm_reply_envelope(&raw_deliverable_reply)?;
+                    state.reply = envelope.content;
+                    state.merge_usage(envelope.usage);
+                    state.deliverable_attempt += 1;
+                    state.current_tool_requests.clear();
+                    state.current_tool_index = 0;
+                    state.current_tool_contexts.clear();
+                    continue;
+                }
+
+                state.completed = true;
+                break;
+            }
+
+            state.current_tool_requests = tool_plan.requests;
+            state.current_tool_index = 0;
+            state.current_tool_contexts.clear();
+            continue;
+        }
+
+        if state.current_tool_index < state.current_tool_requests.len() {
+            let current_request = state.current_tool_requests[state.current_tool_index].clone();
+            state.note_tool_kind(&current_request);
+            match &current_request {
+                expert_tool_engine::ExpertToolRequest::WebSearch { .. } => {
+                    state.push_progress(&mut progress_events, "web-searching", "网络搜索中...");
+                }
+                expert_tool_engine::ExpertToolRequest::Command { .. } => {
+                    state.push_progress(&mut progress_events, "running-command", "命令执行中...");
+                }
+                expert_tool_engine::ExpertToolRequest::FileRead { .. } => {
+                    state.push_progress(&mut progress_events, "reading-file", "读取真实文件中...");
+                }
+                expert_tool_engine::ExpertToolRequest::FileList { .. } => {
+                    state.push_progress(&mut progress_events, "listing-files", "读取目录结构中...");
+                }
+            }
+
+            let execution = execute_expert_tool_request_internal(
+                state.pending_execution_request(current_request.clone(), None),
+                &app_handle,
+            )
+            .await?;
+            if execution.requires_authorization {
+                state.pending_request = Some(current_request);
+                let response = expert_postprocess_engine::ExpertPostprocessResponse {
+                    completed: false,
+                    pending_authorization: execution.authorization,
+                    tool_events,
+                    progress_events,
+                    state,
+                };
+                return Ok(response);
+            }
+            if let Some(event) = execution.event {
+                tool_events.push(event);
+            }
+            if let Some(tool_context) = execution.tool_context {
+                state.current_tool_contexts.push(tool_context);
+            }
+            state.current_tool_index += 1;
+            continue;
+        }
+
+        if state.current_tool_contexts.is_empty() {
+            state.reply = expert_tool_engine::build_tool_request_plan(
+                &state.reply,
+                &state.expert_title,
+                state.project_path.as_ref().map(Path::new),
+            )
+            .stripped_reply;
+            state.current_tool_requests.clear();
+            state.current_tool_index = 0;
+            if state.tool_round >= state.max_tool_rounds {
+                state.completed = true;
+            }
+            continue;
+        }
+
+        state.push_progress(&mut progress_events, "analyzing", "结合工具结果分析中...");
+        state.messages.push(DeepSeekMessage {
+            role: "assistant".to_string(),
+            content: state.reply.clone(),
+        });
+        state.messages.push(DeepSeekMessage {
+            role: "user".to_string(),
+            content: expert_runtime_engine::build_tool_followup_message(
+                &expert_runtime_engine::ToolFollowupMessageRequest {
+                    tool_contexts: state.current_tool_contexts.clone(),
+                },
+            )
+            .content,
+        });
+        let raw_followup_reply = call_llm(
+            state.system_prompt.clone(),
+            state.messages.clone(),
+            state.api_key.clone(),
+            &state.model,
+        )
+        .await?;
+        let envelope = parse_llm_reply_envelope(&raw_followup_reply)?;
+        state.reply = envelope.content;
+        state.merge_usage(envelope.usage);
+        state.current_tool_requests.clear();
+        state.current_tool_index = 0;
+        state.current_tool_contexts.clear();
+        state.tool_round += 1;
+    }
+
+    Ok(expert_postprocess_engine::ExpertPostprocessResponse {
+        state: state.clone(),
+        completed: state.completed,
+        pending_authorization: None,
+        tool_events,
+        progress_events,
+    })
+}
+
+async fn initialize_expert_postprocess_internal(
+    request: expert_postprocess_engine::ExpertPostprocessInitRequest,
+    app_handle: &tauri::AppHandle,
+) -> Result<expert_postprocess_engine::ExpertPostprocessState, String> {
+    let mut state = request.state;
+    let current_tool_plan = expert_tool_engine::build_tool_request_plan(
+        &state.reply,
+        &state.expert_title,
+        state.project_path.as_ref().map(Path::new),
+    );
+    if current_tool_plan.requests.is_empty() {
+        let reminder_decision = expert_runtime_engine::evaluate_tool_reminder(
+            &expert_runtime_engine::ToolReminderRequest {
+                reply: state.reply.clone(),
+            },
+            false,
+        );
+        if reminder_decision.needs_retry {
+            let mut hint_module_ids = request.explicit_hint_module_ids.clone();
+            if reminder_decision
+                .reminder_targets
+                .iter()
+                .any(|target| target == "网络搜索")
+            {
+                hint_module_ids.push("web-search-guidance".to_string());
+            }
+            if reminder_decision
+                .reminder_targets
+                .iter()
+                .any(|target| target == "命令执行")
+            {
+                hint_module_ids.push("command-guidance".to_string());
+            }
+            if reminder_decision
+                .reminder_targets
+                .iter()
+                .any(|target| target == "视频工作流")
+            {
+                hint_module_ids.push("video-workflow".to_string());
+            }
+            let refreshed_plan = resolve_expert_prompt_plan_internal(
+                &prompt_module_engine::PromptPlanRequest {
+                    project_name: state.project_name.clone(),
+                    expert_id: state.expert_id.clone(),
+                    base_prompt: state.base_prompt.clone(),
+                    scene: state.scene.clone(),
+                    task_description: state
+                        .messages
+                        .iter()
+                        .find(|message| message.role == "user")
+                        .map(|message| message.content.clone())
+                        .unwrap_or_default(),
+                    hint_module_ids,
+                },
+                app_handle,
+            )?;
+            state.system_prompt = refreshed_plan.prompt;
+            state.messages.push(DeepSeekMessage {
+                role: "assistant".to_string(),
+                content: state.reply.clone(),
+            });
+            state.messages.push(DeepSeekMessage {
+                role: "user".to_string(),
+                content: reminder_decision
+                    .reminder_message
+                    .unwrap_or_else(|| "如果确实需要工具，请直接输出标准 ACTION 发起。".to_string()),
+            });
+            let raw_retry_reply = call_llm(
+                state.system_prompt.clone(),
+                state.messages.clone(),
+                state.api_key.clone(),
+                &state.model,
+            )
+            .await?;
+            let retry_envelope = parse_llm_reply_envelope(&raw_retry_reply)?;
+            state.reply = retry_envelope.content;
+            state.merge_usage(retry_envelope.usage);
+        }
+    }
+    Ok(state)
+}
+
+async fn finalize_expert_task_internal(
+    request: FinalizeExpertTaskRequest,
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    if let Some(project_name) = request.project_name.as_ref().filter(|value| !value.trim().is_empty()) {
+        if !request.learned_module_ids.is_empty() {
+            let normalized_task_description =
+                prompt_module_engine::sanitize_task_description(&request.task_description);
+            append_prompt_module_trace(
+                project_name.to_string(),
+                PromptModuleTraceRecord {
+                    expert_id: request.expert_id.clone(),
+                    scene: request.scene.clone(),
+                    task_description: if normalized_task_description.is_empty() {
+                        request.task_description.chars().take(400).collect()
+                    } else {
+                        normalized_task_description
+                    },
+                    module_ids: request.learned_module_ids.clone(),
+                    trigger_sources: request.trigger_sources.clone(),
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                },
+                app_handle.clone(),
+            )?;
+        }
+
+        if let Some(project_id) = request.project_id {
+            let content: String = if request.reply.chars().count() > 500 {
+                let truncated: String = request.reply.chars().take(500).collect();
+                format!("{truncated}...")
+            } else {
+                request.reply.clone()
+            };
+            let keyword_text = format!("{} {} {}", request.task_description, request.expert_name, content);
+            let entry = memory::MemoryEntry {
+                id: memory::generate_memory_id(),
+                project_id,
+                expert_id: request.expert_id.clone(),
+                memory_type: "working".to_string(),
+                content: format!("[{}] {}\n\n{}", request.expert_name, request.task_description, content),
+                keywords: memory::extract_keywords(&keyword_text),
+                context_summary: request.task_description.chars().take(100).collect(),
+                created_at: chrono::Utc::now().timestamp(),
+                access_count: 0,
+                last_accessed: chrono::Utc::now().timestamp(),
+            };
+            let project_dir = get_project_dir(project_name, app_handle)?;
+            memory::save_memory(&project_dir, &entry)?;
+        }
+
+        if request.reply.contains("[INDEX_FEEDBACK:")
+            && request
+                .api_key
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .is_some()
+            && request.model.as_ref().filter(|value| !value.trim().is_empty()).is_some()
+        {
+            let _ = repo_incremental_update(
+                project_name.to_string(),
+                request.api_key.unwrap_or_default(),
+                request.model.unwrap_or_default(),
+                app_handle.clone(),
+            )
+            .await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn start_expert_session_internal(
+    request: expert_session_engine::StartExpertSessionRequest,
+    app_handle: &tauri::AppHandle,
+    state: &tauri::State<'_, Arc<AppState>>,
+) -> Result<expert_session_engine::StartExpertSessionResponse, String> {
+    let prompt_plan = resolve_expert_prompt_plan_internal(
+        &prompt_module_engine::PromptPlanRequest {
+            project_name: request.project_name.clone(),
+            expert_id: request.expert_id.clone(),
+            base_prompt: request.base_prompt.clone(),
+            scene: request.scene.clone(),
+            task_description: request.task_description.clone(),
+            hint_module_ids: request.hint_module_ids.clone(),
+        },
+        &app_handle,
+    )?;
+
+    let context = build_expert_context_internal(
+        &expert_context_engine::ExpertContextRequest {
+            project_name: request.project_name.clone(),
+            project_id: request.project_id,
+            expert_id: request.expert_id.clone(),
+            task_description: request.task_description.clone(),
+            previous_results: request
+                .previous_results
+                .iter()
+                .map(|item| expert_context_engine::PreviousExpertResult {
+                    expert_id: None,
+                    name: item.name.clone(),
+                    title: item.title.clone(),
+                    output: item.output.clone(),
+                })
+                .collect(),
+        },
+        &app_handle,
+        &state,
+    )
+    .await?;
+
+    let messages: Vec<DeepSeekMessage> = if context.messages.is_empty() {
+        vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: request.task_description.clone(),
+        }]
+    } else {
+        context
+            .messages
+            .iter()
+            .map(|message| DeepSeekMessage {
+                role: message.role.clone(),
+                content: message.content.clone(),
+            })
+            .collect()
+    };
+
+    let raw_reply = call_llm(
+        prompt_plan.prompt.clone(),
+        messages.clone(),
+        request.api_key.clone(),
+        &request.model,
+    )
+    .await?;
+    let envelope = parse_llm_reply_envelope(&raw_reply)?;
+
+    let init_state = expert_postprocess_engine::ExpertPostprocessState {
+        expert_id: request.expert_id.clone(),
+        expert_name: request.expert_name.clone(),
+        expert_title: request.expert_title.clone(),
+        scene: request.scene.clone(),
+        base_prompt: request.base_prompt.clone(),
+        api_key: request.api_key.clone(),
+        model: request.model.clone(),
+        system_prompt: prompt_plan.prompt.clone(),
+        project_name: request.project_name.clone(),
+        project_path: request.project_path.clone(),
+        has_workspace_context: request.project_path.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
+            || request.project_name.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false),
+        messages,
+        reply: envelope.content,
+        usage: envelope.usage,
+        tool_round: 0,
+        max_tool_rounds: 3,
+        current_tool_requests: vec![],
+        current_tool_index: 0,
+        current_tool_contexts: vec![],
+        pending_request: None,
+        deliverable_attempt: 0,
+        max_deliverable_attempts: 2,
+        completed: false,
+        learned_module_ids: vec![],
+        trigger_sources: vec![],
+    };
+    let final_state = initialize_expert_postprocess_internal(
+        expert_postprocess_engine::ExpertPostprocessInitRequest {
+            state: init_state,
+            explicit_hint_module_ids: request.hint_module_ids.clone(),
+        },
+        app_handle,
+    )
+    .await?;
+
+    Ok(expert_session_engine::StartExpertSessionResponse {
+        state: final_state,
+        prompt_char_count: prompt_plan.prompt.chars().count(),
+        module_ids: prompt_plan.module_ids,
+        history_hint_module_ids: prompt_plan.history_hint_module_ids,
+    })
+}
+
+#[tauri::command]
+async fn start_expert_task_runtime(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let request: StartExpertTaskRuntimeRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析专家任务运行时启动请求失败: {}", e))?;
+    if let Some(reason) = check_expert_quota_internal(
+        &request.token_context,
+        &request.session_request.expert_id,
+        &request.session_request.expert_name,
+    ) {
+        let envelope = ExpertTaskRuntimeEnvelope {
+            blocked_reason: Some(reason),
+            runtime_state: None,
+            response: None,
+            project_data: request.token_context.project_data,
+            user_data: request.token_context.user_data,
+        };
+        return serde_json::to_string(&envelope).map_err(|e| e.to_string());
+    }
+
+    let started = start_expert_session_internal(request.session_request.clone(), &app_handle, &state).await?;
+    let postprocess_response = advance_expert_postprocess_internal(
+        expert_postprocess_engine::ExpertPostprocessRequest {
+            state: started.state,
+            approval_decision: None,
+        },
+        &app_handle,
+    )
+    .await?;
+
+    let mut project_data = request.token_context.project_data.clone();
+    let mut user_data = request.token_context.user_data.clone();
+    let runtime_state = if postprocess_response.completed {
+        finalize_expert_task_internal(
+            FinalizeExpertTaskRequest {
+                project_name: request.session_request.project_name.clone(),
+                project_id: request.session_request.project_id,
+                expert_id: request.session_request.expert_id.clone(),
+                expert_name: request.session_request.expert_name.clone(),
+                scene: request.session_request.scene.clone(),
+                task_description: request.session_request.task_description.clone(),
+                reply: postprocess_response.state.reply.clone(),
+                learned_module_ids: postprocess_response.state.learned_module_ids.clone(),
+                trigger_sources: postprocess_response.state.trigger_sources.clone(),
+                api_key: Some(request.session_request.api_key.clone()),
+                model: Some(request.session_request.model.clone()),
+            },
+            &app_handle,
+        )
+        .await?;
+        let appended = append_expert_usage(
+            &request.token_context,
+            &request.session_request.expert_id,
+            &request.session_request.expert_name,
+            Some(&request.session_request.expert_title),
+            &request.session_request.model,
+            postprocess_response.state.usage.clone(),
+        );
+        project_data = appended.0;
+        user_data = appended.1;
+        None
+    } else {
+        Some(ExpertTaskRuntimeState {
+            postprocess_state: postprocess_response.state.clone(),
+            task_description: request.session_request.task_description.clone(),
+            project_id: request.session_request.project_id,
+            key_id: request.key_id,
+        })
+    };
+
+    let envelope = ExpertTaskRuntimeEnvelope {
+        blocked_reason: None,
+        runtime_state,
+        response: Some(postprocess_response),
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&envelope).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn continue_expert_task_runtime(
+    request_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let request: ContinueExpertTaskRuntimeRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析专家任务运行时续跑请求失败: {}", e))?;
+    let postprocess_response = advance_expert_postprocess_internal(
+        expert_postprocess_engine::ExpertPostprocessRequest {
+            state: request.runtime_state.postprocess_state,
+            approval_decision: request.approval_decision,
+        },
+        &app_handle,
+    )
+    .await?;
+
+    let mut project_data = request.token_context.project_data.clone();
+    let mut user_data = request.token_context.user_data.clone();
+    let runtime_state = if postprocess_response.completed {
+        finalize_expert_task_internal(
+            FinalizeExpertTaskRequest {
+                project_name: postprocess_response.state.project_name.clone(),
+                project_id: request.runtime_state.project_id,
+                expert_id: postprocess_response.state.expert_id.clone(),
+                expert_name: postprocess_response.state.expert_name.clone(),
+                scene: postprocess_response.state.scene.clone(),
+                task_description: request.runtime_state.task_description.clone(),
+                reply: postprocess_response.state.reply.clone(),
+                learned_module_ids: postprocess_response.state.learned_module_ids.clone(),
+                trigger_sources: postprocess_response.state.trigger_sources.clone(),
+                api_key: Some(postprocess_response.state.api_key.clone()),
+                model: Some(postprocess_response.state.model.clone()),
+            },
+            &app_handle,
+        )
+        .await?;
+        let appended = append_expert_usage(
+            &request.token_context,
+            &postprocess_response.state.expert_id,
+            &postprocess_response.state.expert_name,
+            Some(&postprocess_response.state.expert_title),
+            &postprocess_response.state.model,
+            postprocess_response.state.usage.clone(),
+        );
+        project_data = appended.0;
+        user_data = appended.1;
+        None
+    } else {
+        Some(ExpertTaskRuntimeState {
+            postprocess_state: postprocess_response.state.clone(),
+            task_description: request.runtime_state.task_description,
+            project_id: request.runtime_state.project_id,
+            key_id: request.runtime_state.key_id,
+        })
+    };
+
+    let envelope = ExpertTaskRuntimeEnvelope {
+        blocked_reason: None,
+        runtime_state,
+        response: Some(postprocess_response),
+        project_data,
+        user_data,
+    };
+    serde_json::to_string(&envelope).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentDeliveryExecutionResult {
+    parsed_action_count: usize,
+    structured_change_count: usize,
+    applied: usize,
+    failed: usize,
+    file_mutations_applied: usize,
+    folder_ops_applied: usize,
+    touched_files: Vec<String>,
+    errors: Vec<String>,
+    required_files: Vec<String>,
+}
+
+#[tauri::command]
+fn apply_agent_delivery_changes(
+    project_name: String,
+    project_path: Option<String>,
+    task_description: String,
+    user_task_text: String,
+    sources_json: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let sources: Vec<workflow_engine::WorkflowInputSource> =
+        serde_json::from_str(&sources_json).map_err(|e| format!("解析专家输出失败: {}", e))?;
+    let extracted = workflow_engine::extract_delivery_payload(&sources);
+
+    let changes: Vec<ChangeSet> = extracted
+        .change_sets
+        .iter()
+        .map(|change| ChangeSet {
+            operation: change.operation.clone(),
+            path: change.path.clone(),
+            search_text: change.search_text.clone(),
+            replace_text: change.replace_text.clone(),
+            content: change.content.clone(),
+            rationale: change.rationale.clone(),
+            risk: change.risk.clone(),
+            allow_overwrite: change.allow_overwrite,
+        })
+        .collect();
+
+    let mut result = AgentDeliveryExecutionResult {
+        parsed_action_count: extracted.parsed_action_count,
+        structured_change_count: extracted.structured_change_count,
+        applied: 0,
+        failed: 0,
+        file_mutations_applied: 0,
+        folder_ops_applied: 0,
+        touched_files: vec![],
+        errors: vec![],
+        required_files: extracted.required_files.clone(),
+    };
+
+    if changes.is_empty() {
+        return serde_json::to_string(&result).map_err(|e| e.to_string());
+    }
+
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let workspace_path = project_dir.to_string_lossy().to_string();
+    let delivery_check = workflow_engine::analyze_agent_delivery(&sources, &user_task_text, Some(&workspace_path))?;
+    if !delivery_check.has_executable_mutation {
+        return serde_json::to_string(&result).map_err(|e| e.to_string());
+    }
+
+    let proposed_raw = propose_patch(
+        project_name.clone(),
+        task_description,
+        changes,
+        Some(extracted.required_files.clone()),
+        project_path.clone(),
+        app_handle.clone(),
+    )?;
+    let proposed: ChangeSession =
+        serde_json::from_str(&proposed_raw).map_err(|e| format!("解析变更会话失败: {}", e))?;
+
+    if proposed.status == "blocked" {
+        result.failed = std::cmp::max(proposed.errors.len(), 1);
+        result.errors = proposed.errors;
+        return serde_json::to_string(&result).map_err(|e| e.to_string());
+    }
+
+    let applied_raw = apply_approved_patch(
+        project_name,
+        proposed.id,
+        project_path,
+        app_handle,
+    )?;
+    let applied: ChangeSession =
+        serde_json::from_str(&applied_raw).map_err(|e| format!("解析已合入会话失败: {}", e))?;
+
+    result.touched_files = applied
+        .changes
+        .iter()
+        .map(|item| item.change.path.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    result.applied = result.touched_files.len();
+    result.folder_ops_applied = applied
+        .changes
+        .iter()
+        .filter(|item| normalize_change_operation(&item.change.operation) == "create_folder")
+        .count();
+    result.file_mutations_applied = applied
+        .changes
+        .iter()
+        .filter(|item| normalize_change_operation(&item.change.operation) != "create_folder")
+        .count();
+    result.failed = applied.errors.len();
+    result.errors = applied.errors;
+
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 /// 初始化数据库连接池
@@ -128,6 +2626,8 @@ pub struct DeepSeekRequest {
     pub model: String,
     pub messages: Vec<DeepSeekMessage>,
     pub stream: bool,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -260,6 +2760,8 @@ async fn test_single_modality(
             content: prompt.to_string(),
         }],
         stream: false,
+        max_tokens: Some(128),
+        temperature: Some(0.0),
     };
 
     let response = client
@@ -415,7 +2917,10 @@ async fn call_llm(
     api_key: String,
     model: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("创建 LLM 客户端失败: {}", e))?;
 
     let mut full_messages = vec![DeepSeekMessage {
         role: "system".to_string(),
@@ -423,10 +2928,35 @@ async fn call_llm(
     }];
     full_messages.extend(messages);
 
+    let joined_prompt = full_messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let implementation_session =
+        joined_prompt.contains("前端工程师")
+            || joined_prompt.contains("后端工程师")
+            || joined_prompt.contains("实现步骤")
+            || joined_prompt.contains("补交真实文件变更中")
+            || joined_prompt.contains("CREATE_FILE:index.html")
+            || joined_prompt.contains("CREATE_FILE:./index.html");
+    let large_deliverable_request =
+        implementation_session
+            && (
+                joined_prompt.contains("当前工作区几乎为空目录")
+                    || joined_prompt.contains("未交付任何可执行文件变更")
+                    || joined_prompt.contains("支持添加")
+                    || joined_prompt.contains("待办")
+                    || joined_prompt.contains("HTML")
+            );
+    let max_tokens = if large_deliverable_request { 5200 } else { 2200 };
+
     let request_body = DeepSeekRequest {
         model: model.to_string(),
         messages: full_messages,
         stream: false,
+        max_tokens: Some(max_tokens),
+        temperature: Some(0.2),
     };
 
     let response = client
@@ -436,7 +2966,13 @@ async fn call_llm(
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                "LLM 请求超时（120 秒），已中止本轮专家调用，请重试".to_string()
+            } else {
+                format!("请求失败: {}", e)
+            }
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -471,6 +3007,60 @@ fn get_app_data_dir(app_handle: tauri::AppHandle) -> Result<String, String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn read_frontend_e2e_control(app_handle: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("frontend_e2e_control.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&path).map_err(|e| format!("读取前端 E2E 控制文件失败: {}", e))?;
+    Ok(Some(data))
+}
+
+#[tauri::command]
+fn clear_frontend_e2e_control(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let path = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("frontend_e2e_control.json");
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("删除前端 E2E 控制文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_frontend_e2e_status(data: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建应用目录失败: {}", e))?;
+    let path = dir.join("frontend_e2e_status.json");
+    fs::write(&path, data).map_err(|e| format!("写入前端 E2E 状态失败: {}", e))
+}
+
+#[tauri::command]
+fn append_frontend_e2e_log(line: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建应用目录失败: {}", e))?;
+    let path = dir.join("frontend_e2e.log");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("打开前端 E2E 日志失败: {}", e))?;
+    writeln!(file, "{}", line).map_err(|e| format!("写入前端 E2E 日志失败: {}", e))
 }
 
 /// 创建工作区文件夹，并自动生成 .xt 配置文件夹及子文件夹
@@ -819,6 +3409,8 @@ async fn analyze_project_dependencies(
             content: prompt,
         }],
         stream: false,
+        max_tokens: Some(1200),
+        temperature: Some(0.1),
     };
 
     let response = client
@@ -1003,7 +3595,37 @@ fn load_experts(app_handle: tauri::AppHandle) -> Result<String, String> {
     Ok(content)
 }
 
-/// 获取项目工作区路径（优先从 projects.json 解析外部项目路径）
+/// 获取沙箱项目路径（优先使用显式路径，再从 projects.json 解析外部项目路径）
+fn resolve_sandbox_project_dir(
+    project_name: &str,
+    project_path: Option<&str>,
+    app_handle: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
+    // 1. 最高优先级：前端显式传入的 workspacePath
+    if let Some(pp) = project_path {
+        let pp_trimmed = pp.trim();
+        if !pp_trimmed.is_empty() {
+            let path = PathBuf::from(pp_trimmed);
+            if path.exists() {
+                match path.canonicalize() {
+                    Ok(canon) => return Ok(canon),
+                    Err(_) => return Ok(dunce::simplified(&path).to_path_buf()),
+                }
+            } else {
+                // 路径不存在时自动创建，确保工作目录可用
+                fs::create_dir_all(&path).map_err(|e| format!("工作目录不存在且创建失败: {}", e))?;
+                match path.canonicalize() {
+                    Ok(canon) => return Ok(canon),
+                    Err(_) => return Ok(dunce::simplified(&path).to_path_buf()),
+                }
+            }
+        }
+    }
+    // 2. Fallback：从 projects.json 查找
+    get_project_dir(project_name, app_handle)
+}
+
+/// 获取项目工作区路径（从 projects.json 解析外部项目路径）
 fn get_project_dir(project_name: &str, app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base_dir = app_handle
         .path()
@@ -1078,14 +3700,19 @@ fn validate_sandbox_path(base: &std::path::Path, target: &std::path::Path) -> Re
 fn sandbox_create_folder(
     project_name: String,
     relative_path: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
 
     fs::create_dir_all(&target).map_err(|e| format!("创建文件夹失败: {}", e))?;
+    // 验证目录真实存在
+    if !target.exists() {
+        return Err(format!("创建文件夹失败：目录 {} 未实际落盘", relative_path));
+    }
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -1095,9 +3722,10 @@ fn sandbox_create_file(
     project_name: String,
     relative_path: String,
     content: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1107,7 +3735,20 @@ fn sandbox_create_file(
         fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
     }
 
-    fs::write(&target, content).map_err(|e| format!("创建文件失败: {}", e))?;
+    fs::write(&target, &content).map_err(|e| format!("创建文件失败: {}", e))?;
+    // 写入后验证：确认文件真实落盘
+    if !target.exists() {
+        return Err(format!("创建文件失败：文件 {} 未实际落盘", relative_path));
+    }
+    // 验证内容一致性
+    let written = fs::read_to_string(&target).unwrap_or_default();
+    if written.len() != content.len() {
+        return Err(format!(
+            "创建文件校验失败：预期 {} 字节，实际 {} 字节",
+            content.len(),
+            written.len()
+        ));
+    }
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -1116,9 +3757,10 @@ fn sandbox_create_file(
 fn sandbox_read_file(
     project_name: String,
     relative_path: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1136,9 +3778,10 @@ fn sandbox_read_file(
 fn sandbox_read_file_base64(
     project_name: String,
     relative_path: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1159,14 +3802,19 @@ fn sandbox_edit_file(
     relative_path: String,
     search_text: String,
     replace_text: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // 1. 读取现有文件
-    let content = sandbox_read_file(
-        project_name.clone(),
-        relative_path.clone(),
-        app_handle.clone(),
-    )?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let target = project_dir.join(&relative_path);
+
+    validate_sandbox_path(&project_dir, &target)?;
+
+    if !target.exists() {
+        return Err(format!("文件 {} 不存在，无法执行局部编辑", relative_path));
+    }
+
+    let content = fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {}", e))?;
 
     let new_content = apply_text_replacement(&content, &search_text, &replace_text).map_err(|_| {
         format!(
@@ -1175,12 +3823,11 @@ fn sandbox_edit_file(
         )
     })?;
 
-    // 3. 写回文件
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
-    let target = project_dir.join(&relative_path);
-    validate_sandbox_path(&project_dir, &target)?;
-
-    fs::write(&target, new_content).map_err(|e| format!("写入文件失败: {}", e))?;
+    fs::write(&target, &new_content).map_err(|e| format!("写入文件失败: {}", e))?;
+    // 写入后验证
+    if !target.exists() {
+        return Err(format!("编辑文件失败：文件 {} 未实际落盘", relative_path));
+    }
     Ok(())
 }
 
@@ -1190,9 +3837,10 @@ fn sandbox_write_file(
     project_name: String,
     relative_path: String,
     content: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1204,7 +3852,20 @@ fn sandbox_write_file(
         }
     }
 
-    fs::write(&target, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    fs::write(&target, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+    // 写入后验证：确认文件真实落盘
+    if !target.exists() {
+        return Err(format!("写入文件失败：文件 {} 未实际落盘", relative_path));
+    }
+    // 验证内容一致性
+    let written = fs::read_to_string(&target).unwrap_or_default();
+    if written.len() != content.len() {
+        return Err(format!(
+            "写入文件校验失败：预期 {} 字节，实际 {} 字节",
+            content.len(),
+            written.len()
+        ));
+    }
     Ok(())
 }
 
@@ -1394,6 +4055,17 @@ fn apply_text_replacement(
     search_text: &str,
     replace_text: &str,
 ) -> Result<String, String> {
+    let replace_already_present = |haystack: &str, replacement: &str| -> bool {
+        if replacement.is_empty() {
+            return false;
+        }
+        if haystack.contains(replacement) {
+            return true;
+        }
+        let trimmed_replacement = replacement.trim();
+        !trimmed_replacement.is_empty() && haystack.contains(trimmed_replacement)
+    };
+
     if search_text.is_empty() {
         return Err("局部编辑缺少 searchText，拒绝生成不可定位补丁".to_string());
     }
@@ -1415,6 +4087,10 @@ fn apply_text_replacement(
         } else {
             Ok(merged)
         }
+    } else if replace_already_present(content, replace_text)
+        || replace_already_present(&normalized_content, &normalized_replace)
+    {
+        Ok(content.to_string())
     } else if !normalized_search.trim().is_empty() {
         let trimmed_search = normalized_search.trim();
         let mut matches = normalized_content.match_indices(trimmed_search);
@@ -1437,6 +4113,10 @@ fn apply_text_replacement(
             } else {
                 Ok(merged)
             }
+        } else if replace_already_present(content, replace_text)
+            || replace_already_present(&normalized_content, &normalized_replace)
+        {
+            Ok(content.to_string())
         } else {
             Err("局部编辑未找到 searchText，拒绝静默失败或全量重写".to_string())
         }
@@ -1554,9 +4234,10 @@ fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange,
 fn create_change_session(
     project_name: String,
     task_description: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let session = ChangeSession {
         id: format!("change-{}", uuid::Uuid::new_v4()),
         project_name,
@@ -1585,9 +4266,10 @@ fn propose_patch(
     task_description: String,
     changes: Vec<ChangeSet>,
     required_files: Option<Vec<String>>,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let required_files = required_files.unwrap_or_default();
     let attempted_files: std::collections::HashSet<String> = changes
         .iter()
@@ -1667,9 +4349,10 @@ fn propose_patch(
 fn apply_approved_patch(
     project_name: String,
     session_id: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let mut session = load_change_session(&project_dir, &session_id)?;
     if session.status == "blocked" {
         return Err(format!(
@@ -1738,9 +4421,10 @@ fn apply_approved_patch(
 fn rollback_change_session(
     project_name: String,
     session_id: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let mut session = load_change_session(&project_dir, &session_id)?;
     if session.status != "applied" {
         return Err("只有已合入的变更会话可以回滚".to_string());
@@ -1829,9 +4513,10 @@ struct TokenData {
 fn sandbox_list_dir(
     project_name: String,
     relative_path: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1930,9 +4615,10 @@ fn sandbox_list_dir(
 fn sandbox_delete(
     project_name: String,
     relative_path: String,
+    project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let project_dir = get_project_dir(&project_name, &app_handle)?;
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -1943,6 +4629,49 @@ fn sandbox_delete(
         fs::remove_file(&target).map_err(|e| format!("删除文件失败: {}", e))?;
     }
     Ok(())
+}
+
+/// 工作目录连接验证：确认路径可达、可读写，并返回真实规范化路径
+#[tauri::command]
+fn validate_workspace_connection(
+    project_name: String,
+    project_path: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+
+    // 检查目录存在
+    if !project_dir.exists() {
+        return Err(format!("工作目录不存在: {}", project_dir.display()));
+    }
+    if !project_dir.is_dir() {
+        return Err(format!("工作路径不是目录: {}", project_dir.display()));
+    }
+
+    // 尝试写入+读取测试文件
+    let test_file = project_dir.join(".xt").join(".connection_test");
+    if let Some(parent) = test_file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let test_content = format!("xt-connection-test-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis());
+    fs::write(&test_file, &test_content).map_err(|e| format!("工作目录不可写: {}", e))?;
+    let read_back = fs::read_to_string(&test_file).map_err(|e| format!("工作目录不可读: {}", e))?;
+    let _ = fs::remove_file(&test_file); // 清理测试文件
+
+    if read_back != test_content {
+        return Err("工作目录读写验证失败：写入与读回内容不一致".to_string());
+    }
+
+    // 返回规范化路径信息
+    Ok(serde_json::json!({
+        "path": project_dir.to_string_lossy(),
+        "exists": true,
+        "readable": true,
+        "writable": true,
+    }).to_string())
 }
 
 /// 保存可视化目录数据到 .xt/config.json
@@ -3819,6 +6548,41 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_data_dir,
+            read_frontend_e2e_control,
+            clear_frontend_e2e_control,
+            save_frontend_e2e_status,
+            append_frontend_e2e_log,
+            verify_workspace_delivery,
+            analyze_agent_delivery,
+            apply_agent_delivery_changes,
+            supervisor_analyze_dispatch,
+            supervisor_review_delivery,
+            supervisor_quick_answer,
+            supervisor_analyze_followup,
+            supervisor_analyze_dispatch_runtime,
+            supervisor_prepare_and_analyze_dispatch_runtime,
+            supervisor_review_delivery_runtime,
+            finalize_pipeline_delivery_runtime,
+            supervisor_quick_answer_runtime,
+            supervisor_prepare_quick_answer_runtime,
+            supervisor_analyze_followup_runtime,
+            supervisor_mid_check,
+            finalize_pipeline_step_without_supervisor,
+            finalize_pipeline_step_with_supervisor,
+            prepare_pipeline_launch,
+            get_current_pipeline_execution_round,
+            get_current_pipeline_followup_execution_round,
+            settle_pipeline_execution_round,
+            build_token_dashboard_snapshot,
+            build_pipeline_progress_snapshot,
+            build_expert_context,
+            start_expert_task_runtime,
+            continue_expert_task_runtime,
+            resolve_expert_prompt_plan,
+            build_expert_tool_plan,
+            execute_expert_tool_request,
+            evaluate_tool_reminder,
+            build_tool_followup_message,
             create_workspace,
             workspace_exists,
             open_project_is_dir,
@@ -3846,6 +6610,7 @@ pub fn run() {
             sandbox_edit_file,
             sandbox_list_dir,
             sandbox_delete,
+            validate_workspace_connection,
             create_change_session,
             propose_patch,
             apply_approved_patch,

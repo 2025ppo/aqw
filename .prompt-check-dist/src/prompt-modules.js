@@ -22,7 +22,18 @@ export const PROMPT_MODULES = {
         id: "command-guidance",
         text: `【命令执行细则】
 - 适用于测试、构建、lint、依赖检查、日志排查、环境确认、版本核验与复现问题。
-- dir 填最小必要工作目录；命令可能涉及受限或管理员授权，系统会拦截，你只需如实提出。
+- dir 填最小必要工作目录，并且只能写 \`.\`、\`src\`、\`src/components\` 这种真实相对目录；不要写“项目根目录”“当前项目”“工作区”这类展示用描述。
+- 如果要在项目根目录执行，dir 直接写 \`.\`。
+- 当前环境如果明显是 Windows 路径（如 \`C:\\...\`），优先使用 \`rg\`、\`dir\`、\`Get-ChildItem\`、\`Get-Content\`、\`Select-String\` 等可在 Windows 直接运行的命令；不要默认使用 \`grep\`、\`sed\`、\`awk\`、\`bash\`。
+- Windows 命令里做文本搜索时，优先用双引号，不要写 Unix 风格单引号命令，例如优先 \`rg -n "pattern" app.js\`，不要写 \`rg -n 'pattern' app.js\`。
+- 不要使用 \`head\`、\`tail -n\` 这类 Unix 管道习惯；在 Windows 里改用 \`Select-Object -First 5\`、\`Get-Content -Tail 20\`。
+- 使用 \`findstr\` 时不要写 C 风格转义引号 \`\\\"\`；直接写 Windows 可执行形式，如 \`findstr /C:"function renderFunctionCalculator" app.js\`。
+- 大文件排查时不要默认 \`Get-Content app.js -Raw\` 整体读回；优先用 \`rg -n\`、\`Select-String -Context\`、\`Get-Content -TotalCount\` 这类定点读取，避免把整文件输出塞回后续分析。
+- 使用 \`Select-String\` 时，如果 pattern 里包含 \`|\` 这类正则分支，不要再加 \`-SimpleMatch\`，否则会被当成字面文本。
+- 如果任务要求“全部替换 / 全局替换 / 所有地方”，验证时必须覆盖所有主文件，而不是只查一个文件就下结论；前端项目至少要核对 \`index.html\`、\`app.js\`、\`styles.css\` 以及资源目录。
+- 当前 Windows 壳层里不要用 \`pwd\`，改用 \`cd\` 或 \`Get-Location\`。
+- PowerShell 的 \`Select-String\` 不支持 \`\\x{1F300}\` 这类 Unicode 区间写法；检查 emoji 残留时请直接列出目标字符，或分文件用 \`rg\` / \`Select-String\` 搜显式字符列表。
+- 命令可能涉及受限或管理员授权，系统会拦截，你只需如实提出。
 - 收到执行结果后，要把结果转化为结论，不要只复述输出。`,
     },
     "document-tool-primer": {
@@ -68,26 +79,68 @@ export const PROMPT_MODULES = {
 ### 第三步：拼接输出
 所有镜头生成完成后，输出最终拼接方案。`,
     },
+    "approval-guidance": {
+        id: "approval-guidance",
+        text: `【审批流程指南】
+## 命令审批机制
+
+你可以使用工具执行命令，但需要了解审批规则：
+- **自动执行**: ls, dir, cat, git status, cargo check, npm run 等只读命令无需确认
+- **需要确认**: 涉及文件写入、安装包、网络请求的命令会请求用户确认
+- **被拦截**: rm -rf /, format c: 等危险命令将被系统拦截
+
+当工具返回“需要用户确认”时，等待确认结果后再继续。不要重复尝试被拦截的命令。`,
+    },
+    "patch-guidance": {
+        id: "patch-guidance",
+        text: `【精确修改细则】
+- 当前系统不会执行 \`file_patch\` / \`*** Begin Patch\` 这类补丁文本；不要输出补丁语法。
+- 你必须输出系统可直接落盘的文件动作：\`[ACTION:CREATE_FILE ...]\`、\`[ACTION:WRITE_FILE ...]\`、\`[ACTION:EDIT_FILE ...]\`、\`[ACTION:CREATE_FOLDER ...]\`、\`[ACTION:DELETE ...]\`，或结构化 JSON \`changes\`。
+- 修改已有文件前，先读取真实文件内容，再给出精确的 \`searchText\` / \`replaceText\`；不要凭空编造上下文。
+- 如果是局部修改，优先用 \`[ACTION:EDIT_FILE ...]\`，并提供稳定、可唯一定位的 search/replace 片段。
+- 如果一个任务涉及多个文件，逐个输出可执行动作，不要把修改藏在说明文字里。
+- 不要虚构 \`task-1-patch.md\`、\`task-3-patch-1.md\` 之类中间补丁文件；除非你真的用 \`[ACTION:CREATE_FILE]\` 明确创建它们，否则后续专家不得把它们当成已存在的交付物。
+- 永远使用相对项目根目录的路径，不要输出绝对路径。`,
+    },
+    "deliverable-guidance": {
+        id: "deliverable-guidance",
+        text: `【交付物落盘硬约束】
+关键原则：你不能只在文字里宣称完成。凡是设计/文档/代码交付物，仅口头描述、只输出代码块、只说“已保存”都被视为未完成。
+
+必须遵守的规则：
+1. 凡需产生文件内容的交付物（设计文档、源代码、配置、 README 等），必须使用下列动作之一真实落盘：
+   - \`[ACTION:CREATE_FILE path="相对路径" content="..."]\`
+   - \`[ACTION:WRITE_FILE path="相对路径" content="..." allowOverwrite=true]\`
+   - \`[ACTION:EDIT_FILE path="相对路径" searchText="..." replaceText="..."]\`
+   - \`[ACTION:CREATE_FOLDER path="相对路径"]\`
+2. **严禁**：使用 \`echo ... > file\`、\`type ... > file\`、\`Set-Content -Value ...\`、\`@"..."@ | Out-File ...\` 这类 shell 重定向作为文件创建手段。Shell 重定向会被字面量中的 \`&\` / \`|\` / \`>\` / \`<\` 等特殊字符截断，导致文件为空。
+3. 如果需要创建目录中的文件，直接 \`[ACTION:CREATE_FILE path="designs/xxx.md" ...]\`，系统会自动创建上级目录，不需要提前调用 \`mkdir\`。
+4. **不完整发送成本低于不发送的成本**：如果你在单轮内产出的文档/代码过长，必须用多个 [ACTION:WRITE_FILE] 拆成多个文件或分次调用，不要“说明文档已生成但未附上”。
+5. 宣称“完成”前请自查：本轮 output 是否至少包含一个 [ACTION:CREATE_FILE/WRITE_FILE/EDIT_FILE/CREATE_FOLDER]？如果没有，**不要**说“已完成”“已保存”“已部署”，改为指出阻塞并请求下一轮补交。
+6. 审核员如果发现上游交付物缺失，不得用 shell echo/Set-Content “兜底”创建占位文件；**唯一允许的是调用 [ACTION:CREATE_FILE] 创建补齐内容，或直接报阻塞要求设计师重新输出**。`,
+    },
 };
 const ALL_PROMPT_MODULE_IDS = Object.keys(PROMPT_MODULES);
 const EXPERT_STATIC_PROMPT_MODULES = {
     "jiang-ruoxi": ["code-tool-primer"],
-    "jiang-qinglan": ["code-tool-primer"],
-    "jiang-yumo": ["code-tool-primer"],
-    "jiang-subai": ["code-tool-primer"],
+    "jiang-dingchu": ["code-tool-primer", "deliverable-guidance"],
+    "jiang-qinglan": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
+    "jiang-yumo": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
+    "jiang-subai": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
     "jiang-yingqiu": ["code-tool-primer"],
-    "jiang-jianheng": ["code-tool-primer"],
+    "jiang-jianheng": ["code-tool-primer", "deliverable-guidance"],
     "jiang-cexun": ["code-tool-primer", "command-guidance"],
     "jiang-zhilan": ["document-tool-primer"],
     "jiang-huaying": ["media-tool-primer"],
 };
 const EXPERT_SUPPORTED_PROMPT_MODULES = {
     "jiang-ruoxi": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+    "jiang-dingchu": ["code-tool-primer", "web-search-guidance", "deliverable-guidance"],
+    "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
+    "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
+    "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
     "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance"],
+    "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"],
     "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
     "jiang-zhilan": ["document-tool-primer"],
     "jiang-huaying": ["media-tool-primer", "video-workflow"],
@@ -523,4 +576,22 @@ export function detectToolIntentWithoutAction(text) {
         needsVideoWorkflow: includesAnyKeyword(text, VIDEO_TRIGGER_KEYWORDS)
             && !matchesAnyPattern(text, VIDEO_NEGATION_PATTERNS),
     };
+}
+/**
+ * 根据专家角色生成工具Schema模块内容
+ * 动态生成而非静态定义
+ *
+ * 调用时机说明：在 Agent Loop 组装 prompt 时，
+ * 若专家拥有工具调用能力，应调用此函数生成工具描述并注入到最终 prompt 中。
+ */
+export function buildToolSchemaModule(_expertId, availableTools) {
+    const header = '## 可用工具\n\n你可以通过以下工具与系统交互。调用工具时使用 [ACTION:TOOL_CALL name="工具名" args=\'{"参数JSON"}\'\']\n\n';
+    const toolDocs = availableTools.map(tool => {
+        const params = Object.entries(tool.parameters.properties || {}).map(([key, schema]) => {
+            const required = (tool.parameters.required || []).includes(key) ? '必填' : '可选';
+            return `  - \`${key}\` (${required}): ${schema.description || ''}`;
+        }).join('\n');
+        return `### ${tool.name}\n${tool.description}\n\n参数:\n${params}`;
+    }).join('\n\n');
+    return header + toolDocs;
 }

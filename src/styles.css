@@ -645,6 +645,36 @@ body {
   border-bottom-right-radius: 4px;
 }
 
+.user-message-text + .user-message-meta {
+  margin-top: 8px;
+}
+
+.user-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.user-meta-badge.file strong {
+  font-weight: 600;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* AI 消息：无头像、无背景、流式布局 */
 .chat-message.assistant .message-body {
   display: flex;
@@ -893,6 +923,109 @@ body {
   background: #fff;
 }
 
+.chat-action-trigger {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: #eef3ff;
+  color: #4f6fb6;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.chat-action-trigger:hover,
+.chat-action-trigger[aria-expanded="true"] {
+  background: #dce8ff;
+  color: #36599d;
+}
+
+.chat-action-trigger svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chat-composer-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-composer-meta {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-composer-meta.has-items {
+  display: flex;
+}
+
+.chat-composer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1;
+  color: #44506a;
+  background: #eef2f8;
+  border: 1px solid #dde4ef;
+}
+
+.chat-composer-pill.mode {
+  background: #edf5ff;
+  border-color: #d5e4fb;
+  color: #295ea8;
+}
+
+.chat-composer-pill.file {
+  padding-right: 6px;
+}
+
+.chat-composer-pill-label {
+  white-space: nowrap;
+}
+
+.chat-composer-pill-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.chat-composer-pill-size {
+  color: #7c8698;
+}
+
+.chat-composer-pill-remove {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.chat-composer-pill-remove:hover {
+  background: rgba(68, 80, 106, 0.12);
+}
+
 .chat-input {
   flex: 1;
   border: none;
@@ -944,6 +1077,57 @@ body {
 .chat-send-btn svg {
   width: 14px;
   height: 14px;
+}
+
+.chat-action-menu {
+  position: absolute;
+  left: 10px;
+  bottom: calc(100% + 10px);
+  width: min(320px, calc(100% - 20px));
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid #e5ebf5;
+  box-shadow: 0 16px 40px rgba(17, 24, 39, 0.14);
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 40;
+  backdrop-filter: blur(12px);
+}
+
+.chat-action-menu.open {
+  display: flex;
+}
+
+.chat-action-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.15s;
+}
+
+.chat-action-menu-item:hover {
+  background: #f4f7fb;
+}
+
+.chat-action-menu-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.chat-action-menu-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #738099;
 }
 
 /* ========== 文件预览模式：左侧AI对话（复用主对话区位置） ========== */

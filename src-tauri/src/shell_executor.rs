@@ -11,6 +11,98 @@ use tokio::time::{timeout, Duration};
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
+fn should_use_powershell(command: &str) -> bool {
+    let trimmed = command.trim();
+    let lower = trimmed.to_lowercase();
+
+    lower.starts_with("powershell")
+        || lower.starts_with("pwsh")
+        || lower.starts_with("get-")
+        || lower == "pwd"
+        || lower.starts_with("pwd ")
+        || lower.starts_with("set-")
+        || lower.starts_with("select-")
+        || lower.starts_with("where-")
+        || lower.starts_with("foreach-")
+        || lower.starts_with("new-")
+        || lower.starts_with("remove-")
+        || lower.starts_with("copy-")
+        || lower.starts_with("move-")
+        || lower.starts_with("write-")
+        || lower.starts_with("test-")
+        || lower.starts_with("rg ")
+        || lower.starts_with("findstr ")
+        || lower.starts_with("join-path")
+        || lower.starts_with("$")
+        || trimmed.contains('\'')
+        || trimmed.contains(" | ")
+        || trimmed.contains("$env:")
+        || trimmed.contains("Out-File")
+        || trimmed.contains("Select-String")
+        || trimmed.contains("Get-Content")
+        || trimmed.contains("Get-ChildItem")
+}
+
+#[cfg(windows)]
+fn normalize_windows_command(command: &str, use_powershell: bool) -> String {
+    let mut normalized = command
+        .replace("\\\"", "\"")
+        .replace("\\'", "'");
+
+    if use_powershell {
+        if normalized.eq_ignore_ascii_case("pwd") {
+            normalized = "Get-Location".to_string();
+        }
+        normalized = normalized.replace("2>nul", "2>$null");
+        normalized = normalized.replace(" 2>nul", " 2>$null");
+        if let Some((before, after)) = normalized.split_once("| head -") {
+            let count: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+            if !count.is_empty() {
+                normalized = format!(
+                    "{} | Select-Object -First {}{}",
+                    before.trim_end(),
+                    count,
+                    &after[count.len()..]
+                );
+            }
+        }
+        if let Some((before, after)) = normalized.split_once("| head ") {
+            let count: String = after
+                .trim_start()
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect();
+            if !count.is_empty() {
+                let suffix = after.trim_start();
+                normalized = format!(
+                    "{} | Select-Object -First {}{}",
+                    before.trim_end(),
+                    count,
+                    &suffix[count.len()..]
+                );
+            }
+        }
+        if normalized.contains("Get-Content")
+            && normalized.contains("-Raw")
+            && normalized.contains("-TotalCount")
+        {
+            normalized = normalized.replace(" -Raw", "");
+        }
+        if normalized.contains("Select-String")
+            && normalized.contains("\\x{")
+            && normalized.contains("-Pattern")
+        {
+            normalized = normalized
+                .replace("Select-String -Path ", "rg -n -P ")
+                .replace(" -AllMatches | Select-Object -First 20", "")
+                .replace(" | Select-Object -First 20", "");
+        }
+    }
+
+    normalized
+}
+
 // ===== Legacy compatibility types (used by existing lib.rs commands) =====
 
 #[derive(Serialize)]
@@ -141,12 +233,8 @@ pub fn execute(command: &str, args: &[String], working_dir: &str) -> Result<Comm
         return Err(format!("工作目录不存在: {}", working_dir));
     }
 
-    let (shell, shell_arg) = if cfg!(target_os = "windows") {
-        ("cmd", "/C")
-    } else {
-        ("sh", "-c")
-    };
-
+    // Windows 下使用 PowerShell（NoProfile）以支持 rg / Select-String / Get-ChildItem 等 cmdlet；
+    // 同时通过 -Command 仍兼容大多数 cmd 风格命令（dir/echo/type 在 PS 中是别名）。
     let full_cmd = if args.is_empty() {
         command.to_string()
     } else {
@@ -154,15 +242,30 @@ pub fn execute(command: &str, args: &[String], working_dir: &str) -> Result<Comm
     };
 
     let working_dir_owned = working_dir.to_string();
-    let shell_owned = shell.to_string();
-    let shell_arg_owned = shell_arg.to_string();
+    let full_cmd_owned = full_cmd.clone();
 
     let handle = std::thread::spawn(move || {
-        std::process::Command::new(&shell_owned)
-            .arg(&shell_arg_owned)
-            .arg(&full_cmd)
-            .current_dir(&working_dir_owned)
-            .output()
+        if cfg!(target_os = "windows") {
+            let use_powershell = should_use_powershell(&full_cmd_owned);
+            let shell_command = normalize_windows_command(&full_cmd_owned, use_powershell);
+            if use_powershell {
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &shell_command])
+                    .current_dir(&working_dir_owned)
+                    .output()
+            } else {
+                std::process::Command::new("cmd")
+                    .args(["/D", "/S", "/C", &shell_command])
+                    .current_dir(&working_dir_owned)
+                    .output()
+            }
+        } else {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&full_cmd_owned)
+                .current_dir(&working_dir_owned)
+                .output()
+        }
     });
 
     let timeout_dur = std::time::Duration::from_secs(30);
@@ -383,10 +486,19 @@ pub async fn execute_command_enhanced(
         project_dir.to_string()
     };
 
-    // 2. 构建命令(跨平台)
+    // 2. 构建命令(跨平台) — Windows 下使用 PowerShell 以支持现代 cmdlet (rg/Select-String/Get-*)
     let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/C", command]);
+        let use_powershell = should_use_powershell(command);
+        let shell_command = normalize_windows_command(command, use_powershell);
+        let mut c = if use_powershell {
+            let mut ps = Command::new("powershell");
+            ps.args(["-NoProfile", "-NonInteractive", "-Command", &shell_command]);
+            ps
+        } else {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/D", "/S", "/C", &shell_command]);
+            cmd
+        };
         #[cfg(windows)]
         c.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
         c

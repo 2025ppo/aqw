@@ -7,45 +7,36 @@ import { DraftCanvas, DraftToolbox, DraftSidebar, DraftTool } from "./draft";
 import hljs from "highlight.js";
 import "highlight.js/styles/atom-one-dark.css";
 import {
-  supervisorAnalyze,
+  supervisorPrepareAndAnalyzeDispatch,
   executePipeline,
-  supervisorReview,
+  preparePipelineLaunch,
+  finalizePipelineDelivery,
+  supervisorPrepareQuickAnswer,
   resolveExpertApiKey,
   buildProgressReport,
-  buildDispatchWaves,
   analyzeFollowupIntent,
   getAvailableExpertInfos,
-  recordTokenUsage,
   loadTokenData,
   loadUserTokenData,
-  userTokenData,
-  getTokenUsageByExpert,
   setExpertsRef,
-  getTotalUsage,
-  getExpertPerformance,
+  buildTokenDashboardSnapshot,
   type DispatchPlan,
   type ExpertCommandAuthorizationRequest,
   type ExpertToolEvent,
   type ExpertTask,
   type PipelineFollowup,
   type TimeRange,
-  type ExpertPerformance,
 } from "./expert-router";
 import {
   saveUserIntentMemory,
   searchMemory,
   deleteMemory,
   getMemoryStats,
-  buildGeneralMemoryContext,
   runMemoryLifecycle,
 } from "./memory-store";
 import { bootstrapPromptModuleHistoryFromSessions } from "./prompt-module-history";
 import "./video-canvas";
 import "./data-analysis";
-
-// 引用以避免 TS6133 未使用警告（专家表现面板后续将使用）
-void getExpertPerformance;
-void 0 as unknown as ExpertPerformance;
 
 // ========== 树节点类型（对应 Rust TreeEntry） ==========
 interface TreeEntry {
@@ -614,6 +605,146 @@ function showError(msg: string) {
   (toast as any).__timeout = setTimeout(() => {
     toast.classList.remove("show");
   }, 3000);
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function detectAttachmentKind(file: File): AttachmentKind {
+  const mime = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("text/") || /\.(md|txt|json|csv|ts|tsx|js|jsx|css|html|xml|yml|yaml|toml|ini|py|rs|java|c|cpp|h|hpp|sh)$/i.test(name)) {
+    return "text";
+  }
+  return "file";
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+    reader.readAsText(file);
+  });
+}
+
+function getProviderEndpoint(providerId: string): string {
+  switch (providerId) {
+    case "deepseek":
+      return "https://api.deepseek.com/v1/chat/completions";
+    case "openai":
+      return "https://api.openai.com/v1/chat/completions";
+    case "anthropic":
+      return "https://api.anthropic.com/v1/messages";
+    case "aliyun":
+      return "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+    case "tencent":
+      return "https://api.hunyuan.cloud.tencent.com/v1/chat/completions";
+    default:
+      return "https://api.deepseek.com/v1/chat/completions";
+  }
+}
+
+function resolveKeyTransport(keyId: string | null): { apiKey: string; model: string; endpoint: string; inputModalities: Modality[]; outputModalities: Modality[] } | null {
+  if (!keyId) return null;
+  const item = keyPoolItems.find((entry) => entry.data.id === keyId);
+  if (!item) return null;
+  if (item.type === "preset") {
+    return {
+      apiKey: item.data.apiKey,
+      model: item.data.model,
+      endpoint: getProviderEndpoint(item.data.providerId),
+      inputModalities: item.data.inputModalities || ["text"],
+      outputModalities: item.data.outputModalities || ["text"],
+    };
+  }
+  if (item.type === "relay") {
+    return {
+      apiKey: item.data.apiKey,
+      model: item.data.model,
+      endpoint: item.data.endpoint,
+      inputModalities: item.data.inputModalities || ["text"],
+      outputModalities: item.data.outputModalities || ["text"],
+    };
+  }
+  return null;
+}
+
+function buildUserMessagePayloadText(text: string, mode: ChatRunMode, attachments: StoredAttachmentMeta[]): string {
+  if (mode === "normal" && attachments.length === 0) return text;
+  const payload: UserMessageMetaPayload = {
+    version: 1,
+    text,
+    mode,
+    attachments,
+  };
+  return `${USER_MESSAGE_META_PREFIX}${JSON.stringify(payload)}`;
+}
+
+function parseUserMessagePayload(content: string): UserMessageMetaPayload | null {
+  if (!content.startsWith(USER_MESSAGE_META_PREFIX)) return null;
+  try {
+    const raw = JSON.parse(content.slice(USER_MESSAGE_META_PREFIX.length)) as Partial<UserMessageMetaPayload>;
+    return {
+      version: 1,
+      text: typeof raw.text === "string" ? raw.text : "",
+      mode: raw.mode === "plan" || raw.mode === "goal" ? raw.mode : "normal",
+      attachments: Array.isArray(raw.attachments)
+        ? raw.attachments.filter((item): item is StoredAttachmentMeta =>
+          !!item
+          && typeof item.name === "string"
+          && typeof item.mimeType === "string"
+          && typeof item.size === "number"
+          && typeof item.kind === "string")
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatUserMessageForSupervisor(content: string): string {
+  const payload = parseUserMessagePayload(content);
+  if (!payload) return content;
+  const lines = [payload.text.trim() || "请结合我附带的文件处理。"];
+  if (payload.mode === "plan") {
+    lines.push("", "[执行方式] 按计划进行");
+  } else if (payload.mode === "goal") {
+    lines.push("", "[执行方式] 按目标进行");
+  }
+  if (payload.attachments.length > 0) {
+    lines.push("", "[已附带文件]");
+    payload.attachments.forEach((item) => {
+      lines.push(`- ${item.name}（${item.kind}，${formatFileSize(item.size)}）`);
+    });
+  }
+  return lines.join("\n").trim();
+}
+
+function applyRunModeToPrompt(text: string, mode: ChatRunMode): string {
+  const normalized = text.trim() || "请结合我附带的文件处理。";
+  if (mode === "plan") {
+    return `请先给出一份简洁、可执行的计划，再按计划逐步完成任务；执行过程中如果需要调整计划，请明确说明。用户原始请求：${normalized}`;
+  }
+  if (mode === "goal") {
+    return `以下内容是当前目标。请自主拆解任务、持续推进，并以是否达成目标作为停止条件；除非明确阻塞，否则不要停留在建议层。目标：${normalized}`;
+  }
+  return normalized;
 }
 
 // 生成自动编号标签
@@ -1261,6 +1392,34 @@ interface ChatMessage {
   content: string;
 }
 
+type ChatRunMode = "normal" | "plan" | "goal";
+type AttachmentKind = "image" | "video" | "audio" | "text" | "file";
+
+interface PendingAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: AttachmentKind;
+  file: File;
+}
+
+interface StoredAttachmentMeta {
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: AttachmentKind;
+}
+
+interface UserMessageMetaPayload {
+  version: 1;
+  text: string;
+  mode: ChatRunMode;
+  attachments: StoredAttachmentMeta[];
+}
+
+const USER_MESSAGE_META_PREFIX = "__XT_USER_META__:";
+
 interface ToolEventMessage {
   kind: "web-search" | "command";
   createdAt: number;
@@ -1349,6 +1508,58 @@ document.addEventListener("DOMContentLoaded", async () => {
   const chatMessages = document.getElementById("chat-messages");
   const chatInput = document.getElementById("chat-input") as HTMLTextAreaElement;
   const chatSendBtn = document.getElementById("chat-send-btn");
+  const chatActionTrigger = document.getElementById("chat-action-trigger") as HTMLButtonElement | null;
+  const chatActionMenu = document.getElementById("chat-action-menu") as HTMLElement | null;
+  const chatComposerMeta = document.getElementById("chat-composer-meta") as HTMLElement | null;
+  const chatFileInput = document.getElementById("chat-file-input") as HTMLInputElement | null;
+  let currentChatRunMode: ChatRunMode = "normal";
+  let pendingAttachments: PendingAttachment[] = [];
+
+  const renderComposerMeta = () => {
+    if (!chatComposerMeta) return;
+    const chips: string[] = [];
+    if (currentChatRunMode !== "normal") {
+      chips.push(`
+        <span class="chat-composer-pill mode" data-chip-kind="mode">
+          <span class="chat-composer-pill-label">${currentChatRunMode === "plan" ? "按计划进行" : "按目标进行"}</span>
+          <button class="chat-composer-pill-remove" data-remove-mode="true" type="button" title="恢复普通发送">×</button>
+        </span>
+      `);
+    }
+    pendingAttachments.forEach((attachment) => {
+      chips.push(`
+        <span class="chat-composer-pill file" data-chip-kind="file">
+          <span class="chat-composer-pill-label">${attachment.kind === "image" ? "图片" : attachment.kind === "video" ? "视频" : attachment.kind === "audio" ? "音频" : attachment.kind === "text" ? "文本" : "文件"}</span>
+          <span class="chat-composer-pill-name">${escapeHtml(attachment.name)}</span>
+          <span class="chat-composer-pill-size">${formatFileSize(attachment.size)}</span>
+          <button class="chat-composer-pill-remove" data-remove-attachment="${attachment.id}" type="button" title="移除文件">×</button>
+        </span>
+      `);
+    });
+    chatComposerMeta.innerHTML = chips.join("");
+    chatComposerMeta.classList.toggle("has-items", chips.length > 0);
+    chatComposerMeta.querySelector<HTMLElement>("[data-remove-mode='true']")?.addEventListener("click", () => {
+      currentChatRunMode = "normal";
+      renderComposerMeta();
+    });
+    chatComposerMeta.querySelectorAll<HTMLElement>("[data-remove-attachment]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.removeAttachment;
+        pendingAttachments = pendingAttachments.filter((item) => item.id !== id);
+        renderComposerMeta();
+      });
+    });
+  };
+
+  const closeChatActionMenu = () => {
+    chatActionMenu?.classList.remove("open");
+    chatActionTrigger?.setAttribute("aria-expanded", "false");
+  };
+
+  const openChatActionMenu = () => {
+    chatActionMenu?.classList.add("open");
+    chatActionTrigger?.setAttribute("aria-expanded", "true");
+  };
 
   // === 启动时恢复上次活跃项目的对话 ===
   // 解决 sidebar.loadProjects() 中 setActiveChat() 触发的 chat-changed 事件
@@ -1557,108 +1768,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     return normalized;
-  }
-
-  function summarizeExpertTasksMessage(content: string): string {
-    try {
-      const tasks = JSON.parse(content) as Array<Partial<ExpertTask>>;
-      if (!Array.isArray(tasks) || tasks.length === 0) {
-        return "专家协作快照：暂无可用进展。";
-      }
-      const lines = tasks.slice(-6).map((task) => {
-        const status =
-          task.status === "done"
-            ? "已完成"
-            : task.status === "running"
-              ? "执行中"
-              : task.status === "error"
-                ? `失败：${task.error || "未知错误"}`
-                : "等待中";
-        const detail = (task.output || task.error || task.input || "").toString().slice(0, 120);
-        return `- ${task.expertName || task.expertId || "未知专家"}（${task.expertTitle || "未知角色"}）：${status}${detail ? `；${detail}` : ""}`;
-      });
-      return `专家协作快照：\n${lines.join("\n")}`;
-    } catch {
-      return "专家协作快照：解析失败。";
-    }
-  }
-
-  function summarizeToolEventMessage(content: string): string {
-    try {
-      const event = JSON.parse(content) as ToolEventMessage;
-      const initiator = `${event.initiator.expertName}（${event.initiator.expertTitle}）`;
-      const status =
-        event.status === "success"
-          ? "成功"
-          : event.status === "denied"
-            ? "被拒绝"
-            : event.status === "blocked"
-              ? "受限"
-              : "失败";
-      if (event.kind === "web-search") {
-        return `工具调用记录：${initiator} 因“${event.reason}”发起网络搜索「${event.query || ""}」，结果：${status}。`;
-      }
-      const authLabel =
-        event.authMode === "admin"
-          ? "管理员命令"
-          : event.authMode === "restricted"
-            ? "受限命令"
-            : "命令";
-      const exitCode = typeof event.output?.exitCode === "number" ? `，退出码 ${event.output.exitCode}` : "";
-      return `工具调用记录：${initiator} 因“${event.reason}”发起${authLabel}「${event.command || ""}」，结果：${status}${exitCode}。`;
-    } catch {
-      return "工具调用记录：解析失败。";
-    }
-  }
-
-  function summarizeCommandAuthMessage(content: string): string {
-    try {
-      const auth = JSON.parse(content) as CommandAuthMessage;
-      const initiator = `${auth.initiator.expertName}（${auth.initiator.expertTitle}）`;
-      const status =
-        auth.status === "approved"
-          ? "用户已同意"
-          : auth.status === "denied"
-            ? "用户已拒绝"
-            : "等待用户处理";
-      return `命令授权请求：${initiator} 请求执行命令「${auth.command}」，状态：${status}。`;
-    } catch {
-      return "命令授权请求：解析失败。";
-    }
-  }
-
-  function toApiMessage(message: ChatMessage): { role: "user" | "assistant"; content: string } | null {
-    if (message.role === "user" || message.role === "assistant") {
-      return {
-        role: message.role,
-        content: message.content,
-      };
-    }
-    if (message.role === "expert-tasks") {
-      return {
-        role: "assistant",
-        content: summarizeExpertTasksMessage(message.content),
-      };
-    }
-    if (message.role === "tool-event") {
-      return {
-        role: "assistant",
-        content: summarizeToolEventMessage(message.content),
-      };
-    }
-    if (message.role === "command-auth") {
-      return {
-        role: "assistant",
-        content: summarizeCommandAuthMessage(message.content),
-      };
-    }
-    return null;
-  }
-
-  function buildApiMessages(messages: ChatMessage[]): Array<{ role: "user" | "assistant"; content: string }> {
-    return messages
-      .map(toApiMessage)
-      .filter((message): message is { role: "user" | "assistant"; content: string } => message !== null);
   }
 
   // 将项目的所有会话持久化到 .xt/chat_sessions.json
@@ -1963,6 +2072,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 点击其他地方关闭下拉
   document.addEventListener("click", () => {
     historyPanel?.classList.remove("active");
+    closeChatActionMenu();
   });
 
   // 新建对话按钮（卡片顶部）
@@ -1982,13 +2092,166 @@ document.addEventListener("DOMContentLoaded", async () => {
     updateHistoryDisplay();
   });
 
+  chatActionTrigger?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isOpen = chatActionMenu?.classList.contains("open");
+    if (isOpen) {
+      closeChatActionMenu();
+    } else {
+      openChatActionMenu();
+    }
+  });
+
+  chatActionMenu?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const action = (e.target as HTMLElement).closest<HTMLElement>("[data-chat-action]")?.dataset.chatAction;
+    if (!action) return;
+    if (action === "file") {
+      chatFileInput?.click();
+      closeChatActionMenu();
+      return;
+    }
+    currentChatRunMode = action === "plan" ? "plan" : "goal";
+    renderComposerMeta();
+    closeChatActionMenu();
+  });
+
+  chatFileInput?.addEventListener("change", async () => {
+    const files = Array.from(chatFileInput.files || []);
+    if (files.length === 0) return;
+    const nextAttachments = [...pendingAttachments];
+    const maxCount = 6;
+    const maxSingleSize = 20 * 1024 * 1024;
+
+    for (const file of files) {
+      if (nextAttachments.length >= maxCount) {
+        showError(`一次最多附带 ${maxCount} 个文件，多出的文件已忽略。`);
+        break;
+      }
+      if (file.size > maxSingleSize) {
+        showError(`文件「${file.name}」超过 20 MB，当前发送链暂不支持。`);
+        continue;
+      }
+      const duplicate = nextAttachments.find((item) =>
+        item.name === file.name && item.size === file.size && item.mimeType === file.type);
+      if (duplicate) continue;
+      nextAttachments.push({
+        id: crypto.randomUUID(),
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        kind: detectAttachmentKind(file),
+        file,
+      });
+    }
+    pendingAttachments = nextAttachments;
+    chatFileInput.value = "";
+    renderComposerMeta();
+  });
+  renderComposerMeta();
+
+  const buildSupervisorSessionMessages = (messages: ChatMessage[]): ChatMessage[] =>
+    messages.map((message) => {
+      if (message.role !== "user") return message;
+      return {
+        ...message,
+        content: formatUserMessageForSupervisor(message.content),
+      };
+    });
+
+  const buildAttachmentContext = async (
+    rawText: string,
+    supervisorTransport: { apiKey: string; model: string; endpoint: string; inputModalities: Modality[]; outputModalities: Modality[] },
+    attachments: PendingAttachment[],
+  ): Promise<string> => {
+    if (attachments.length === 0) return "";
+
+    const imageAttachments = attachments.filter((item) => item.kind === "image");
+    const textAttachments = attachments.filter((item) => item.kind === "text");
+    const unsupportedMedia = attachments.filter((item) => item.kind === "video" || item.kind === "audio");
+    const genericFiles = attachments.filter((item) => item.kind === "file");
+    const sections: string[] = [];
+
+    if (imageAttachments.length > 0) {
+      if (!supervisorTransport.inputModalities.includes("image")) {
+        const available = findKeysByModality({ input: ["image"] });
+        const suggestion = available.length > 0 ? ` 可切换到支持图像输入的密钥，例如：${available.slice(0, 3).map((item) => item.data.label).join("、")}。` : "";
+        throw new Error(`当前主管模型不支持图像输入，无法直接分析图片附件。${suggestion}`);
+      }
+      if (supervisorTransport.endpoint.includes("/v1/messages")) {
+        throw new Error("当前多模态直读桥接暂未接入 Anthropic Messages 协议，请先切换到 OpenAI 兼容端点后再发送图片。");
+      }
+      try {
+        const messageParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: string } }> = [
+          {
+            type: "text",
+            text: `请先结合用户问题，提炼这些图片附件里与任务最相关的信息，输出精炼要点，供后续专家协作继续使用。\n\n用户请求：${rawText || "请结合附件处理当前任务。"}`,
+          },
+        ];
+        for (const attachment of imageAttachments) {
+          const dataUrl = await readFileAsDataUrl(attachment.file);
+          messageParts.push({
+            type: "image_url",
+            image_url: { url: dataUrl, detail: "high" },
+          });
+        }
+        const summaryJson = await invoke<string>("chat_multimodal", {
+          messages: [{ role: "user", content: messageParts }],
+          apiKey: supervisorTransport.apiKey,
+          model: supervisorTransport.model,
+          endpoint: supervisorTransport.endpoint,
+        });
+        const summary = JSON.parse(summaryJson) as { content?: string };
+        if (summary.content?.trim()) {
+          sections.push(`[图片附件理解]\n${summary.content.trim()}`);
+        }
+      } catch (error) {
+        throw new Error(`图片附件分析失败：${String(error)}`);
+      }
+    }
+
+    if (textAttachments.length > 0) {
+      const textLines: string[] = [];
+      for (const attachment of textAttachments) {
+        try {
+          const content = await readFileAsText(attachment.file);
+          const excerpt = content.slice(0, 6000);
+          textLines.push(`### ${attachment.name}\n${excerpt}${content.length > excerpt.length ? "\n...[内容已截断]" : ""}`);
+        } catch (error) {
+          textLines.push(`### ${attachment.name}\n[读取失败] ${String(error)}`);
+        }
+      }
+      sections.push(`[文本附件内容]\n${textLines.join("\n\n")}`);
+    }
+
+    if (genericFiles.length > 0) {
+      sections.push(`[文件附件元数据]\n${genericFiles.map((item) => `- ${item.name}（${item.mimeType || "未知类型"}，${formatFileSize(item.size)}）`).join("\n")}`);
+    }
+
+    if (unsupportedMedia.length > 0) {
+      const lackingVideo = unsupportedMedia.some((item) => item.kind === "video" && !supervisorTransport.inputModalities.includes("video"));
+      const lackingAudio = unsupportedMedia.some((item) => item.kind === "audio" && !supervisorTransport.inputModalities.includes("audio"));
+      const missingKinds = [lackingVideo ? "视频" : "", lackingAudio ? "音频" : ""].filter(Boolean).join("、");
+      throw new Error(
+        missingKinds
+          ? `当前主管模型未声明 ${missingKinds} 输入能力，无法直接解析这类附件。请切换到支持对应模态的密钥，或先改传截图、转写文本后再发送。`
+          : "当前版本的多模态直读链已支持图片与文本附件；音视频附件还需要接入支持对应模态的兼容端点后才能直接解析。"
+      );
+    }
+
+    return sections.join("\n\n").trim();
+  };
+
   // 发送消息
   async function sendMessage() {
-    const text = chatInput?.value.trim();
-    if (!text) return;
+    const text = chatInput?.value.trim() || "";
+    if (!text && pendingAttachments.length === 0) return;
+    const displayText = text || "请结合我附带的文件处理当前任务。";
+    await reportFrontendE2ECheckpoint("sendMessage:start", { promptPreview: text.slice(0, 120) });
 
     // 核心角色密钥校验：江星图/江星河/江青澜/江若溪/江映秋 必须全部配置密钥
     if (!isCoreKeyConfigured()) {
+      await reportFrontendE2ECheckpoint("sendMessage:missing-core-key");
       const names = getUnconfiguredCoreNames();
       showError(`核心角色「${names.join("、")}」未配置密钥，请先在设置 → 专家团配置中为它们绑定 API 密钥`);
       return;
@@ -2012,41 +2275,90 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     const session = sessions.find((s) => s.id === currentSessionId)!;
-    session.messages.push({ role: "user", content: text });
+    const attachmentMeta = pendingAttachments.map((item) => ({
+      name: item.name,
+      mimeType: item.mimeType,
+      size: item.size,
+      kind: item.kind,
+    }));
+    session.messages.push({
+      role: "user",
+      content: buildUserMessagePayloadText(displayText, currentChatRunMode, attachmentMeta),
+    });
 
     // 保存用户消息到数据库
+    await reportFrontendE2ECheckpoint("sendMessage:before-save-user");
     await saveSessionToDb(currentSessionId, currentProjectId);
+    await reportFrontendE2ECheckpoint("sendMessage:after-save-user", {
+      currentProjectId,
+      currentSessionId,
+    });
 
     // 保存用户意图到 Ephemeral 记忆
     const projectForMemory = sidebar.getActiveChat();
     if (projectForMemory) {
-      saveUserIntentMemory(projectForMemory.name, currentProjectId, text).catch(console.error);
+      saveUserIntentMemory(projectForMemory.name, currentProjectId, displayText).catch(console.error);
     }
 
     // 清空输入框
     chatInput.value = "";
     chatInput.style.height = "auto";
+    const attachmentsForThisTurn = [...pendingAttachments];
+    pendingAttachments = [];
+    renderComposerMeta();
 
     // 显示用户消息
     renderMessages();
     updateHistoryDisplay();
+    await reportFrontendE2ECheckpoint("sendMessage:after-render-user");
 
     // 获取主管（江星图）的 API 密钥
     const supervisorKey = getExpertApiKey("jiang-xingtu");
     const supervisorModel = getExpertModel("jiang-xingtu");
     if (!supervisorKey) {
+      await reportFrontendE2ECheckpoint("sendMessage:missing-supervisor-key");
       showError("主管「江星图」未配置密钥，请在设置中绑定");
       session.messages.push({ role: "assistant", content: "请先为「江星图」配置 API 密钥。" });
       renderMessages();
       return;
     }
 
+    const supervisorTransport = resolveKeyTransport(getExpertKeyId("jiang-xingtu"));
+    if (!supervisorTransport) {
+      showError("主管「江星图」当前绑定的密钥缺少模型或端点信息，无法继续发送。");
+      session.messages.push({ role: "assistant", content: "主管当前绑定的密钥配置不完整，请在设置中重新配置后再试。" });
+      renderMessages();
+      return;
+    }
+
+    let effectiveText = applyRunModeToPrompt(displayText, currentChatRunMode);
+    if (attachmentsForThisTurn.length > 0) {
+      try {
+        const attachmentContext = await buildAttachmentContext(displayText, supervisorTransport, attachmentsForThisTurn);
+        if (attachmentContext) {
+          effectiveText = `${effectiveText}\n\n${attachmentContext}`;
+        }
+      } catch (error) {
+        const errorMessage = String(error);
+        showError(errorMessage);
+        session.messages.push({ role: "assistant", content: errorMessage });
+        await saveSessionToDb(currentSessionId, currentProjectId);
+        renderMessages();
+        return;
+      }
+    }
+    const supervisorSessionMessages = buildSupervisorSessionMessages(session.messages);
+    const supervisorCurrentMessages = [
+      ...supervisorSessionMessages.slice(0, -1),
+      { role: "user", content: effectiveText } as ChatMessage,
+    ];
+
     // 如果流水线正在执行：将新消息作为增量提交
     if (pipelineRunning) {
       showLoading("主管正在分析补充要求...");
       try {
         const decision = await analyzeFollowupIntent(
-          text,
+          effectiveText,
           currentDispatchPlan!,
           supervisorKey,
           getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
@@ -2072,27 +2384,28 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
         };
         let reply = "";
+        const progressReport = await buildProgressReport();
 
         switch (decision.action) {
           case "respond":
-            reply = decision.reply || `${buildProgressReport()}\n\n我会继续盯着当前这轮执行。`;
+            reply = decision.reply || `${progressReport}\n\n我会继续盯着当前这轮执行。`;
             break;
           case "replace":
-            appendFollowup(decision.taskDescription || text, true);
-            reply = `我已按你的最新意思改写当前任务目标，并会直接同步给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            appendFollowup(decision.taskDescription || effectiveText, true);
+            reply = `我已按你的最新意思改写当前任务目标，并会直接同步给对应专家。${followupTargetText}\n\n${progressReport}`;
             break;
           case "respond-and-append":
-            appendFollowup(decision.taskDescription || text);
-            reply = decision.reply || `我已经理解你的插话，并会直接转给对应专家处理。${followupTargetText}\n\n${buildProgressReport()}`;
+            appendFollowup(decision.taskDescription || effectiveText);
+            reply = decision.reply || `我已经理解你的插话，并会直接转给对应专家处理。${followupTargetText}\n\n${progressReport}`;
             break;
           case "respond-and-replace":
-            appendFollowup(decision.taskDescription || text, true);
-            reply = decision.reply || `我已按你的更正更新当前任务方向，并会直接同步给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            appendFollowup(decision.taskDescription || effectiveText, true);
+            reply = decision.reply || `我已按你的更正更新当前任务方向，并会直接同步给对应专家。${followupTargetText}\n\n${progressReport}`;
             break;
           case "append":
           default:
-            appendFollowup(decision.taskDescription || text);
-            reply = `已收到新消息。当前专家团执行中，我会直接把这条补充交给对应专家。${followupTargetText}\n\n${buildProgressReport()}`;
+            appendFollowup(decision.taskDescription || effectiveText);
+            reply = `已收到新消息。当前专家团执行中，我会直接把这条补充交给对应专家。${followupTargetText}\n\n${progressReport}`;
             break;
         }
 
@@ -2102,7 +2415,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         log("WARN", `增量意图分析失败: ${e}`);
         pendingFollowups.push({
           id: `followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          message: text,
+          message: effectiveText,
           targetExpertIds: [],
           deliveryMode: "all-remaining",
           consumedBy: [],
@@ -2120,65 +2433,51 @@ document.addEventListener("DOMContentLoaded", async () => {
     showLoading("主管正在规划专家调度...");
     let dispatchPlan: DispatchPlan;
     try {
+      await reportFrontendE2ECheckpoint("sendMessage:before-artifact-followup");
       const artifactFollowupPlan = await buildArtifactFollowupPlan(
-        text,
-        session.messages.slice(0, -1),
-        activeProject?.name
+        effectiveText,
+        supervisorSessionMessages.slice(0, -1),
+        activeProject?.name,
+        activeProject?.workspacePath
       );
+      await reportFrontendE2ECheckpoint("sendMessage:after-artifact-followup", {
+        matchedArtifactFollowup: !!artifactFollowupPlan,
+      });
       if (artifactFollowupPlan) {
         dispatchPlan = artifactFollowupPlan;
         log("INFO", `产物追改命中增量开发分流：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
       } else {
-      // 感知索引上下文
-        let searchContext = "";
-        if (perceptualIndexReady) {
-          const searchProject = sidebar.getActiveChat();
-          if (searchProject) {
-            try {
-              searchContext = await invoke<string>("perceptual_index_search", {
-                projectName: searchProject.name,
-                query: text,
-              });
-            } catch (e) { log("WARN", `感知索引检索失败: ${e}`); }
-          }
-        }
-
         // 构建对话历史上下文（排除当前用户消息，避免重复）
-        const historyForSupervisor = buildApiMessages(session.messages.slice(0, -1));
-
         // 可用专家列表（不含主管和助手）
         const availableExperts = getAvailableExpertInfos();
 
-        // 用户消息 + 感知索引上下文
-        let memoryContext = "";
-        if (activeProject?.name) {
-          try {
-            memoryContext = await buildGeneralMemoryContext(activeProject.name, currentProjectId, text);
-          } catch (e) {
-            log("WARN", `主管记忆检索失败: ${e}`);
-          }
-        }
-
-        const contextParts = [
-          searchContext ? `[项目相关代码]\n${searchContext}` : "",
-          memoryContext ? `[项目历史记忆]\n${memoryContext.trim()}` : "",
-          `[用户需求]\n${text}`,
-        ].filter(Boolean);
-        const userMessageWithContext = contextParts.join("\n\n");
-
-        dispatchPlan = await supervisorAnalyze(
-          userMessageWithContext,
-          historyForSupervisor,
+        await reportFrontendE2ECheckpoint("sendMessage:before-supervisor-analyze");
+        dispatchPlan = await supervisorPrepareAndAnalyzeDispatch(
+          effectiveText,
+          supervisorSessionMessages.slice(0, -1),
           availableExperts,
+          {
+            name: activeProject?.name,
+            workspacePath: activeProject?.workspacePath,
+            projectId: currentProjectId ?? undefined,
+            currentSessionLabel: currentSessionId ? `对话 ${currentSessionId}` : "未命名对话",
+          },
           supervisorKey,
           getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
           supervisorModel
         );
+        await reportFrontendE2ECheckpoint("sendMessage:after-supervisor-analyze", {
+          scene: dispatchPlan.scene,
+          expertCount: dispatchPlan.expertIds.length,
+        });
         log("INFO", `主管决策：scene=${dispatchPlan.scene}, experts=[${dispatchPlan.expertIds.join(",")}]`);
       }
     } catch (e) {
+      await reportFrontendE2ECheckpoint("sendMessage:dispatch-plan-error", {
+        error: String(e),
+      });
       log("ERROR", `主管意图分析失败: ${e}`);
-      dispatchPlan = { scene: "quick-answer", taskDescription: text, expertIds: [] };
+      dispatchPlan = { scene: "quick-answer", taskDescription: effectiveText, expertIds: [] };
     }
 
     // === 根据场景执行 ===
@@ -2188,45 +2487,25 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (dispatchPlan.scene === "quick-answer" || dispatchPlan.expertIds.length === 0) {
       // 简单问题：主管直接回答
       try {
-        const apiMessages = buildApiMessages(session.messages);
-        const rawReply = await invoke<string>("chat_with_expert", {
-          messages: apiMessages,
-          apiKey: supervisorKey,
-          systemPrompt: "你是「江星图」，项目主管。现在用户有一个简单问题，请直接回答。回答要简洁明了。",
-          model: getExpertModel("jiang-xingtu"),
-        });
-
-        // 解析后端返回的 JSON（包含 content 和 usage）
-        let reply = rawReply;
-        let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
-        try {
-          const parsed = JSON.parse(rawReply);
-          if (parsed && typeof parsed === "object") {
-            if (typeof parsed.content === "string") {
-              reply = parsed.content;
-            }
-            if (parsed.usage && typeof parsed.usage === "object") {
-              usage = parsed.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-            }
-          }
-        } catch {
-          // 不是 JSON 则直接使用原始文本
-        }
-
-        // 记录词元使用（fire-and-forget）
-        if (usage) {
-          recordTokenUsage(
-            "jiang-xingtu",
-            "江星图",
-            getExpertModel("jiang-xingtu"),
-            getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
-            usage,
-            "主管"
-          ).catch(console.error);
-        }
+        await reportFrontendE2ECheckpoint("sendMessage:before-quick-answer");
+        const reply = await supervisorPrepareQuickAnswer(
+          supervisorCurrentMessages,
+          {
+            name: activeProject?.name,
+            workspacePath: activeProject?.workspacePath,
+            currentSessionLabel: currentSessionId ? `对话 ${currentSessionId}` : "未命名对话",
+          },
+          supervisorKey,
+          getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
+          getExpertModel("jiang-xingtu")
+        );
+        await reportFrontendE2ECheckpoint("sendMessage:after-quick-answer");
 
         finalReply = reply;
       } catch (e) {
+        await reportFrontendE2ECheckpoint("sendMessage:quick-answer-error", {
+          error: String(e),
+        });
         finalReply = `抱歉，请求出错：${e}`;
       }
     } else {
@@ -2235,35 +2514,26 @@ document.addEventListener("DOMContentLoaded", async () => {
       currentDispatchPlan = dispatchPlan;
       pendingFollowups = [];
       hideLoading();
-      appendCleanSystemMessage(buildDispatchNarrative(dispatchPlan));
+      const activeProjectForPipeline = sidebar.getActiveChat();
+      const preparedLaunch = await preparePipelineLaunch(
+        dispatchPlan,
+        activeProjectForPipeline?.name,
+        activeProjectForPipeline?.workspacePath,
+        pendingFollowups,
+      );
+      appendCleanSystemMessage(preparedLaunch.narrative);
 
       // 立即渲染所有专家的 pending 卡片，让用户看到专家团正在加入
-      const dispatchWaves = buildDispatchWaves(dispatchPlan);
-      const expertWaveMap = new Map<string, number>();
-      dispatchWaves.forEach((wave) => {
-        wave.expertIds.forEach((expertId) => {
-          if (!expertWaveMap.has(expertId)) expertWaveMap.set(expertId, wave.wave);
-        });
-      });
-      const dispatchedExpertIds = [...expertWaveMap.keys()];
-      const joiningTasks: ExpertTask[] = dispatchedExpertIds.map((id) => {
-        const info = getAvailableExpertInfos().find((e) => e.id === id);
-        return {
-          id: `joining-${id}`,
-          expertId: id,
-          expertName: info?.name || id,
-          expertTitle: info?.title || "未知",
-          status: "pending" as const,
-          input: dispatchPlan.taskDescription,
-          dispatchWave: expertWaveMap.get(id) || 1,
-        };
-      });
+      const joiningTasks: ExpertTask[] = preparedLaunch.joiningTasks;
       window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: joiningTasks } }));
 
       try {
         // 执行流水线（onProgress 回调实时更新 UI，主管中途检查）
-        const activeProjectForPipeline = sidebar.getActiveChat();
         let currentPipelineTasks: ExpertTask[] = [];
+        await reportFrontendE2ECheckpoint("sendMessage:before-pipeline", {
+          scene: dispatchPlan.scene,
+          expertCount: dispatchPlan.expertIds.length,
+        });
         const pipelineResult = await executePipeline(
           dispatchPlan,
           getExpertApiKey,
@@ -2272,13 +2542,30 @@ document.addEventListener("DOMContentLoaded", async () => {
             // 实时渲染专家任务卡片（通过全局事件）
             currentPipelineTasks = tasks;
             window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks } }));
+            if (frontendE2ERunning) {
+              const finished = tasks.filter((item) => item.status === "done").length;
+              const failed = tasks.filter((item) => item.status === "error").length;
+              const running = tasks.filter((item) => item.status === "running").length;
+              const latest = tasks[tasks.length - 1];
+              void reportFrontendE2ECheckpoint("pipeline:tasks-update", {
+                finishedTasks: finished,
+                failedTasks: failed,
+                runningTasks: running,
+                latestExpert: latest?.expertName || "",
+                latestStatus: latest?.status || "",
+              });
+            }
+          },
+          {
+            pipelineId: preparedLaunch.pipelineId,
+            layout: preparedLaunch.layout,
+            state: preparedLaunch.state,
           },
           activeProjectForPipeline?.name,
           activeProjectForPipeline?.id,
           activeProjectForPipeline?.workspacePath,
           supervisorKey,
           supervisorModel,
-          pendingFollowups,
           (action: string, reason?: string) => {
             // 主管中途决策只写入日志，不进入聊天消息，避免元数据泄露。
             const actionLabels: Record<string, string> = {
@@ -2298,8 +2585,23 @@ document.addEventListener("DOMContentLoaded", async () => {
               task.phaseDetail = progress.detail;
               window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: [...currentPipelineTasks] } }));
             }
+            if (frontendE2ERunning) {
+              void reportFrontendE2ECheckpoint("pipeline:expert-progress", {
+                expertId: progress.expertId,
+                phase: progress.phase,
+                detail: progress.detail,
+              });
+            }
           },
           (event: ExpertToolEvent) => {
+            if (frontendE2ERunning) {
+              void reportFrontendE2ECheckpoint("pipeline:tool-event", {
+                toolEventKind: event.kind,
+                toolEventStatus: event.status,
+                toolEventExpertId: event.expertId,
+                toolEventReason: event.reason.slice(0, 120),
+              });
+            }
             appendToolEventToCurrentSession(
               event.kind === "web-search"
                 ? {
@@ -2336,6 +2638,16 @@ document.addEventListener("DOMContentLoaded", async () => {
             ).catch(console.error);
           },
           async (request: ExpertCommandAuthorizationRequest) => {
+            if (frontendE2ERunning) {
+              await reportFrontendE2ECheckpoint("pipeline:awaiting-command-auth", {
+                authExpertId: request.expertId,
+                authMode: request.authMode,
+                authCommand: request.command.slice(0, 200),
+                authWorkingDir: request.workingDir,
+              });
+              await appendFrontendE2ELog(`自动授权命令：${request.command}`);
+              return true;
+            }
             return showCommandAuthDialog(
               request.command,
               request.workingDir,
@@ -2346,16 +2658,20 @@ document.addEventListener("DOMContentLoaded", async () => {
             );
           }
         );
+        await reportFrontendE2ECheckpoint("sendMessage:after-pipeline", {
+          taskCount: pipelineResult.tasks.length,
+          pipelineId: pipelineResult.pipelineId,
+        });
         const expertResults = pipelineResult.tasks;
         const pipelineId = pipelineResult.pipelineId;
-        actionExecutionSources = expertResults
+        actionExecutionSources = compactLatestActionSources(expertResults
           .filter((t) => !!t.output)
           .map((t) => ({
             content: t.output || "",
             expertId: t.expertId,
             expertName: t.expertName,
             expertTitle: t.expertTitle,
-          }));
+          })));
 
         // 将专家卡片快照作为消息推入会话历史（作为对话的一部分永久保留）
         session.messages.push({
@@ -2373,20 +2689,27 @@ document.addEventListener("DOMContentLoaded", async () => {
           }))),
         });
 
-        // 检查是否有补充消息需传递给审核阶段
-        const followupContext = pendingFollowups.length > 0
-          ? `\n\n用户补充要求：${pendingFollowups.map((item) => item.message).join("；")}`
-          : "";
-
-        // 主管审核所有专家结果
+        // 主管审核所有专家结果，并由后端统一做交付真实性校验
         showLoading("主管正在审核专家成果...");
-        finalReply = await supervisorReview(
-          dispatchPlan.taskDescription + followupContext,
+        await reportFrontendE2ECheckpoint("sendMessage:before-supervisor-review");
+        const finalizedDelivery = await finalizePipelineDelivery(
+          dispatchPlan.taskDescription,
+          pendingFollowups.map((item) => item.message),
           expertResults,
+          actionExecutionSources,
+          {
+            workspacePath: activeProjectForPipeline?.workspacePath,
+            requireRealMutations: !!activeProjectForPipeline?.workspacePath
+              && dispatchPlan.expertIds.some((expertId) =>
+                ["jiang-dingchu", "jiang-qinglan", "jiang-yumo", "jiang-subai"].includes(expertId)
+              ),
+          },
           supervisorKey,
           getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
           supervisorModel
         );
+        finalReply = finalizedDelivery.reply;
+        await reportFrontendE2ECheckpoint("sendMessage:after-supervisor-review");
 
         // 生成交付清单（fire-and-forget）
         if (activeProjectForPipeline?.name && pipelineId) {
@@ -2405,6 +2728,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
       } catch (e) {
+        await reportFrontendE2ECheckpoint("sendMessage:pipeline-error", {
+          error: String(e),
+        });
         log("ERROR", `流水线执行失败: ${e}`);
         finalReply = `专家团执行出错：${e}`;
       } finally {
@@ -2413,27 +2739,40 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
 
+    // 解析专家原始输出中的结构化 ChangeSet/ACTION，直接执行文件变更。
+    await reportFrontendE2ECheckpoint("sendMessage:before-execute-actions");
+    const actionExecutionResult = await executeAgentActions(
+      actionExecutionSources.length > 0
+        ? actionExecutionSources
+        : [{ content: finalReply, expertId: "jiang-xingtu", expertName: "江星图", expertTitle: "主管" }],
+      effectiveText,
+      { emitSummaryMessage: false }
+    );
+    const activeProjectAfterActions = sidebar.getActiveChat();
+    finalReply = await reconcileSupervisorReplyWithWorkspaceFacts(
+      finalReply,
+      effectiveText,
+      activeProjectAfterActions,
+      actionExecutionResult
+    );
+
     // 主管最终回复极简化：剥离代码块与元数据，仅保留一句交付语
     const sanitizedReply = sanitizeSupervisorReply(finalReply);
 
     // 将最终回复推入会话
     session.messages.push({ role: "assistant", content: sanitizedReply });
+    emitAgentActionExecutionSummary(actionExecutionResult);
 
     // 保存到数据库
+    await reportFrontendE2ECheckpoint("sendMessage:before-save-assistant");
     await saveSessionToDb(currentSessionId, currentProjectId);
+    await reportFrontendE2ECheckpoint("sendMessage:after-save-assistant");
 
     hideLoading();
     // 移除运行中的实时卡片占位（已通过 expert-tasks 消息持久化）
     document.getElementById("chat-messages")?.querySelector('.expert-tasks-group[data-live="true"]')?.remove();
     renderMessages();
-
-    // 解析专家原始输出中的结构化 ChangeSet/ACTION，直接执行文件变更。
-    await executeAgentActions(
-      actionExecutionSources.length > 0
-        ? actionExecutionSources
-        : [{ content: finalReply, expertId: "jiang-xingtu", expertName: "江星图", expertTitle: "主管" }],
-      text
-    );
+    await reportFrontendE2ECheckpoint("sendMessage:completed");
   }
 
   // ========== 流式渲染支持 ==========
@@ -2638,6 +2977,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     expertTitle: string;
   }
 
+  function compactLatestActionSources(
+    sources: AgentActionSource[]
+  ): AgentActionSource[] {
+    const latestByExpert = new Map<string, AgentActionSource>();
+    const latestMutationByExpert = new Map<string, AgentActionSource>();
+    const hasExecutableMutationPayload = (content: string) =>
+      /\[ACTION:(?:CREATE_FOLDER|DELETE):[^\]]+\]/i.test(content)
+      || /\[ACTION:(?:CREATE_FOLDER|DELETE)\s+[^\]]*path="/i.test(content)
+      || /\[ACTION:(?:CREATE_FILE|WRITE_FILE)(?::[^\]]+|\s+[^\]]*)\]\s*```/i.test(content)
+      || /\[ACTION:(?:CREATE_FILE|WRITE_FILE)\s+[^\]]*content=(?:"[\s\S]*?"|'[\s\S]*?')\]/i.test(content)
+      || /\[ACTION:EDIT_FILE(?::[^\]]+|\s+[^\]]*)\](?:\*\*)?\s*```(?:search|replace|\w+)/i.test(content)
+      || /\[ACTION:EDIT_FILE\s+[^\]]*(?:searchText|replaceText)=(?:"[\s\S]*?"|'[\s\S]*?')/i.test(content)
+      || /"changes"\s*:|"operation"\s*:\s*"(?:create_file|write_file|edit_file|create_folder|delete)"/i.test(content);
+    for (const source of sources) {
+      if (!source.content?.trim()) continue;
+      latestByExpert.set(source.expertId, source);
+      if (hasExecutableMutationPayload(source.content)) {
+        latestMutationByExpert.set(source.expertId, source);
+      }
+    }
+    return [...latestByExpert.keys()].map((expertId) =>
+      latestMutationByExpert.get(expertId) || latestByExpert.get(expertId)!
+    );
+  }
+
   interface AgentAction {
     type: "CREATE_FOLDER" | "CREATE_FILE" | "WRITE_FILE" | "EDIT_FILE" | "DELETE" | "INDEX_BUILD" | "INDEX_SEARCH"
       | "WEB_SEARCH" | "EXECUTE_CMD" | "READ_DOCUMENT" | "WRITE_DOCUMENT" | "GENERATE_IMAGE"
@@ -2661,133 +3025,62 @@ document.addEventListener("DOMContentLoaded", async () => {
       || action.type === "DELETE";
   }
 
-  function actionToChangeSet(action: AgentAction): ChangeSet | null {
-    switch (action.type) {
-      case "CREATE_FOLDER":
-        return {
-          operation: "create_folder",
-          path: action.path,
-          rationale: "AI 请求创建目录",
-          risk: "low",
-        };
-      case "CREATE_FILE":
-        return {
-          operation: "create_file",
-          path: action.path,
-          content: action.content || "",
-          rationale: "AI 请求创建文件",
-          risk: "medium",
-        };
-      case "EDIT_FILE":
-        return {
-          operation: "edit_file",
-          path: action.path,
-          searchText: action.searchText || "",
-          replaceText: action.replaceText || "",
-          rationale: "AI 请求局部编辑文件",
-          risk: "medium",
-        };
-      case "WRITE_FILE":
-        return {
-          operation: "write_file",
-          path: action.path,
-          content: action.content || "",
-          rationale: "AI 请求写入文件；已有文件默认会被后端阻断，避免全量覆盖",
-          risk: "high",
-        };
-      case "DELETE":
-        return {
-          operation: "delete",
-          path: action.path,
-          rationale: "AI 请求删除文件或目录",
-          risk: "high",
-        };
-      default:
-        return null;
-    }
+  function parseLabeledEditPayload(payload: string): { searchText: string; replaceText: string } | null {
+    const normalized = payload.replace(/\r\n/g, "\n").trim();
+    const match = normalized.match(/^\s*searchText:\s*([\s\S]*?)\n\s*replaceText:\s*([\s\S]*)$/i);
+    if (!match) return null;
+    const searchText = match[1].trim();
+    const replaceText = match[2].trim();
+    if (!searchText) return null;
+    return { searchText, replaceText };
   }
 
-  function extractStructuredChangeSets(content: string): ChangeSet[] {
-    const changes: ChangeSet[] = [];
-    const tryParseJson = (raw: string): any | null => {
-      const candidates = [raw, raw.replace(/,\s*([}\]])/g, "$1")];
-      for (const candidate of candidates) {
-        try {
-          return JSON.parse(candidate);
-        } catch {
-          // 尝试下一个候选
-        }
-      }
-      return null;
-    };
-    const parseChangesFromParsed = (parsed: any) => {
-      const rawChanges = Array.isArray(parsed) ? parsed : parsed?.changes;
-      if (!Array.isArray(rawChanges)) return;
-      for (const raw of rawChanges) {
-        if (!raw || typeof raw !== "object" || typeof raw.path !== "string") continue;
-        const op = String(raw.operation || raw.type || "").toLowerCase().replace(/-/g, "_");
-        if (!["create_folder", "create_file", "write_file", "edit_file", "delete"].includes(op)) continue;
-        changes.push({
-          operation: op as ChangeSet["operation"],
-          path: raw.path,
-          searchText: raw.searchText ?? raw.search_text,
-          replaceText: raw.replaceText ?? raw.replace_text,
-          content: raw.content,
-          rationale: raw.rationale,
-          risk: raw.risk,
-          allowOverwrite: raw.allowOverwrite ?? raw.allow_overwrite,
-        });
-      }
-    };
-    const jsonFenceRegex = /```(?:json)?\s*([\s\S]*?)```/g;
-    let match;
-    while ((match = jsonFenceRegex.exec(content)) !== null) {
-      const parsed = tryParseJson(match[1]);
-      if (parsed) parseChangesFromParsed(parsed);
-    }
-    // 兜底：处理未包裹在代码块中的 JSON（常见于模型直接输出对象）
-    const rawJsonRegex = /(\{[\s\S]*?"changes"\s*:\s*\[[\s\S]*?\][\s\S]*?\})/g;
-    while ((match = rawJsonRegex.exec(content)) !== null) {
-      const parsed = tryParseJson(match[1]);
-      if (parsed) parseChangesFromParsed(parsed);
-    }
-    return changes;
+  function decodeActionParamValue(value: string): string {
+    return value
+      .replace(/'\\''/g, "'")
+      .replace(/\\"/g, "\"")
+      .replace(/\\r/g, "\r")
+      .replace(/\\n/g, "\n");
   }
 
-  function extractStructuredRequiredFiles(content: string): string[] {
-    const files = new Set<string>();
-    const tryParseJson = (raw: string): any | null => {
-      const candidates = [raw, raw.replace(/,\s*([}\]])/g, "$1")];
-      for (const candidate of candidates) {
-        try {
-          return JSON.parse(candidate);
-        } catch {
-          // 尝试下一个候选
-        }
-      }
-      return null;
-    };
-    const hasValidChanges = (parsed: any): boolean => {
-      const rawChanges = Array.isArray(parsed) ? parsed : parsed?.changes;
-      if (!Array.isArray(rawChanges)) return false;
-      return rawChanges.some((raw: any) => {
-        if (!raw || typeof raw !== "object" || typeof raw.path !== "string") return false;
-        const op = String(raw.operation || raw.type || "").toLowerCase().replace(/-/g, "_");
-        return ["create_folder", "create_file", "write_file", "edit_file", "delete"].includes(op);
-      });
-    };
-    const jsonFenceRegex = /```(?:json)?\s*([\s\S]*?)```/g;
-    let match;
-    while ((match = jsonFenceRegex.exec(content)) !== null) {
-      const parsed = tryParseJson(match[1]);
-      if (!parsed || !hasValidChanges(parsed)) continue;
-      const rawFiles = parsed?.requiredFiles ?? parsed?.required_files;
-      if (!Array.isArray(rawFiles)) continue;
-      for (const file of rawFiles) {
-        if (typeof file === "string" && file.trim()) files.add(file.trim());
-      }
-    }
-    return [...files];
+  interface InlineActionParamBlock {
+    type: string;
+    raw: string;
+    paramsStr: string;
+    legacyArg?: string;
+    params: Record<string, string>;
+  }
+
+  interface AgentActionExecutionResult {
+    applied: number;
+    failed: number;
+    fileMutationsApplied: number;
+    folderOpsApplied: number;
+    touchedFiles: string[];
+    errors: string[];
+  }
+
+  interface AgentDeliveryAnalysis {
+    parsedActionCount: number;
+    structuredChangeCount: number;
+    requiredFiles: string[];
+    executableMutations: Array<{ actionType: string; path: string }>;
+    hasExecutableMutation: boolean;
+    hasSourceMutation: boolean;
+    workspaceIssues: string[];
+  }
+
+  async function analyzeAgentDelivery(
+    sources: Array<{ content: string; expertId?: string; expertName?: string; expertTitle?: string }>,
+    userTaskText: string,
+    workspacePath?: string | null
+  ): Promise<AgentDeliveryAnalysis> {
+    const raw = await invoke<string>("analyze_agent_delivery", {
+      sourcesJson: JSON.stringify(sources.map((source) => ({ content: source.content }))),
+      userTaskText,
+      workspacePath: workspacePath || null,
+    });
+    return JSON.parse(raw) as AgentDeliveryAnalysis;
   }
 
   function appendCleanSystemMessage(text: string): void {
@@ -2799,14 +3092,212 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderMessages();
   }
 
+  function emitAgentActionExecutionSummary(result: AgentActionExecutionResult): void {
+    if (result.failed > 0) {
+      const topErrors = result.errors.slice(0, 5).map((item, index) => `${index + 1}. ${item}`).join("\n");
+      appendCleanSystemMessage(`部分文件变更未成功（成功 ${result.applied}，失败 ${result.failed}）：\n${topErrors}`);
+    } else if (result.fileMutationsApplied > 0) {
+      appendCleanSystemMessage(`已直接写入源码，共完成 ${result.fileMutationsApplied} 项文件变更。`);
+    } else if (result.folderOpsApplied > 0) {
+      appendCleanSystemMessage(`已完成 ${result.folderOpsApplied} 项目录准备动作，但尚未写入项目源码。`);
+    }
+  }
+
+  async function verifyWorkspaceDeliveryAgainstTask(
+    userTaskText: string,
+    project: { name: string; workspacePath?: string | null } | null,
+    actionResult: AgentActionExecutionResult
+  ): Promise<string[]> {
+    if (!project?.workspacePath) return [];
+    if (actionResult.failed > 0) {
+      return ["仍有文件变更执行失败，项目源码未被完整写入"];
+    }
+
+    try {
+      const analysis = await analyzeAgentDelivery([], userTaskText, project.workspacePath);
+      return Array.isArray(analysis.workspaceIssues)
+        ? analysis.workspaceIssues.map((item) => String(item))
+        : [];
+    } catch (error) {
+      return [`无法验证项目交付结果：${String(error)}`];
+    }
+  }
+
+  async function reconcileSupervisorReplyWithWorkspaceFacts(
+    originalReply: string,
+    userTaskText: string,
+    project: { name: string; workspacePath?: string | null } | null,
+    actionResult: AgentActionExecutionResult
+  ): Promise<string> {
+    const issues = await verifyWorkspaceDeliveryAgainstTask(userTaskText, project, actionResult);
+    if (issues.length === 0) {
+      return originalReply;
+    }
+
+    if (frontendE2ERunning) {
+      void appendFrontendE2ELog(`delivery verification failed: ${issues.join(" | ")}`);
+    }
+
+    const prefix = actionResult.fileMutationsApplied > 0 || actionResult.folderOpsApplied > 0
+      ? "本轮已执行部分修改，但尚未完全达成要求"
+      : "本轮尚未完成要求";
+    return `${prefix}：${issues.join("；")}。请继续修复后再试。`;
+  }
+
+  const ACTION_PARAM_KEYS = [
+    "path",
+    "content",
+    "searchText",
+    "replaceText",
+    "dir",
+    "reason",
+    "rationale",
+    "query",
+    "recursive",
+    "startLine",
+    "endLine",
+    "command",
+    "format",
+    "prompt",
+    "size",
+    "target",
+    "type",
+    "src",
+    "from",
+    "to",
+    "track",
+    "at",
+    "duration",
+  ];
+
   function parseActionParams(paramsStr: string): Record<string, string> {
     const params: Record<string, string> = {};
-    const paramRegex = /(\w+)="([^"]*)"/g;
-    let paramMatch;
-    while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
-      params[paramMatch[1]] = paramMatch[2];
+    const keyPattern = ACTION_PARAM_KEYS.join("|");
+    const matcher = new RegExp(`(?:^|\\s)(${keyPattern})=(["'])`, "g");
+    const matches: Array<{ key: string; quote: string; keyStart: number; valueStart: number }> = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = matcher.exec(paramsStr)) !== null) {
+      const raw = match[0];
+      const key = match[1];
+      const quote = match[2];
+      const prefixLength = raw.length - (key.length + 2);
+      const keyStart = match.index + prefixLength;
+      matches.push({
+        key,
+        quote,
+        keyStart,
+        valueStart: keyStart + key.length + 2,
+      });
+    }
+
+    for (let index = 0; index < matches.length; index += 1) {
+      const current = matches[index];
+      const next = matches[index + 1];
+      const rawSegment = paramsStr
+        .slice(current.valueStart, next ? next.keyStart - 1 : paramsStr.length)
+        .trimEnd();
+      const value = rawSegment.endsWith(current.quote)
+        ? rawSegment.slice(0, -1)
+        : rawSegment;
+      params[current.key] = value;
     }
     return params;
+  }
+
+  function normalizeActionPath(rawPath: string | undefined): string {
+    if (!rawPath) return "";
+    let value = decodeActionParamValue(rawPath).trim();
+    if (!value) return "";
+
+    const markerPatterns = [
+      /\r?\n\s*(?:searchText|replaceText|content|reason|dir)\s*:/i,
+      /\s+(?:searchText|replaceText|content|reason|dir)\s*:/i,
+    ];
+    for (const pattern of markerPatterns) {
+      const match = pattern.exec(value);
+      if (match && typeof match.index === "number") {
+        value = value.slice(0, match.index).trim();
+      }
+    }
+
+    value = value
+      .split(/\r?\n/, 1)[0]
+      .replace(/^["'`]+/, "")
+      .replace(/["'`]+$/, "")
+      .replace(/[,\]]+$/, "")
+      .trim();
+
+    return value;
+  }
+
+  function extractInlineActionParamBlocks(content: string): InlineActionParamBlock[] {
+    const blocks: InlineActionParamBlock[] = [];
+    let start = 0;
+    while (start < content.length) {
+      const marker = content.indexOf("[ACTION:", start);
+      if (marker === -1) break;
+      let cursor = marker + "[ACTION:".length;
+      let quote: "\"" | "'" | null = null;
+      let escaped = false;
+      while (cursor < content.length) {
+        const char = content[cursor];
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (quote) {
+          if (char === quote) quote = null;
+        } else if (char === "\"" || char === "'") {
+          quote = char;
+        } else if (char === "]") {
+          break;
+        }
+        cursor += 1;
+      }
+      if (cursor >= content.length || content[cursor] !== "]") {
+        start = marker + "[ACTION:".length;
+        continue;
+      }
+
+      const raw = content.slice(marker, cursor + 1);
+      const inner = content.slice(marker + "[ACTION:".length, cursor).trim();
+      const spaceIndex = inner.search(/\s/);
+      const colonIndex = inner.indexOf(":");
+
+      if (spaceIndex !== -1) {
+        const type = inner.slice(0, spaceIndex).trim();
+        const paramsStr = inner.slice(spaceIndex).trim();
+        if (type) {
+          blocks.push({
+            type,
+            raw,
+            paramsStr,
+            params: parseActionParams(paramsStr),
+          });
+        }
+      } else if (colonIndex !== -1) {
+        const type = inner.slice(0, colonIndex).trim();
+        const legacyArg = inner.slice(colonIndex + 1).trim();
+        if (type) {
+          blocks.push({
+            type,
+            raw,
+            paramsStr: "",
+            legacyArg,
+            params: {},
+          });
+        }
+      }
+
+      start = cursor + 1;
+    }
+    return blocks;
+  }
+
+  function hasUnsafeInlineFileMutationPayload(block: InlineActionParamBlock): boolean {
+    if (!["CREATE_FILE", "WRITE_FILE", "EDIT_FILE"].includes(block.type)) return false;
+    return /\b(?:content|searchText|replaceText)\s*="/.test(block.paramsStr);
   }
 
   function extractArtifactPathsFromText(content: string): string[] {
@@ -2817,6 +3308,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       const legacyPath = match[1]?.trim();
       const paramPath = match[2] ? parseActionParams(match[2]).path?.trim() : "";
       const path = legacyPath || paramPath;
+      if (path) paths.add(path);
+    }
+    for (const block of extractInlineActionParamBlocks(content)) {
+      if (!["CREATE_FILE", "WRITE_FILE", "EDIT_FILE", "CREATE_FOLDER"].includes(block.type)) continue;
+      const path = (block.params.path || block.legacyArg || "").trim();
       if (path) paths.add(path);
     }
     const jsonPathRegex = /"path"\s*:\s*"([^"]+)"/g;
@@ -2870,7 +3366,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function buildArtifactFollowupPlan(
     text: string,
     messages: ChatMessage[],
-    projectName?: string
+    projectName?: string,
+    projectPath?: string
   ): Promise<DispatchPlan | null> {
     if (!isArtifactModificationRequest(text)) return null;
     const artifactPaths = collectGeneratedArtifactPaths(messages);
@@ -2892,6 +3389,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           const content = await invoke<string>("sandbox_read_file", {
             projectName,
             relativePath: path,
+            projectPath,
           });
           const snippet = content.length > 2400 ? `${content.slice(0, 2400)}\n...(truncated)` : content;
           previews.push(`文件：${path}\n\`\`\`\n${snippet}\n\`\`\``);
@@ -2960,24 +3458,23 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   interface DirectChangeApplyResult {
     applied: number;
+    fileMutationsApplied: number;
+    folderOpsApplied: number;
     failed: number;
     errors: string[];
     touchedFiles: string[];
   }
 
-  function buildDispatchNarrative(plan: DispatchPlan): string {
-    const waves = buildDispatchWaves(plan);
-    if (waves.length === 0) return "主管已完成任务拆解，专家准备开始执行。";
-    const infoMap = new Map(getAvailableExpertInfos().map((e) => [e.id, e]));
-    const waveText = waves.map((w) => {
-      const names = w.expertIds.map((id) => {
-        const info = infoMap.get(id);
-        return info ? `${info.name}（${info.title}）` : id;
-      }).join("、");
-      const mode = w.expertIds.length > 1 ? "并行" : "串行";
-      return `第${w.wave}轮${mode}：${names}`;
-    }).join("\n");
-    return `主管已发起专家协作。\n${waveText}`;
+  interface BackendChangeSession {
+    id: string;
+    status: string;
+    errors: string[];
+    changes: Array<{
+      change: {
+        operation: string;
+        path: string;
+      };
+    }>;
   }
 
   async function proposeAndMaybeApplyChanges(
@@ -2985,14 +3482,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     taskDescription: string,
     changes: ChangeSet[],
     requiredFiles: string[] = [],
-    userTaskText = ""
+    userTaskText = "",
+    projectPath?: string,
+    options: { emitSummaryMessage?: boolean } = {}
   ): Promise<DirectChangeApplyResult | null> {
     if (changes.length === 0) return null;
     void requiredFiles;
-    void taskDescription;
+    void projectPath;
 
     const result: DirectChangeApplyResult = {
       applied: 0,
+      fileMutationsApplied: 0,
+      folderOpsApplied: 0,
       failed: 0,
       errors: [],
       touchedFiles: [],
@@ -3004,62 +3505,47 @@ document.addEventListener("DOMContentLoaded", async () => {
       appendCleanSystemMessage(`检测到潜在变更风险，已继续执行并请你留意：\n${top}`);
     }
 
-    for (const change of changes) {
-      const relativePath = change.path?.trim();
-      if (!relativePath) continue;
-      try {
-        switch (change.operation) {
-          case "create_folder":
-            await invoke("sandbox_create_folder", {
-              projectName,
-              relativePath,
-            });
-            break;
-          case "create_file":
-            await invoke("sandbox_create_file", {
-              projectName,
-              relativePath,
-              content: change.content || "",
-            });
-            break;
-          case "write_file":
-            await invoke("sandbox_write_file", {
-              projectName,
-              relativePath,
-              content: change.content || "",
-            });
-            break;
-          case "edit_file":
-            await invoke("sandbox_edit_file", {
-              projectName,
-              relativePath,
-              searchText: change.searchText || "",
-              replaceText: change.replaceText || "",
-            });
-            break;
-          case "delete":
-            await invoke("sandbox_delete", {
-              projectName,
-              relativePath,
-            });
-            break;
-          default:
-            throw new Error(`不支持的变更操作: ${change.operation}`);
-        }
+    try {
+      const proposedRaw = await invoke<string>("propose_patch", {
+        projectName,
+        taskDescription,
+        changes,
+        requiredFiles,
+        projectPath: projectPath || null,
+      });
+      const proposed = JSON.parse(proposedRaw) as BackendChangeSession;
 
-        result.applied += 1;
-        result.touchedFiles.push(relativePath);
-      } catch (e) {
-        result.failed += 1;
-        result.errors.push(`[${change.operation}] ${relativePath}: ${String(e)}`);
+      if (proposed.status === "blocked") {
+        result.failed = Math.max(proposed.errors.length, 1);
+        result.errors.push(...proposed.errors);
+      } else {
+        const appliedRaw = await invoke<string>("apply_approved_patch", {
+          projectName,
+          sessionId: proposed.id,
+          projectPath: projectPath || null,
+        });
+        const applied = JSON.parse(appliedRaw) as BackendChangeSession;
+        const touchedFiles = applied.changes
+          .map((item) => item?.change?.path?.trim())
+          .filter((item): item is string => !!item);
+        const operations = applied.changes
+          .map((item) => item?.change?.operation?.trim().toLowerCase())
+          .filter((item): item is string => !!item);
+
+        result.applied = touchedFiles.length;
+        result.touchedFiles.push(...touchedFiles);
+        result.folderOpsApplied = operations.filter((op) => op === "create_folder").length;
+        result.fileMutationsApplied = operations.filter((op) => op !== "create_folder").length;
+        result.errors.push(...applied.errors);
+        result.failed = applied.errors.length;
       }
+    } catch (e) {
+      result.failed += 1;
+      result.errors.push(`后端变更会话执行失败: ${String(e)}`);
     }
 
-    if (result.failed > 0) {
-      const topErrors = result.errors.slice(0, 5).map((item, index) => `${index + 1}. ${item}`).join("\n");
-      appendCleanSystemMessage(`部分文件变更未成功（成功 ${result.applied}，失败 ${result.failed}）：\n${topErrors}`);
-    } else if (result.applied > 0) {
-      appendCleanSystemMessage(`已直接写入源码，共完成 ${result.applied} 项文件变更。`);
+    if (options.emitSummaryMessage !== false) {
+      emitAgentActionExecutionSummary(result);
     }
 
     return result;
@@ -3068,20 +3554,35 @@ document.addEventListener("DOMContentLoaded", async () => {
   /** 解析 AI 返回中的动作标记 */
   function parseAgentActions(sources: AgentActionSource[]): AgentAction[] {
     const actions: AgentAction[] = [];
-    const parseParams = (paramsStr: string): Record<string, string> => {
-      const params: Record<string, string> = {};
-      const paramRegex = /(\w+)="([^"]*)"/g;
-      let paramMatch;
-      while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
-        params[paramMatch[1]] = paramMatch[2];
-      }
-      return params;
+    const seen = new Set<string>();
+    const pushUniqueAction = (
+      source: AgentActionSource,
+      action: Omit<AgentAction, "sourceExpertId" | "sourceExpertName" | "sourceExpertTitle" | "requestReason"> & { requestReason?: string }
+    ) => {
+      const key = [
+        source.expertId,
+        action.type,
+        action.path || "",
+        action.searchText || "",
+        action.replaceText || "",
+        action.content || "",
+        JSON.stringify(action.params || {}),
+      ].join("::");
+      if (seen.has(key)) return;
+      seen.add(key);
+      actions.push({
+        ...action,
+        sourceExpertId: source.expertId,
+        sourceExpertName: source.expertName,
+        sourceExpertTitle: source.expertTitle,
+        requestReason: action.requestReason,
+      });
     };
     const resolvePath = (legacyPath: string | undefined, paramStr: string | undefined): string => {
-      if (legacyPath && legacyPath.trim()) return legacyPath.trim();
+      if (legacyPath && legacyPath.trim()) return normalizeActionPath(legacyPath);
       if (paramStr) {
-        const params = parseParams(paramStr);
-        return (params.path || "").trim();
+        const params = parseActionParams(paramStr);
+        return normalizeActionPath(params.path || "");
       }
       return "";
     };
@@ -3089,13 +3590,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     for (const source of sources) {
       const content = source.content;
       const pushAction = (action: Omit<AgentAction, "sourceExpertId" | "sourceExpertName" | "sourceExpertTitle" | "requestReason"> & { requestReason?: string }) => {
-        actions.push({
-          ...action,
-          sourceExpertId: source.expertId,
-          sourceExpertName: source.expertName,
-          sourceExpertTitle: source.expertTitle,
-          requestReason: action.requestReason,
-        });
+        pushUniqueAction(source, action);
       };
 
       const folderRegex = /\[ACTION:CREATE_FOLDER(?::([^\]]+)|(\s+[^\]]+))\]/g;
@@ -3117,7 +3612,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
-      const editRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:search|SEARCH)\r?\n([\s\S]*?)```\s*```(?:replace|REPLACE)\r?\n([\s\S]*?)```/g;
+      const inlineCreateRegex = /\[ACTION:CREATE_FILE\s+path="([^"]+)"\s+content='([\s\S]*?)'\]/g;
+      while ((match = inlineCreateRegex.exec(content)) !== null) {
+        pushAction({
+          type: "CREATE_FILE",
+          path: normalizeActionPath(match[1]),
+          content: decodeActionParamValue(match[2]),
+        });
+      }
+
+      const editRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?\s*```(?:search|SEARCH)\r?\n([\s\S]*?)```\s*```(?:replace|REPLACE)\r?\n([\s\S]*?)```/g;
       while ((match = editRegex.exec(content)) !== null) {
         const path = resolvePath(match[1], match[2]);
         if (!path) continue;
@@ -3129,6 +3633,32 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
+      const labeledEditRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?[\s\S]*?`?searchText`?:\s*```(?:\w*\r?\n)?([\s\S]*?)```\s*`?replaceText`?:\s*```(?:\w*\r?\n)?([\s\S]*?)```/g;
+      while ((match = labeledEditRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({
+          type: "EDIT_FILE",
+          path,
+          searchText: match[3].trimEnd(),
+          replaceText: match[4].trimEnd(),
+        });
+      }
+
+      const compactEditRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w+)?\r?\n([\s\S]*?)```/g;
+      while ((match = compactEditRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        const payload = parseLabeledEditPayload(match[3]);
+        if (!payload) continue;
+        pushAction({
+          type: "EDIT_FILE",
+          path,
+          searchText: payload.searchText,
+          replaceText: payload.replaceText,
+        });
+      }
+
       const writeRegex = /\[ACTION:WRITE_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w*\n)?([\s\S]*?)```/g;
       while ((match = writeRegex.exec(content)) !== null) {
         const path = resolvePath(match[1], match[2]);
@@ -3137,6 +3667,15 @@ document.addEventListener("DOMContentLoaded", async () => {
           type: "WRITE_FILE",
           path,
           content: match[3].trimEnd(),
+        });
+      }
+
+      const inlineWriteRegex = /\[ACTION:WRITE_FILE\s+path="([^"]+)"\s+content='([\s\S]*?)'\]/g;
+      while ((match = inlineWriteRegex.exec(content)) !== null) {
+        pushAction({
+          type: "WRITE_FILE",
+          path: normalizeActionPath(match[1]),
+          content: decodeActionParamValue(match[2]),
         });
       }
 
@@ -3157,17 +3696,48 @@ document.addEventListener("DOMContentLoaded", async () => {
         pushAction({ type: "INDEX_SEARCH", path: match[1].trim() });
       }
 
-      const paramActionRegex = /\[ACTION:([A-Z_]+)((?:\s+\w+="[^"]*")*)\]/g;
-      while ((match = paramActionRegex.exec(content)) !== null) {
-        const actionType = match[1];
-        const paramsStr = match[2];
+      for (const block of extractInlineActionParamBlocks(content)) {
+        const actionType = block.type;
+        if (hasUnsafeInlineFileMutationPayload(block)) continue;
+        const params = Object.fromEntries(
+          Object.entries(block.params).map(([key, value]) => [key, decodeActionParamValue(value)])
+        );
+        const path = normalizeActionPath(params.path || block.legacyArg || "");
+
+        if (actionType === "CREATE_FILE" && params.path && Object.prototype.hasOwnProperty.call(params, "content")) {
+          pushAction({
+            type: "CREATE_FILE",
+            path,
+            content: decodeActionParamValue(params.content || ""),
+          });
+          continue;
+        }
+
+        if (actionType === "WRITE_FILE" && params.path && Object.prototype.hasOwnProperty.call(params, "content")) {
+          pushAction({
+            type: "WRITE_FILE",
+            path,
+            content: decodeActionParamValue(params.content || ""),
+          });
+          continue;
+        }
+
+        if (actionType === "EDIT_FILE" && params.path && Object.prototype.hasOwnProperty.call(params, "searchText")) {
+          pushAction({
+            type: "EDIT_FILE",
+            path,
+            searchText: decodeActionParamValue(params.searchText || ""),
+            replaceText: decodeActionParamValue(params.replaceText || ""),
+          });
+          continue;
+        }
+
         if (["CREATE_FILE", "WRITE_FILE", "EDIT_FILE", "CREATE_FOLDER", "DELETE"].includes(actionType)) continue;
-        const params = parseParams(paramsStr);
         pushAction({
           type: actionType as AgentAction["type"],
-          path: params.path || "",
+          path,
           params,
-          requestReason: params.reason || params.rationale,
+          requestReason: decodeActionParamValue(params.reason || params.rationale || ""),
         });
       }
     }
@@ -3176,22 +3746,47 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   /** 执行 Agent 动作 */
-  async function executeAgentActions(sources: AgentActionSource[], userTaskText = ""): Promise<void> {
-    const actions = parseAgentActions(sources);
-    const structuredChangeSets = sources.flatMap((source) => extractStructuredChangeSets(source.content));
-    const requiredFiles = [...new Set(sources.flatMap((source) => extractStructuredRequiredFiles(source.content)))];
-    if (actions.length === 0 && structuredChangeSets.length === 0) return;
-
+  async function executeAgentActions(
+    sources: AgentActionSource[],
+    userTaskText = "",
+    options: { emitSummaryMessage?: boolean } = {}
+  ): Promise<AgentActionExecutionResult> {
+    const executionResult: AgentActionExecutionResult = {
+      applied: 0,
+      failed: 0,
+      fileMutationsApplied: 0,
+      folderOpsApplied: 0,
+      touchedFiles: [],
+      errors: [],
+    };
     const activeProject = sidebar.getActiveChat();
-    if (!activeProject) return;
+    if (!activeProject) return executionResult;
+
+    const deliveryAnalysis = await analyzeAgentDelivery(
+      sources,
+      userTaskText,
+      activeProject.workspacePath
+    );
+    const actions = parseAgentActions(sources);
+    const nonFileActions = actions.filter((action) => !isFileMutationAction(action));
+
+    if (frontendE2ERunning) {
+      const actionPreview = deliveryAnalysis.executableMutations
+        .slice(0, 12)
+        .map((action) => `${action.actionType}:${action.path}`)
+        .join(", ");
+      void appendFrontendE2ELog(
+        `executeAgentActions: parsed actions=${deliveryAnalysis.parsedActionCount}, structuredChanges=${deliveryAnalysis.structuredChangeCount}, preview=${actionPreview || "(none)"}`
+      );
+    }
+    if (!deliveryAnalysis.hasExecutableMutation && nonFileActions.length === 0) return executionResult;
 
     // 检查是否有文件生成操作，显示反馈
-    const fileActions = actions.filter(isFileMutationAction);
-    const hasFileActions = fileActions.length > 0 || structuredChangeSets.length > 0 || actions.some((a) => a.type === "WRITE_DOCUMENT");
+    const hasFileActions = deliveryAnalysis.hasExecutableMutation || actions.some((a) => a.type === "WRITE_DOCUMENT");
     if (hasFileActions) {
       showLoading("正在应用文件变更...");
     }
-    const hasCmdActions = actions.some((a) => a.type === "EXECUTE_CMD" || a.type === "WEB_SEARCH");
+    const hasCmdActions = nonFileActions.some((a) => a.type === "EXECUTE_CMD" || a.type === "WEB_SEARCH");
     if (hasCmdActions && !hasFileActions) {
       showLoading("正在执行操作...");
     }
@@ -3199,10 +3794,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     let shouldRefreshCurrentPreview = false;
     const changedFiles = new Set<string>();
     const isAbsolutePath = (value: string) => /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+    const isProjectRootAlias = (value: string) => {
+      const normalized = value.trim().toLowerCase();
+      return [
+        "项目根目录",
+        "项目根",
+        "根目录",
+        "当前项目",
+        "当前项目目录",
+        "当前工作区",
+        "当前工作目录",
+        "工作区根目录",
+        "workspace",
+        "workspace root",
+        "project",
+        "project root",
+        "root",
+      ].includes(normalized);
+    };
     const resolveWorkingDir = (rawDir?: string) => {
       const trimmed = rawDir?.trim();
       const workspacePath = activeProject.workspacePath || ".";
       if (!trimmed || trimmed === ".") return workspacePath;
+      if (isProjectRootAlias(trimmed)) return workspacePath;
       if (!activeProject.workspacePath || isAbsolutePath(trimmed)) return trimmed;
       const separator = activeProject.workspacePath.includes("\\") ? "\\" : "/";
       const relative = trimmed
@@ -3215,34 +3829,43 @@ document.addEventListener("DOMContentLoaded", async () => {
       return /管理员权限/.test(authReason) ? "admin" as const : "restricted" as const;
     };
 
-    const changeSets = [
-      ...structuredChangeSets,
-      ...fileActions.map(actionToChangeSet).filter((c): c is ChangeSet => c !== null),
-    ];
-
-    if (changeSets.length > 0) {
+    if (deliveryAnalysis.hasExecutableMutation) {
       try {
-        const result = await proposeAndMaybeApplyChanges(
-          activeProject.name,
-          `来自专家团输出的直接变更，共 ${changeSets.length} 项`,
-          changeSets,
-          requiredFiles,
-          userTaskText
-        );
+        const raw = await invoke<string>("apply_agent_delivery_changes", {
+          projectName: activeProject.name,
+          projectPath: activeProject.workspacePath || null,
+          taskDescription: `来自专家团输出的直接变更，共 ${deliveryAnalysis.structuredChangeCount} 项`,
+          userTaskText,
+          sourcesJson: JSON.stringify(sources.map((source) => ({ content: source.content }))),
+        });
+        const result = JSON.parse(raw) as AgentActionExecutionResult;
+        if (frontendE2ERunning) {
+          const topErrors = result?.errors?.slice(0, 5).join(" | ") || "";
+          void appendFrontendE2ELog(
+            `executeAgentActions: direct changes applied=${result?.applied || 0}, failed=${result?.failed || 0}${topErrors ? `, errors=${topErrors}` : ""}`
+          );
+        }
+        executionResult.applied += result?.applied || 0;
+        executionResult.failed += result?.failed || 0;
+        executionResult.fileMutationsApplied += result?.fileMutationsApplied || 0;
+        executionResult.folderOpsApplied += result?.folderOpsApplied || 0;
+        executionResult.touchedFiles.push(...(result?.touchedFiles || []));
+        executionResult.errors.push(...(result?.errors || []));
         if (result && result.applied > 0) {
           shouldRefreshCurrentPreview = true;
           result.touchedFiles.forEach((path) => changedFiles.add(path));
         }
       } catch (err) {
         log("ERROR", `Agent: 直接应用变更失败: ${err}`);
-        appendCleanSystemMessage("文件变更执行失败，源码未被完整写入。");
+        if (frontendE2ERunning) {
+          void appendFrontendE2ELog(`executeAgentActions: direct changes threw error: ${String(err)}`);
+        }
+        executionResult.failed += 1;
+        executionResult.errors.push(`直接应用变更失败: ${String(err)}`);
       }
     }
 
-    for (const action of actions) {
-      if (isFileMutationAction(action)) {
-        continue;
-      }
+    for (const action of nonFileActions) {
       try {
         switch (action.type) {
           case "INDEX_BUILD":
@@ -3590,6 +4213,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (activeProject && changedFiles.size > 0 && wikiIterationMode === "self") {
       runIncrementalUpdate();
     }
+
+    if (options.emitSummaryMessage !== false) {
+      emitAgentActionExecutionSummary(executionResult);
+    }
+
+    return executionResult;
   }
 
   // ========== 命令授权卡片 ==========
@@ -3789,9 +4418,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (msg.role === "user") {
         // 用户消息：保持气泡样式
-        msgEl.innerHTML = `
-          <div class="message-content">${escapeHtml(msg.content)}</div>
-        `;
+        msgEl.innerHTML = renderUserMessage(msg.content);
       } else {
         // AI 消息：统一为结构化信息卡，避免元数据和内部信号泄露到用户界面。
         msgEl.innerHTML = `<div class="assistant-panel">${renderAiMessage(msg.content)}</div>`;
@@ -3905,6 +4532,32 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="chat-log-line">原因：${escapeHtml(reason)}</div>
         ${event.safetyReason ? `<div class="chat-log-line subtle">说明：${escapeHtml(event.safetyReason)}</div>` : ""}
         ${event.error ? `<div class="chat-log-line is-error">结果：${escapeHtml(event.error)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  function renderUserMessage(content: string): string {
+    const payload = parseUserMessagePayload(content);
+    if (!payload) {
+      return `<div class="message-content">${escapeHtml(content)}</div>`;
+    }
+    const metaBlocks: string[] = [];
+    if (payload.mode !== "normal") {
+      metaBlocks.push(`<span class="user-meta-badge">${payload.mode === "plan" ? "按计划进行" : "按目标进行"}</span>`);
+    }
+    payload.attachments.forEach((attachment) => {
+      metaBlocks.push(`
+        <span class="user-meta-badge file">
+          <span>${attachment.kind === "image" ? "图片" : attachment.kind === "video" ? "视频" : attachment.kind === "audio" ? "音频" : attachment.kind === "text" ? "文本" : "文件"}</span>
+          <strong>${escapeHtml(attachment.name)}</strong>
+          <span>${formatFileSize(attachment.size)}</span>
+        </span>
+      `);
+    });
+    return `
+      <div class="message-content">
+        ${payload.text ? `<div class="user-message-text">${escapeHtml(payload.text)}</div>` : ""}
+        ${metaBlocks.length > 0 ? `<div class="user-message-meta">${metaBlocks.join("")}</div>` : ""}
       </div>
     `;
   }
@@ -4085,7 +4738,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             content: content || "",
             rationale: "用户点击旧 Artifact 卡片触发的直接写入",
             risk: "medium",
-          }]);
+          }], [], "", activeProject.workspacePath);
           if (result && result.applied > 0) {
             checkAndBuildIndex(activeProject.name, true);
           }
@@ -4109,7 +4762,7 @@ document.addEventListener("DOMContentLoaded", async () => {
    * 主管最终回复裁剪：
    * - executeAgentActions 基于原始 finalReply 执行结构化文件动作
    * - 对用户展示时彻底剥离 ACTION/ChangeSet 元数据和代码块
-   * - 仅保留最后一句交付语（上限80字）
+   * - 保留 1~3 句面向用户的交付摘要，避免把内部协议和源码片段直接暴露出来
    */
   function sanitizeSupervisorReply(reply: string): string {
     if (!reply) return "工作已完成，相关结果已经整理好并写入当前项目。";
@@ -4168,7 +4821,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     return text;
   }
 
-  // ========== 专家任务卡片渲染 ==========
+  // ========== 专家任务记录渲染 ==========
 
   function getExpertPhaseText(task: ExpertTask, phaseLabels: Record<string, string>): string {
     if (task.phase) return phaseLabels[task.phase] || task.phaseDetail || "处理中";
@@ -4550,12 +5203,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   /** 根据文件夹结构生成画布节点和连线（纯机械操作，永不允许返回空） */
-  async function generateStructureCanvas(projectName: string): Promise<{ nodes: CanvasNode[]; edges: CanvasEdge[] }> {
+  async function generateStructureCanvas(projectName: string, projectPath?: string): Promise<{ nodes: CanvasNode[]; edges: CanvasEdge[] }> {
     const fallback = makeRootOnlyResult(projectName);
     try {
       const entriesJson = await invoke<string>("sandbox_list_dir", {
         projectName,
         relativePath: ".",
+        projectPath,
       });
       const tree: TreeEntry[] = JSON.parse(entriesJson);
 
@@ -4747,9 +5401,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
   }
 
-  async function refreshProjectCanvasCaches(projectName: string, forceVisibleRefresh: boolean = false) {
-    const snapshot = await collectDirectorySnapshot(projectName);
-    const structureResult = await generateStructureCanvas(projectName);
+  async function refreshProjectCanvasCaches(projectName: string, forceVisibleRefresh: boolean = false, projectPath?: string) {
+    const snapshot = await collectDirectorySnapshot(projectName, projectPath);
+    const structureResult = await generateStructureCanvas(projectName, projectPath);
     const logicResult = await generateLogicCanvas(projectName);
 
     await saveDirectoryModeData(
@@ -4928,11 +5582,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   void aiGenerateCanvas;
 
   /** 收集当前目录快照（所有文件/文件夹路径的排序列表） */
-  async function collectDirectorySnapshot(projectName: string): Promise<string[]> {
+  async function collectDirectorySnapshot(projectName: string, projectPath?: string): Promise<string[]> {
     try {
       const entriesJson = await invoke<string>("sandbox_list_dir", {
         projectName,
         relativePath: ".",
+        projectPath,
       });
       const tree: TreeEntry[] = JSON.parse(entriesJson);
       const paths: string[] = [];
@@ -4950,8 +5605,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   /** 比较当前目录与缓存的快照，更新状态按钮 */
-  async function checkDirectoryChanges(projectName: string, cachedData: any) {
-    const currentSnapshot = await collectDirectorySnapshot(projectName);
+  async function checkDirectoryChanges(projectName: string, cachedData: any, projectPath?: string) {
+    const currentSnapshot = await collectDirectorySnapshot(projectName, projectPath);
     const cachedSnapshot: string[] = cachedData.directorySnapshot || [];
 
     if (cachedSnapshot.length === 0) {
@@ -5018,21 +5673,21 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     try {
       await checkAndBuildIndex(activeProject.name, true);
-      await refreshProjectCanvasCaches(activeProject.name, true);
+      await refreshProjectCanvasCaches(activeProject.name, true, activeProject.workspacePath);
     } finally {
       // 状态由具体更新函数设置
     }
   });
 
   /** 结构模式增量更新：只增加/移除变更的节点 */
-  async function incrementalStructureUpdate(projectName: string, canvas: ReturnType<typeof getCanvas>) {
+  async function incrementalStructureUpdate(projectName: string, canvas: ReturnType<typeof getCanvas>, projectPath?: string) {
     if (!canvas) return;
     try {
-      const result = await generateStructureCanvas(projectName);
+      const result = await generateStructureCanvas(projectName, projectPath);
       canvas.setData(result.nodes, result.edges);
 
       // 收集并保存快照
-      const snapshot = await collectDirectorySnapshot(projectName);
+      const snapshot = await collectDirectorySnapshot(projectName, projectPath);
       const now = new Date().toISOString();
       await saveDirectoryModeData(projectName, "structure", result.nodes, result.edges, snapshot, now);
       updateDirectoryStatus("up-to-date");
@@ -5172,6 +5827,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const content = await invoke<string>("sandbox_read_file", {
         projectName: activeProject.name,
         relativePath: currentPreviewFile,
+        projectPath: activeProject.workspacePath,
       });
       if (filePreviewEditor) filePreviewEditor.value = content;
       if (isMarkdownFile(currentPreviewFile)) updateMdPreview();
@@ -5758,25 +6414,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // 获取时间范围起始时间戳
-  function getTimeRangeStart(range: TimeRange): number {
-    const now = new Date();
-    switch (range) {
-      case "today":
-        return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      case "week": {
-        const day = now.getDay() || 7;
-        const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
-        return monday.getTime();
-      }
-      case "month":
-        return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-      case "year":
-        return new Date(now.getFullYear(), 0, 1).getTime();
-      case "all":
-        return 0;
-    }
-  }
-
   // 相对时间格式化
   function formatRelativeTime(timestamp: number): string {
     const diff = Date.now() - timestamp;
@@ -5791,7 +6428,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Canvas 趋势图绘制
-  function drawTrendChart(range: TimeRange, dataSource: "project" | "user" = currentTokenSource): void {
+  function drawTrendChart(labels: string[], buckets: number[]): void {
     const canvas = document.getElementById("trend-canvas") as HTMLCanvasElement | null;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -5804,66 +6441,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     ctx.scale(2, 2);
     const w = rect.width;
     const h = rect.height;
-
-    // 根据时间范围确定数据点数和间隔
-    let buckets: number[];
-    let labels: string[];
-    const now = new Date();
-    const data = dataSource === "user" ? userTokenData : tokenData;
-
-    if (range === "today") {
-      // 按小时分组（24个点）
-      buckets = new Array(24).fill(0);
-      labels = Array.from({ length: 24 }, (_, i) => `${i}:00`);
-      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      data.records.filter((r) => r.timestamp >= dayStart).forEach((r) => {
-        const hour = new Date(r.timestamp).getHours();
-        buckets[hour] += r.totalTokens;
-      });
-    } else if (range === "week") {
-      // 按天分组（7天）
-      buckets = new Array(7).fill(0);
-      labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-      const day = now.getDay() || 7;
-      const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1).getTime();
-      data.records.filter((r) => r.timestamp >= weekStart).forEach((r) => {
-        const d = new Date(r.timestamp).getDay() || 7;
-        buckets[d - 1] += r.totalTokens;
-      });
-    } else if (range === "month") {
-      // 按天分组（当月天数）
-      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      buckets = new Array(daysInMonth).fill(0);
-      labels = Array.from({ length: daysInMonth }, (_, i) => `${i + 1}`);
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-      data.records.filter((r) => r.timestamp >= monthStart).forEach((r) => {
-        const day = new Date(r.timestamp).getDate() - 1;
-        buckets[day] += r.totalTokens;
-      });
-    } else if (range === "year") {
-      // 按月分组（12个月）
-      buckets = new Array(12).fill(0);
-      labels = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
-      const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
-      data.records.filter((r) => r.timestamp >= yearStart).forEach((r) => {
-        const month = new Date(r.timestamp).getMonth();
-        buckets[month] += r.totalTokens;
-      });
-    } else {
-      // all - 按月分组（最近12个月）
-      buckets = new Array(12).fill(0);
-      labels = Array.from({ length: 12 }, (_, i) => {
-        const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
-        return `${d.getMonth() + 1}月`;
-      });
-      data.records.forEach((r) => {
-        const rDate = new Date(r.timestamp);
-        const monthsDiff = (now.getFullYear() - rDate.getFullYear()) * 12 + (now.getMonth() - rDate.getMonth());
-        if (monthsDiff >= 0 && monthsDiff < 12) {
-          buckets[11 - monthsDiff] += r.totalTokens;
-        }
-      });
-    }
 
     // 绘制
     const maxVal = Math.max(...buckets, 1);
@@ -5938,52 +6515,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   let currentTokenSource: "project" | "user" = "project";
 
   // 渲染词元仪表盘
-  function renderTokenDashboard(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): void {
+  async function renderTokenDashboard(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): Promise<void> {
     const panel = document.getElementById("token-panel-content");
     if (!panel) return;
 
-    const todayUsage = getTotalUsage("today", dataSource);
-    const monthUsage = getTotalUsage("month", dataSource);
-
-    // 计算活跃专家数（在当前时段有消耗的专家）
-    const activeExpertIds = new Set(
-      (dataSource === "user" ? userTokenData : tokenData).records
-        .filter((r) => r.timestamp >= getTimeRangeStart(activeRange))
-        .map((r) => r.expertId)
-    );
-
-    // 专家分布统计
-    const expertDistribution = experts
-      .map((expert) => {
-        const records = getTokenUsageByExpert(expert.id, activeRange, dataSource);
-        const total = records.reduce((sum, r) => sum + r.totalTokens, 0);
-        return { name: expert.name, title: expert.title, id: expert.id, total };
-      })
-      .filter((e) => e.total > 0)
-      .sort((a, b) => b.total - a.total);
-
-    const maxExpertTokens = expertDistribution.length > 0 ? expertDistribution[0].total : 1;
-
-    // 模型统计
-    const modelStats: Record<string, { calls: number; tokens: number }> = {};
-    const rangeStart = getTimeRangeStart(activeRange);
-    (dataSource === "user" ? userTokenData : tokenData).records
-      .filter((r) => r.timestamp >= rangeStart)
-      .forEach((r) => {
-        if (!modelStats[r.model]) modelStats[r.model] = { calls: 0, tokens: 0 };
-        modelStats[r.model].calls++;
-        modelStats[r.model].tokens += r.totalTokens;
-      });
-    const modelList = Object.entries(modelStats).sort((a, b) => b[1].tokens - a[1].tokens);
-
-    // 配额状态（非豁免专家）—— 始终使用项目级数据
-    const QUOTA_EXEMPT = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
-    const quotaExperts = experts.filter((e) => !QUOTA_EXEMPT.includes(e.id) && e.tokenAllocation);
-
-    // 最近活动（最近20条）
-    const recentRecords = [...(dataSource === "user" ? userTokenData : tokenData).records]
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 20);
+    const snapshot = await buildTokenDashboardSnapshot(activeRange, dataSource, experts);
+    const maxExpertTokens = snapshot.expertDistribution.length > 0 ? snapshot.expertDistribution[0].total : 1;
 
     panel.innerHTML = `
       <div class="token-dashboard">
@@ -5991,21 +6528,21 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="dashboard-overview">
           <div class="overview-card">
             <span class="overview-label">今日消耗</span>
-            <span class="overview-value">${formatTokenCount(todayUsage.total)}</span>
-            <span class="overview-sub">输入 ${formatTokenCount(todayUsage.prompt)} / 输出 ${formatTokenCount(todayUsage.completion)}</span>
+            <span class="overview-value">${formatTokenCount(snapshot.todayUsage.total)}</span>
+            <span class="overview-sub">输入 ${formatTokenCount(snapshot.todayUsage.prompt)} / 输出 ${formatTokenCount(snapshot.todayUsage.completion)}</span>
           </div>
           <div class="overview-card">
             <span class="overview-label">本月消耗</span>
-            <span class="overview-value">${formatTokenCount(monthUsage.total)}</span>
-            <span class="overview-sub">输入 ${formatTokenCount(monthUsage.prompt)} / 输出 ${formatTokenCount(monthUsage.completion)}</span>
+            <span class="overview-value">${formatTokenCount(snapshot.monthUsage.total)}</span>
+            <span class="overview-sub">输入 ${formatTokenCount(snapshot.monthUsage.prompt)} / 输出 ${formatTokenCount(snapshot.monthUsage.completion)}</span>
           </div>
           <div class="overview-card">
             <span class="overview-label">总计消耗</span>
-            <span class="overview-value">${formatTokenCount(getTotalUsage("all").total)}</span>
+            <span class="overview-value">${formatTokenCount(snapshot.totalUsage.total)}</span>
           </div>
           <div class="overview-card">
             <span class="overview-label">活跃专家</span>
-            <span class="overview-value">${activeExpertIds.size}</span>
+            <span class="overview-value">${snapshot.activeExpertCount}</span>
             <span class="overview-sub">/ ${experts.length} 位</span>
           </div>
         </div>
@@ -6022,8 +6559,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="dashboard-section">
           <h3 class="dashboard-section-title">专家词元分布</h3>
           <div class="expert-distribution-bars">
-            ${expertDistribution.length > 0
-              ? expertDistribution
+            ${snapshot.expertDistribution.length > 0
+              ? snapshot.expertDistribution
                   .map(
                     (e) => `
               <div class="distribution-bar-item">
@@ -6046,18 +6583,18 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="dashboard-section">
           <h3 class="dashboard-section-title">模型使用统计</h3>
           <div class="model-stats-table">
-            ${modelList.length > 0
+            ${snapshot.modelStats.length > 0
               ? `
               <div class="model-table-header">
                 <span>模型</span>
                 <span>调用次数</span>
                 <span>词元消耗</span>
               </div>
-              ${modelList
+              ${snapshot.modelStats
                 .map(
-                  ([model, stats]) => `
+                  (stats) => `
                 <div class="model-table-row">
-                  <span class="model-name">${model}</span>
+                  <span class="model-name">${stats.model}</span>
                   <span class="model-calls">${stats.calls}</span>
                   <span class="model-tokens">${formatTokenCount(stats.tokens)}</span>
                 </div>
@@ -6073,53 +6610,39 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="dashboard-section">
           <h3 class="dashboard-section-title">配额状态</h3>
           <div class="quota-status-grid">
-            ${quotaExperts.length > 0
-              ? quotaExperts
-                  .map((expert) => {
-                    const alloc = expert.tokenAllocation!;
-                    const now = new Date();
-                    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-                    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
-                    const dayUsed = tokenData.records
-                      .filter((r) => r.expertId === expert.id && r.timestamp >= dayStart)
-                      .reduce((s, r) => s + r.totalTokens, 0);
-                    const monthUsed = tokenData.records
-                      .filter((r) => r.expertId === expert.id && r.timestamp >= monthStart)
-                      .reduce((s, r) => s + r.totalTokens, 0);
-                    const yearUsed = tokenData.records
-                      .filter((r) => r.expertId === expert.id && r.timestamp >= yearStart)
-                      .reduce((s, r) => s + r.totalTokens, 0);
+            ${snapshot.quotaStatus.length > 0
+              ? snapshot.quotaStatus
+                  .map((item) => {
                     return `
                       <div class="quota-card">
                         <div class="quota-card-header">
-                          <span class="quota-card-name">${expert.name}</span>
-                          <span class="quota-card-title">${expert.title}</span>
+                          <span class="quota-card-name">${item.name}</span>
+                          <span class="quota-card-title">${item.title}</span>
                         </div>
-                        ${alloc.dailyLimit !== null
+                        ${item.dailyLimit !== null
                           ? `
                           <div class="quota-card-row">
                             <span class="quota-period">日</span>
-                            <div class="quota-progress-bar"><div class="quota-progress-fill ${dayUsed >= alloc.dailyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (dayUsed / alloc.dailyLimit) * 100)}%"></div></div>
-                            <span class="quota-fraction">${formatTokenCount(dayUsed)}/${formatTokenCount(alloc.dailyLimit)}</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${item.dayUsed >= item.dailyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (item.dayUsed / item.dailyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(item.dayUsed)}/${formatTokenCount(item.dailyLimit)}</span>
                           </div>
                         `
                           : ""}
-                        ${alloc.monthlyLimit !== null
+                        ${item.monthlyLimit !== null
                           ? `
                           <div class="quota-card-row">
                             <span class="quota-period">月</span>
-                            <div class="quota-progress-bar"><div class="quota-progress-fill ${monthUsed >= alloc.monthlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (monthUsed / alloc.monthlyLimit) * 100)}%"></div></div>
-                            <span class="quota-fraction">${formatTokenCount(monthUsed)}/${formatTokenCount(alloc.monthlyLimit)}</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${item.monthUsed >= item.monthlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (item.monthUsed / item.monthlyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(item.monthUsed)}/${formatTokenCount(item.monthlyLimit)}</span>
                           </div>
                         `
                           : ""}
-                        ${alloc.yearlyLimit !== null
+                        ${item.yearlyLimit !== null
                           ? `
                           <div class="quota-card-row">
                             <span class="quota-period">年</span>
-                            <div class="quota-progress-bar"><div class="quota-progress-fill ${yearUsed >= alloc.yearlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (yearUsed / alloc.yearlyLimit) * 100)}%"></div></div>
-                            <span class="quota-fraction">${formatTokenCount(yearUsed)}/${formatTokenCount(alloc.yearlyLimit)}</span>
+                            <div class="quota-progress-bar"><div class="quota-progress-fill ${item.yearUsed >= item.yearlyLimit ? "quota-exceeded" : ""}" style="width:${Math.min(100, (item.yearUsed / item.yearlyLimit) * 100)}%"></div></div>
+                            <span class="quota-fraction">${formatTokenCount(item.yearUsed)}/${formatTokenCount(item.yearlyLimit)}</span>
                           </div>
                         `
                           : ""}
@@ -6135,8 +6658,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="dashboard-section">
           <h3 class="dashboard-section-title">最近活动</h3>
           <div class="recent-activity-list">
-            ${recentRecords.length > 0
-              ? recentRecords
+            ${snapshot.recentRecords.length > 0
+              ? snapshot.recentRecords
                   .map(
                     (r) => `
               <div class="activity-item">
@@ -6158,34 +6681,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     `;
 
     // 绘制趋势图
-    drawTrendChart(activeRange, dataSource);
+    drawTrendChart(snapshot.trend.labels, snapshot.trend.buckets);
   }
 
   // 将仪表盘渲染函数挂载到window，供时间管理器联动调用
   (window as unknown as Record<string, unknown>).renderTokenDashboard = renderTokenDashboard;
 
   // 渲染时间管理器（到右侧token-browser卡片）
-  function renderTimeManager(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): void {
+  async function renderTimeManager(activeRange: TimeRange = "today", dataSource: "project" | "user" = currentTokenSource): Promise<void> {
     const container = document.getElementById("token-browser-body");
     if (!container) return;
 
-    // 获取总统计
-    const totalUsage = getTotalUsage(activeRange, dataSource);
-
-    // 获取各专家统计
-    const expertStats = experts
-      .map((expert) => {
-        const records = getTokenUsageByExpert(expert.id, activeRange, dataSource);
-        const total = records.reduce((sum, r) => sum + r.totalTokens, 0);
-        const allocation = expert.tokenAllocation;
-        let quota: number | null = null;
-        if (activeRange === "today" && allocation?.dailyLimit) quota = allocation.dailyLimit;
-        else if (activeRange === "month" && allocation?.monthlyLimit) quota = allocation.monthlyLimit;
-        else if (activeRange === "year" && allocation?.yearlyLimit) quota = allocation.yearlyLimit;
-        return { expert, total, quota };
-      })
-      .filter((s) => s.total > 0 || s.quota !== null)
-      .sort((a, b) => b.total - a.total);
+    const snapshot = await buildTokenDashboardSnapshot(activeRange, dataSource, experts);
 
     container.innerHTML = `
       <div class="token-browser-nav">
@@ -6198,22 +6705,22 @@ document.addEventListener("DOMContentLoaded", async () => {
       <div class="tb-summary">
         <div class="tb-summary-total">
           <span class="tb-summary-label">总消耗</span>
-          <span class="tb-summary-value">${formatTokenCount(totalUsage.total)}</span>
+          <span class="tb-summary-value">${formatTokenCount(snapshot.totalUsage.total)}</span>
         </div>
         <div class="tb-summary-breakdown">
-          <span class="tb-summary-item">输入: ${formatTokenCount(totalUsage.prompt)}</span>
-          <span class="tb-summary-item">输出: ${formatTokenCount(totalUsage.completion)}</span>
+          <span class="tb-summary-item">输入: ${formatTokenCount(snapshot.totalUsage.prompt)}</span>
+          <span class="tb-summary-item">输出: ${formatTokenCount(snapshot.totalUsage.completion)}</span>
         </div>
       </div>
       <div class="tb-expert-list">
-        ${expertStats.length > 0
-          ? expertStats
+        ${snapshot.expertRangeStats.length > 0
+          ? snapshot.expertRangeStats
               .map(
                 (s) => `
           <div class="tb-expert-item">
             <div class="tb-expert-info">
-              <span class="tb-expert-name">${s.expert.name}</span>
-              <span class="tb-expert-title">${s.expert.title}</span>
+              <span class="tb-expert-name">${s.name}</span>
+              <span class="tb-expert-title">${s.title}</span>
             </div>
             <div class="tb-expert-usage">
               <span class="tb-expert-tokens">${formatTokenCount(s.total)}</span>
@@ -6238,9 +6745,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     container.querySelectorAll(".tb-nav-item").forEach((item) => {
       item.addEventListener("click", () => {
         const range = (item as HTMLElement).dataset.range as TimeRange;
-        renderTimeManager(range, currentTokenSource);
+        void renderTimeManager(range, currentTokenSource);
         if (typeof (window as unknown as Record<string, unknown>).renderTokenDashboard === "function") {
-          ((window as unknown as Record<string, unknown>).renderTokenDashboard as (range: TimeRange, source: "project" | "user") => void)(range, currentTokenSource);
+          void ((window as unknown as Record<string, unknown>).renderTokenDashboard as (range: TimeRange, source: "project" | "user") => Promise<void>)(range, currentTokenSource);
         }
       });
     });
@@ -6268,14 +6775,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       currentTokenSource = "project";
       tokenPanel.querySelectorAll(".token-tab").forEach((tab) => tab.classList.remove("active"));
       tokenPanel.querySelector('.token-tab[data-tab="project"]')?.classList.add("active");
-      renderTokenDashboard("today", "project");
+      void renderTokenDashboard("today", "project");
     }
     // 显示右侧时间导航卡片
     const tokenBrowser = document.getElementById("token-browser");
     if (tokenBrowser) {
       tokenBrowser.style.display = "flex";
       tokenBrowser.classList.add("active");
-      renderTimeManager("today", "project");
+      void renderTimeManager("today", "project");
     }
 
     // 更新按钮active状态
@@ -6557,8 +7064,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       currentTokenSource = target;
       document.querySelectorAll(".token-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      renderTokenDashboard("today", target);
-      renderTimeManager("today", target);
+      void renderTokenDashboard("today", target);
+      void renderTimeManager("today", target);
     });
   });
 
@@ -7215,6 +7722,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         projectName: activeProject.name,
         relativePath: currentPreviewFile,
         content: filePreviewEditor.value,
+        projectPath: activeProject.workspacePath,
       });
       // 同步更新 MD 预览
       if (currentPreviewMode === "preview") updateMdPreview();
@@ -7235,6 +7743,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const content = await invoke<string>("sandbox_read_file", {
         projectName: activeProject.name,
         relativePath: currentPreviewFile,
+        projectPath: activeProject.workspacePath,
       });
       filePreviewEditor.value = content;
       if (isMarkdownFile(currentPreviewFile)) {
@@ -7605,7 +8114,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     showCanvasFileCard(filename);
 
     // 加载目录树
-    await loadFileBrowser(activeProject.name);
+    await loadFileBrowser(activeProject.name, activeProject.workspacePath);
 
     // 高亮当前文件
     highlightCurrentFile();
@@ -7655,6 +8164,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const base64 = await invoke<string>("sandbox_read_file_base64", {
           projectName: activeProject.name,
           relativePath: filename,
+          projectPath: activeProject.workspacePath,
         });
         const mime = getImageMimeType(filename);
         if (filePreviewImage) {
@@ -7673,6 +8183,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const base64 = await invoke<string>("sandbox_read_file_base64", {
           projectName: activeProject.name,
           relativePath: filename,
+          projectPath: activeProject.workspacePath,
         });
         if (filePreviewVideo) {
           filePreviewVideo.src = `data:${getVideoMimeType(filename)};base64,${base64}`;
@@ -7692,6 +8203,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const content = await invoke<string>("sandbox_read_file", {
           projectName: activeProject.name,
           relativePath: filename,
+          projectPath: activeProject.workspacePath,
         });
         if (filePreviewWeb) {
           filePreviewWeb.srcdoc = content;
@@ -7709,6 +8221,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const content = await invoke<string>("sandbox_read_file", {
         projectName: activeProject.name,
         relativePath: filename,
+        projectPath: activeProject.workspacePath,
       });
       if (filePreviewEditor) filePreviewEditor.value = content;
       if (isMd) updateMdPreview();
@@ -7738,7 +8251,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   fileBrowserRefresh?.addEventListener("click", async () => {
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) return;
-    await loadFileBrowser(activeProject.name);
+    await loadFileBrowser(activeProject.name, activeProject.workspacePath);
     highlightCurrentFile();
   });
 
@@ -7749,7 +8262,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // 加载目录树
-  async function loadFileBrowser(projectName: string) {
+  async function loadFileBrowser(projectName: string, projectPath?: string) {
     if (!fileBrowserTree) return;
     fileBrowserTree.innerHTML = "";
 
@@ -7757,6 +8270,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const entries = await invoke<string>("sandbox_list_dir", {
         projectName,
         relativePath: ".",
+        projectPath,
       });
       const items = JSON.parse(entries);
       renderTreeItems(items, 0);
@@ -7824,4 +8338,227 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     });
   }
+
+  type FrontendE2EControl = {
+    id?: string;
+    action?: "run-chat-scenario";
+    projectName?: string;
+    projectPath?: string;
+    prompt: string;
+    sessionName?: string;
+  };
+
+  let frontendE2ERunning = false;
+  let frontendE2EPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function appendFrontendE2ELog(message: string): Promise<void> {
+    const line = `[${new Date().toISOString()}] ${message}`;
+    log("INFO", `[frontend-e2e] ${message}`);
+    try {
+      await invoke("append_frontend_e2e_log", { line });
+    } catch (e) {
+      console.error("[frontend-e2e] 写日志失败:", e);
+      try {
+        const rawState = await invoke<string>("load_app_state");
+        const parsed = rawState && rawState !== "null" ? JSON.parse(rawState) : {};
+        const logs = Array.isArray(parsed.frontendE2ELogs) ? parsed.frontendE2ELogs.slice(-19) : [];
+        logs.push(line);
+        await invoke("save_app_state", {
+          state: JSON.stringify({
+            ...parsed,
+            frontendE2ELogs: logs,
+          }),
+        });
+      } catch (fallbackError) {
+        console.error("[frontend-e2e] fallback 写日志失败:", fallbackError);
+      }
+    }
+  }
+
+  async function saveFrontendE2EStatus(payload: Record<string, unknown>): Promise<void> {
+    try {
+      const fullPayload = {
+        updatedAt: new Date().toISOString(),
+        ...payload,
+      };
+      await invoke("save_frontend_e2e_status", {
+        data: JSON.stringify(fullPayload, null, 2),
+      });
+      try {
+        const rawState = await invoke<string>("load_app_state");
+        const parsed = rawState && rawState !== "null" ? JSON.parse(rawState) : {};
+        await invoke("save_app_state", {
+          state: JSON.stringify({
+            ...parsed,
+            frontendE2EStatus: fullPayload,
+          }),
+        });
+      } catch (fallbackError) {
+        console.error("[frontend-e2e] fallback 状态写入失败:", fallbackError);
+      }
+    } catch (e) {
+      console.error("[frontend-e2e] 写状态失败:", e);
+      try {
+        const rawState = await invoke<string>("load_app_state");
+        const parsed = rawState && rawState !== "null" ? JSON.parse(rawState) : {};
+        await invoke("save_app_state", {
+          state: JSON.stringify({
+            ...parsed,
+            frontendE2EStatus: {
+              updatedAt: new Date().toISOString(),
+              ...payload,
+            },
+          }),
+        });
+      } catch (fallbackError) {
+        console.error("[frontend-e2e] fallback 状态写入失败:", fallbackError);
+      }
+    }
+  }
+
+  async function reportFrontendE2ECheckpoint(
+    stage: string,
+    extra: Record<string, unknown> = {}
+  ): Promise<void> {
+    if (!frontendE2ERunning) return;
+    await appendFrontendE2ELog(`checkpoint: ${stage}`);
+    await saveFrontendE2EStatus({
+      stage,
+      status: "sending",
+      ...extra,
+    });
+  }
+
+  function getSessionSnapshot(session: ChatSession) {
+    const toolEventCount = session.messages.filter((msg) => msg.role === "tool-event").length;
+    const commandAuthCount = session.messages.filter((msg) => msg.role === "command-auth").length;
+    const assistantMessages = session.messages.filter((msg) => msg.role === "assistant");
+    const lastAssistant = assistantMessages[assistantMessages.length - 1]?.content || "";
+    return {
+      messageCount: session.messages.length,
+      toolEventCount,
+      commandAuthCount,
+      lastAssistant,
+      recentMessages: session.messages.slice(-8).map((msg) => ({
+        role: msg.role,
+        content: msg.content.slice(0, 500),
+      })),
+    };
+  }
+
+  async function runFrontendE2EScenario(control: FrontendE2EControl): Promise<void> {
+    frontendE2ERunning = true;
+    const scenarioId = control.id || `frontend-e2e-${Date.now()}`;
+    try {
+      await appendFrontendE2ELog(`开始执行场景 ${scenarioId}`);
+      await saveFrontendE2EStatus({
+        id: scenarioId,
+        status: "running",
+        prompt: control.prompt,
+      });
+
+      let project = sidebar.getChats().find((item) =>
+        (control.projectPath && item.workspacePath === control.projectPath)
+        || (control.projectName && item.name === control.projectName)
+      ) || null;
+
+      if (!project && control.projectPath) {
+        await appendFrontendE2ELog(`当前前端未打开目标项目，尝试从路径打开：${control.projectPath}`);
+        project = await sidebar.openProjectFromPath(control.projectPath);
+      }
+
+      if (!project) {
+        throw new Error(`前端无法定位目标项目: ${control.projectName || control.projectPath || "未提供项目标识"}`);
+      }
+
+      sidebar.setActiveChat(project.id);
+      currentProjectId = project.id;
+      await loadSessionsFromDb(project.id);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      renderMessages();
+      updateHistoryDisplay();
+
+      const session = await createSession(project.id, control.sessionName || "前端 E2E 对话");
+      currentSessionId = session.id;
+      renderMessages();
+      updateHistoryDisplay();
+      await appendFrontendE2ELog(`已切换到项目「${project.name}」，并新建空对话「${session.name}」`);
+
+      chatInput.value = control.prompt;
+      chatInput.style.height = "auto";
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + "px";
+      await appendFrontendE2ELog(`已注入测试提示词：${control.prompt}`);
+
+      await saveFrontendE2EStatus({
+        id: scenarioId,
+        status: "sending",
+        projectName: project.name,
+        projectPath: project.workspacePath,
+        sessionName: session.name,
+        sessionId: session.id,
+        prompt: control.prompt,
+      });
+
+      await sendMessage();
+
+      const updatedSession = getSessions(project.id).find((item) => item.id === session.id) || session;
+      const snapshot = getSessionSnapshot(updatedSession);
+      await appendFrontendE2ELog(
+        `场景执行完成：messages=${snapshot.messageCount}, toolEvents=${snapshot.toolEventCount}, commandAuth=${snapshot.commandAuthCount}`
+      );
+      await saveFrontendE2EStatus({
+        id: scenarioId,
+        status: "completed",
+        projectName: project.name,
+        projectPath: project.workspacePath,
+        sessionName: updatedSession.name,
+        sessionId: updatedSession.id,
+        prompt: control.prompt,
+        ...snapshot,
+      });
+    } catch (e) {
+      const error = String(e);
+      await appendFrontendE2ELog(`场景执行失败：${error}`);
+      await saveFrontendE2EStatus({
+        id: scenarioId,
+        status: "error",
+        prompt: control.prompt,
+        error,
+      });
+    } finally {
+      frontendE2ERunning = false;
+    }
+  }
+
+  async function pollFrontendE2EControl(): Promise<void> {
+    if (frontendE2ERunning) return;
+    try {
+      const raw = await invoke<string | null>("read_frontend_e2e_control");
+      if (!raw || raw === "null") return;
+      await invoke("clear_frontend_e2e_control");
+      const normalized = raw.replace(/^\uFEFF/, "").trim();
+      const control = JSON.parse(normalized) as FrontendE2EControl;
+      if (!control?.prompt) {
+        await appendFrontendE2ELog("收到无效的前端 E2E 控制文件，缺少 prompt");
+        await saveFrontendE2EStatus({
+          status: "error",
+          error: "前端 E2E 控制文件缺少 prompt",
+        });
+        return;
+      }
+      await runFrontendE2EScenario(control);
+    } catch (e) {
+      console.error("[frontend-e2e] 轮询失败:", e);
+    }
+  }
+
+  function startFrontendE2ERunner(): void {
+    if (frontendE2EPollTimer) return;
+    frontendE2EPollTimer = setInterval(() => {
+      void pollFrontendE2EControl();
+    }, 1200);
+    void pollFrontendE2EControl();
+  }
+
+  startFrontendE2ERunner();
 });
