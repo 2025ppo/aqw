@@ -44,9 +44,10 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 - **动态替换**：根据任务类型自动选择前端/后端/通用工程师
 
 **技术实现**：
-- **Pipeline 编排器**：独立的流水线执行引擎，支持顺序/并行/条件执行，内置 Hook 系统（Pre/Post Expert/Tool 四个阶段拦截），支持主管中途决策（继续/重试/跳过/中止/动态增减步骤），通过 Tauri Event 实时推送进度
-- **Agent 执行循环**：借鉴 Codex 的 run_turn 机制，模型自主决定工具调用轮数（上限 20 轮），不再硬编码 3 轮。包含死循环检测（连续 3 次相同调用自动阻断）、Token 预算管理（超出阈值自动压缩）、file_patch 重试上限保护（3 次失败后提示改用 file_write）
-- **双轨工具协议**：同时支持 OpenAI function calling 格式和 ACTION 标记格式（向后兼容），工具调用支持并行执行
+- **后端工作流引擎**：主管调度、步骤布局、执行轮次、followup 规划、步骤收尾、最终交付校验已经统一下沉到 Rust，不再由前端各处手搓状态机
+- **专家执行 Runtime**：专家会话启动、提示模块计划、上下文装配、工具轮次推进、命令授权暂停/恢复、补交流程、专家收尾全部由后端 Runtime 驱动
+- **双轨工具协议**：同时支持 OpenAI function calling 风格和 ACTION 标记格式（向后兼容），文件动作会被统一解析、校验并通过后端 patch / change session 合入
+- **真实交付门禁**：实现类专家必须提交可执行源码变更；测试、审查、主管收尾都会基于真实工作区和动作来源做事实对账，阻止“口头完成”
 
 ---
 
@@ -121,6 +122,23 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 
 ---
 
+### 首创 5：多模态对话输入 + 双执行模式（计划 / 目标）
+
+现在的聊天框不是单纯文本框，而是一个带动作菜单的任务入口：
+
+- **文件附件**：用户可直接把图片、文本类文件等外部资料和文本一起发送给 AI
+- **按计划进行**：主管先产出计划，再沿着计划逐步推进
+- **按目标进行**：把目标作为停止条件，AI 自主拆解、持续推进并判断是否完成
+
+**技术实现**：
+- 输入区左下角内嵌动作菜单，支持文件选择、执行模式切换、附件状态可视化
+- 图片附件会走多模态直读链路，先由主管模型提炼关键信息，再回灌给专家流水线
+- 文本类附件会自动抽取摘要并注入任务上下文
+- 音视频等尚未完全接通的模态会给出明确错误提示，而不是静默失败或假装成功
+- 用户消息会保留模式和附件元信息，前端展示与后端调度使用同一份事实源
+
+---
+
 ## 三、不止编程 — 一个工作台，12 种场景覆盖
 
 星图工作台不是又一个 IDE。同一个 Pipeline 引擎调度的不只是工程师，还有翻译官（江灵语）、写作家（江墨弦）、数据分析师（江数衍）、文档专员（江纸澜）、媒体专家（江画影）等 12 位专家，覆盖以下场景：
@@ -168,7 +186,7 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 - **插件系统**：支持插件扩展，对接企业内部的 CI/CD、项目管理工具
 - **多模态**：未来可以扩展支持图片、视频、音频的分析
 
-### 首创 5：统一工具系统 + 层叠配置（Codex 级架构规范）
+### 首创 6：统一工具系统 + 层叠配置（Codex 级架构规范）
 
 **友商的问题**：工具调用硬编码在 prompt 里，没有统一管理；配置散落在各处，无法针对不同项目定制行为。
 
@@ -180,6 +198,7 @@ Copilot 只会写代码，ChatGPT 只能对话，Midjourney 只能画图——**
 - **Trait 抽象**：Rust 端通过 `ToolExecutor` Trait 实现可扩展的工具架构，新增工具只需实现 Trait 并注册
 - **file_patch 结构化补丁**：支持 Add/Delete/Update/Move 四种操作，四级容错匹配（精确→右trim→双侧trim→Unicode归一化），Delta 跟踪确保部分失败时反馈精确
 - **Hook 管控**：PreTool/PostTool/PreExpert/PostExpert 四个拦截点，可注入上下文、跳过、重试
+- **后端统一落盘**：前端不再直接充当半个文件执行器，文件提案、补丁合入、交付分析都由 Rust 统一处理
 
 **层叠配置系统（四级优先级）**：
 - 内置默认 < 用户全局（~/.xt/config.json）< 项目级（.xt/project-config.json）< 运行时覆盖
@@ -196,24 +215,23 @@ graph TB
         UI["用户界面<br/>HTML/CSS/TS"]
     end
 
-    subgraph 前端引擎层["前端引擎层 (TypeScript)"]
+    subgraph 前端展示层["前端展示层 (TypeScript)"]
         Canvas["无限画布引擎<br/>SVG + 视口变换"]
-        Chat["对话系统<br/>消息渲染 + 流式输出"]
+        Chat["对话与输入 UI<br/>消息渲染 + 附件入口 + 模式切换"]
         Settings["设置面板<br/>密钥池 + 专家配置 + 主题"]
-        ConfigFE["层叠配置<br/>内置默认 < 用户 < 项目 < 运行时"]
+        ConfigFE["前端配置视图<br/>状态读取与展示"]
     end
 
-    subgraph 调度核心层["调度核心层 (TypeScript)"]
-        Supervisor["主管意图分析<br/>江星图 - 场景分类 + 中途决策"]
-        PipelineOrch["Pipeline 编排器<br/>流水线执行 + Hook系统 + 进度推送"]
-        AgentLoop["Agent 执行循环<br/>自主工具调用 + 死循环检测 + Token预算"]
-        Router["专家路由器<br/>动态替换 + 上下文传递"]
-        Quota["词元配额系统<br/>日/月/年三级检查 + 前置阻断"]
-        RBAC["RBAC 权限系统<br/>专家级 + 路径级控制"]
-        ContextMgr["上下文管理器<br/>Token预算 + 自动压缩 + Fragment系统"]
+    subgraph 后端工作流层["后端工作流层 (Rust)"]
+        Supervisor["主管引擎<br/>调度分析 + 跟进分析 + 中途检查 + 最终审核"]
+        Pipeline["Pipeline 引擎<br/>布局计算 + round/followup 规划 + session runtime"]
+        ExpertRuntime["专家 Runtime<br/>会话启动 + 上下文装配 + 工具轮次 + 收尾"]
+        Blackboard["共享黑板/协作层<br/>证据、动作、测试、阻塞项统一事实源"]
+        Delivery["交付分析<br/>动作解析 + 工作区事实对账 + 真实变更门禁"]
+        Quota["词元/配额 Runtime<br/>项目级 + 用户级 + 仪表盘快照"]
     end
 
-    subgraph 后端服务层["后端服务层 (Rust)"]
+    subgraph 后端服务层["后端服务模块 (Rust)"]
         subgraph LLM通信["LLM通信模块"]
             ProviderReg["Provider注册表<br/>DeepSeek/OpenAI/Anthropic/阿里云/Ollama"]
             LLMStream["流式LLM客户端<br/>SSE解析 + 指数退避重试 + Tauri Event推送"]
@@ -257,23 +275,25 @@ graph TB
     UI --> Canvas
     UI --> Chat
     UI --> Settings
-
     Chat --> Supervisor
-    Supervisor --> PipelineOrch
-    PipelineOrch --> AgentLoop
-    AgentLoop --> Router
-    Router --> Quota
-    Quota --> RBAC
-    RBAC --> ContextMgr
-    RBAC --> ToolRouter
-    ContextMgr --> Index
-    ContextMgr --> Memory
+    Chat --> Pipeline
+    Chat --> ExpertRuntime
+    Settings --> Quota
+    Supervisor --> Blackboard
+    Pipeline --> Blackboard
+    Pipeline --> Delivery
+    ExpertRuntime --> Blackboard
+    ExpertRuntime --> Delivery
+    ExpertRuntime --> Quota
+    Delivery --> ToolRouter
+    Blackboard --> Index
+    Blackboard --> Memory
 
     ToolRouter --> Sandbox
     ToolRouter --> FilePatch
     ToolRouter --> HookMgr
     ToolRouter --> FS
-    AgentLoop --> LLMStream
+    ExpertRuntime --> LLMStream
     LLMStream --> ProviderReg
 
     Index --> SQLite
@@ -293,6 +313,12 @@ graph TB
     Settings --> LocalFS
     ConfigFE --> Settings
 ```
+
+### 当前实现边界
+
+- **前端主要职责**：展示消息、渲染进度、处理授权弹窗、承载附件入口和模式切换
+- **后端主要职责**：主管调度、流水线执行、专家 runtime、工具解析/执行、文件变更合入、交付真实性校验
+- **测试链**：除了前端真实 E2E 验证，还提供命令行回归脚本 `npm run cli:test`，用于直接回放“创建项目 → 多轮对话 → 检索 → 修改 → 验收”整条链路
 
 ---
 
@@ -351,6 +377,19 @@ npm run tauri dev
 
 ```bash
 npm run tauri build
+```
+
+### 回归测试
+
+```bash
+npm run build
+npm run cli:test
+```
+
+如果需要把前端真实测试项目恢复到干净基线，可使用：
+
+```bash
+npm run restore:test-baseline
 ```
 
 ## 推荐开发环境
