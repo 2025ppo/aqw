@@ -7,9 +7,8 @@ pub fn chunk_file(file_path: &str, content: &str) -> Vec<CodeChunk> {
 
     match language.as_str() {
         "markdown" => chunk_markdown(file_path, content),
-        "rust" | "typescript" | "javascript" | "python" | "go" | "java" | "kotlin" | "swift" | "c" | "cpp" => {
-            chunk_code(file_path, content, &language)
-        }
+        "rust" | "typescript" | "javascript" | "python" | "go" | "java" | "kotlin" | "swift"
+        | "c" | "cpp" => chunk_code(file_path, content, &language),
         _ => chunk_generic(file_path, content, &language),
     }
 }
@@ -37,7 +36,12 @@ pub fn detect_language(file_path: &str) -> String {
         "swift".to_string()
     } else if lower.ends_with(".c") {
         "c".to_string()
-    } else if lower.ends_with(".cpp") || lower.ends_with(".cxx") || lower.ends_with(".cc") || lower.ends_with(".hpp") || lower.ends_with(".h") {
+    } else if lower.ends_with(".cpp")
+        || lower.ends_with(".cxx")
+        || lower.ends_with(".cc")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".h")
+    {
         "cpp".to_string()
     } else {
         "text".to_string()
@@ -116,35 +120,60 @@ fn chunk_code(file_path: &str, content: &str, language: &str) -> Vec<CodeChunk> 
     // 检测代码块边界的正则模式
     let block_starters = match language {
         "rust" => &[
-            "fn ", "pub fn ", "async fn ", "pub async fn ",
-            "struct ", "pub struct ", "enum ", "pub enum ",
-            "impl ", "trait ", "pub trait ", "mod ", "pub mod ",
+            "fn ",
+            "pub fn ",
+            "async fn ",
+            "pub async fn ",
+            "struct ",
+            "pub struct ",
+            "enum ",
+            "pub enum ",
+            "impl ",
+            "trait ",
+            "pub trait ",
+            "mod ",
+            "pub mod ",
             "macro_rules!",
         ][..],
         "typescript" | "javascript" => &[
-            "function ", "async function ", "export function ",
-            "export async function ", "class ", "export class ",
-            "interface ", "export interface ", "type ", "export type ",
-            "const ", "export const ",
+            "function ",
+            "async function ",
+            "export function ",
+            "export async function ",
+            "class ",
+            "export class ",
+            "interface ",
+            "export interface ",
+            "type ",
+            "export type ",
+            "const ",
+            "export const ",
         ][..],
-        "python" => &[
-            "def ", "async def ", "class ",
-        ][..],
-        "go" => &[
-            "func ", "type ", "const (", "var (",
-        ][..],
+        "python" => &["def ", "async def ", "class "][..],
+        "go" => &["func ", "type ", "const (", "var ("][..],
         "java" | "kotlin" => &[
-            "public class ", "class ", "public interface ", "interface ",
-            "public fun ", "fun ", "public static ", "private ",
+            "public class ",
+            "class ",
+            "public interface ",
+            "interface ",
+            "public fun ",
+            "fun ",
+            "public static ",
+            "private ",
         ][..],
         "swift" => &[
-            "func ", "class ", "struct ", "enum ", "protocol ",
-            "extension ", "var ", "let ",
+            "func ",
+            "class ",
+            "struct ",
+            "enum ",
+            "protocol ",
+            "extension ",
+            "var ",
+            "let ",
         ][..],
         "c" | "cpp" => &[
-            "void ", "int ", "char ", "float ", "double ", "bool ",
-            "struct ", "class ", "enum ", "template", "auto ",
-            "static ", "inline ", "virtual ",
+            "void ", "int ", "char ", "float ", "double ", "bool ", "struct ", "class ", "enum ",
+            "template", "auto ", "static ", "inline ", "virtual ",
         ][..],
         _ => &["fn ", "function ", "class ", "def "][..],
     };
@@ -156,9 +185,9 @@ fn chunk_code(file_path: &str, content: &str, language: &str) -> Vec<CodeChunk> 
         let trimmed = line.trim();
 
         // 检查是否是新块的开始（顶层或缩进较浅的声明）
-        let is_block_start = block_starters.iter().any(|starter| {
-            trimmed.starts_with(starter)
-        });
+        let is_block_start = block_starters
+            .iter()
+            .any(|starter| trimmed.starts_with(starter));
 
         // 只对顶层或接近顶层的声明分段
         let indent = line.len().saturating_sub(trimmed.len());

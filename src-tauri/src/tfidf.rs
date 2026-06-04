@@ -150,7 +150,8 @@ pub fn tokenize(text: &str) -> Vec<String> {
             if i + 1 < chars.len() && is_chinese_char(chars[i + 1]) {
                 tokens.push(format!("{}{}", ch, chars[i + 1]));
             }
-            if i + 2 < chars.len() && is_chinese_char(chars[i + 1]) && is_chinese_char(chars[i + 2]) {
+            if i + 2 < chars.len() && is_chinese_char(chars[i + 1]) && is_chinese_char(chars[i + 2])
+            {
                 tokens.push(format!("{}{}{}", ch, chars[i + 1], chars[i + 2]));
             }
             i += 1;
@@ -158,7 +159,10 @@ pub fn tokenize(text: &str) -> Vec<String> {
             // 英文单词/标识符
             let start = i;
             while i < chars.len()
-                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.' || chars[i] == '#')
+                && (chars[i].is_alphanumeric()
+                    || chars[i] == '_'
+                    || chars[i] == '.'
+                    || chars[i] == '#')
             {
                 i += 1;
             }
@@ -227,7 +231,10 @@ fn compute_tf(tokens: &[String]) -> HashMap<String, usize> {
 
 // ---- IDF 计算 ----
 
-fn compute_idf(doc_tokens: &[Vec<String>], vocabulary: &HashMap<String, usize>) -> HashMap<usize, f64> {
+fn compute_idf(
+    doc_tokens: &[Vec<String>],
+    vocabulary: &HashMap<String, usize>,
+) -> HashMap<usize, f64> {
     let total_docs = doc_tokens.len() as f64;
     let mut idf: HashMap<usize, f64> = HashMap::new();
 

@@ -1,5 +1,5 @@
 use scraper::{Html, Selector};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -111,7 +111,12 @@ pub async fn fetch_page(url: &str) -> Result<String, String> {
 
     // 截断返回长度
     let result = if cleaned.len() > 8000 {
-        cleaned[..cleaned.char_indices().nth(8000).map(|(i, _)| i).unwrap_or(cleaned.len())].to_string()
+        cleaned[..cleaned
+            .char_indices()
+            .nth(8000)
+            .map(|(i, _)| i)
+            .unwrap_or(cleaned.len())]
+            .to_string()
     } else {
         cleaned
     };
@@ -136,7 +141,10 @@ fn urlencode(s: &str) -> String {
     result
 }
 
-fn parse_bing_html_results(html_text: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+fn parse_bing_html_results(
+    html_text: &str,
+    max_results: usize,
+) -> Result<Vec<SearchResult>, String> {
     let document = Html::parse_document(html_text);
 
     let algo_selector =
@@ -283,16 +291,19 @@ impl SearchCache {
 
     fn set(&mut self, query: String, results: Vec<SearchResult>) {
         // 清理过期条目
-        self.entries.retain(|_, v| v.created_at.elapsed() < self.max_age);
-        self.entries.insert(query, CacheEntry {
-            results,
-            created_at: Instant::now(),
-        });
+        self.entries
+            .retain(|_, v| v.created_at.elapsed() < self.max_age);
+        self.entries.insert(
+            query,
+            CacheEntry {
+                results,
+                created_at: Instant::now(),
+            },
+        );
     }
 }
 
-static SEARCH_CACHE: Lazy<Mutex<SearchCache>> =
-    Lazy::new(|| Mutex::new(SearchCache::new()));
+static SEARCH_CACHE: Lazy<Mutex<SearchCache>> = Lazy::new(|| Mutex::new(SearchCache::new()));
 
 /// 增强版搜索（带缓存+多源fallback+结构化返回）
 pub async fn web_search_enhanced(
@@ -343,8 +354,7 @@ async fn duckduckgo_search(query: &str, max_results: usize) -> Result<Vec<Search
         .build()
         .map_err(|e| e.to_string())?;
     let url = format!("https://html.duckduckgo.com/html/?q={}", urlencode(query));
-    let resp = client.get(&url)
-        .send().await.map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
 
     let html = resp.text().await.map_err(|e| e.to_string())?;
 
@@ -356,18 +366,29 @@ async fn duckduckgo_search(query: &str, max_results: usize) -> Result<Vec<Search
 
     let mut results = Vec::new();
     for element in document.select(&result_selector).take(max_results) {
-        let title = element.select(&title_selector).next()
+        let title = element
+            .select(&title_selector)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        let href = element.select(&title_selector).next()
+        let href = element
+            .select(&title_selector)
+            .next()
             .and_then(|e| e.value().attr("href"))
-            .unwrap_or("").to_string();
-        let snippet = element.select(&snippet_selector).next()
+            .unwrap_or("")
+            .to_string();
+        let snippet = element
+            .select(&snippet_selector)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
         if !title.is_empty() {
-            results.push(SearchResult { title, url: href, snippet });
+            results.push(SearchResult {
+                title,
+                url: href,
+                snippet,
+            });
         }
     }
 
@@ -378,11 +399,14 @@ async fn duckduckgo_search(query: &str, max_results: usize) -> Result<Vec<Search
 fn truncate_results(results: Vec<SearchResult>, max_tokens: Option<usize>) -> Vec<SearchResult> {
     if let Some(budget) = max_tokens {
         let mut token_count = 0usize;
-        results.into_iter().take_while(|r| {
-            let est = (r.title.len() + r.snippet.len()) / 3; // 粗略估算
-            token_count += est;
-            token_count <= budget
-        }).collect()
+        results
+            .into_iter()
+            .take_while(|r| {
+                let est = (r.title.len() + r.snippet.len()) / 3; // 粗略估算
+                token_count += est;
+                token_count <= budget
+            })
+            .collect()
     } else {
         results
     }
@@ -391,7 +415,18 @@ fn truncate_results(results: Vec<SearchResult>, max_tokens: Option<usize>) -> Ve
 /// 将搜索结果格式化为模型友好的文本
 #[allow(dead_code)]
 pub fn format_results_for_model(results: &[SearchResult]) -> String {
-    results.iter().enumerate().map(|(i, r)| {
-        format!("[{}] {}\n    URL: {}\n    {}", i + 1, r.title, r.url, r.snippet)
-    }).collect::<Vec<_>>().join("\n\n")
+    results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            format!(
+                "[{}] {}\n    URL: {}\n    {}",
+                i + 1,
+                r.title,
+                r.url,
+                r.snippet
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }

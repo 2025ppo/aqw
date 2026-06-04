@@ -1,7 +1,8 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -46,9 +47,7 @@ fn should_use_powershell(command: &str) -> bool {
 
 #[cfg(windows)]
 fn normalize_windows_command(command: &str, use_powershell: bool) -> String {
-    let mut normalized = command
-        .replace("\\\"", "\"")
-        .replace("\\'", "'");
+    let mut normalized = command.replace("\\\"", "\"").replace("\\'", "'");
 
     if use_powershell {
         if normalized.eq_ignore_ascii_case("pwd") {
@@ -97,6 +96,14 @@ fn normalize_windows_command(command: &str, use_powershell: bool) -> String {
                 .replace("Select-String -Path ", "rg -n -P ")
                 .replace(" -AllMatches | Select-Object -First 20", "")
                 .replace(" | Select-Object -First 20", "");
+        }
+        if let Some(caps) = Regex::new(r#"(?i)^\s*Select-String\s+(['"][^'"]+['"])\s+(['"][^'"]+['"])\s*$"#)
+            .expect("select-string shorthand regex")
+            .captures(&normalized)
+        {
+            let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let pattern = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            normalized = format!("Select-String -Path {} -Pattern {}", path, pattern);
         }
     }
 
@@ -151,6 +158,57 @@ const ADMIN_COMMANDS: &[&str] = &[
 
 // ===== Legacy API (backward compatibility with existing lib.rs) =====
 
+fn normalized_absolute_path(path: &Path) -> PathBuf {
+    let absolute = if path.exists() {
+        dunce::canonicalize(path).unwrap_or_else(|_| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            }
+        })
+    } else if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    dunce::simplified(&absolute).to_path_buf()
+}
+
+fn comparable_path_string(path: &Path) -> String {
+    normalized_absolute_path(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("//?/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+fn workspace_contains_path(workspace: &Path, target: &Path) -> bool {
+    let workspace_str = comparable_path_string(workspace);
+    let target_str = comparable_path_string(target);
+    target_str == workspace_str || target_str.starts_with(&(workspace_str + "/"))
+}
+
+fn trim_shell_token(token: &str) -> &str {
+    token.trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']'))
+}
+
+fn command_targets_outside_workspace(command: &str, workspace: &Path) -> bool {
+    let normalized_workspace = normalized_absolute_path(workspace);
+    command.split_whitespace().any(|raw_token| {
+        let token = trim_shell_token(raw_token);
+        if token.is_empty() {
+            return false;
+        }
+        if token == ".." || token.contains("../") || token.contains("..\\") {
+            return true;
+        }
+        let path = Path::new(token);
+        path.is_absolute() && !workspace_contains_path(&normalized_workspace, path)
+    })
+}
+
 /// 检查命令安全性 (legacy API)
 pub fn check_safety(
     command: &str,
@@ -160,25 +218,10 @@ pub fn check_safety(
 ) -> CommandResult {
     let work_path = Path::new(working_dir);
     let project_path = Path::new(project_dir);
+    let abs_work = normalized_absolute_path(work_path);
+    let abs_project = normalized_absolute_path(project_path);
 
-    let abs_work = if work_path.is_absolute() {
-        work_path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(work_path)
-    };
-
-    let abs_project = if project_path.is_absolute() {
-        project_path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(project_path)
-    };
-
-    let work_str = abs_work.to_string_lossy().to_lowercase();
-    let project_str = abs_project.to_string_lossy().to_lowercase();
-
-    if !work_str.starts_with(&project_str) {
+    if !workspace_contains_path(&abs_project, &abs_work) {
         return CommandResult {
             stdout: String::new(),
             stderr: String::new(),
@@ -191,30 +234,19 @@ pub fn check_safety(
         };
     }
 
-    let full_command = format!("{} {}", command, args.join(" ")).to_lowercase();
-    for pattern in DANGEROUS_PATTERNS {
-        if full_command.contains(pattern) {
-            return CommandResult {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: -1,
-                requires_auth: true,
-                auth_reason: format!("检测到危险命令模式: {}", pattern),
-            };
-        }
-    }
-
-    let cmd_lower = command.to_lowercase();
-    for admin_cmd in ADMIN_COMMANDS {
-        if cmd_lower.starts_with(admin_cmd) || full_command.starts_with(admin_cmd) {
-            return CommandResult {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: -1,
-                requires_auth: true,
-                auth_reason: format!("命令需要管理员权限: {}", admin_cmd),
-            };
-        }
+    let full_command = if args.is_empty() {
+        command.to_string()
+    } else {
+        format!("{} {}", command, args.join(" "))
+    };
+    if command_targets_outside_workspace(&full_command, &abs_project) {
+        return CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: -1,
+            requires_auth: true,
+            auth_reason: format!("命令可能作用于当前工作区之外：{}", full_command),
+        };
     }
 
     CommandResult {
@@ -446,10 +478,7 @@ pub fn check_command_safety_enhanced(command: &str) -> CommandSafetyResult {
 
     for pattern in DANGEROUS_PATTERNS {
         if cmd_lower.contains(pattern) {
-            return CommandSafetyResult::Dangerous(format!(
-                "检测到危险命令模式: {}",
-                pattern
-            ));
+            return CommandSafetyResult::Dangerous(format!("检测到危险命令模式: {}", pattern));
         }
     }
 
@@ -607,4 +636,20 @@ pub async fn execute_command_enhanced(
 pub async fn execute_command_async(command: &str, project_dir: &str) -> Result<String, String> {
     let output = execute_command_enhanced(command, project_dir, None, None).await?;
     Ok(output.format_for_model())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_windows_command;
+
+    #[test]
+    #[cfg(windows)]
+    fn normalizes_select_string_shorthand_to_explicit_path_and_pattern() {
+        let normalized =
+            normalize_windows_command("Select-String 'styles.css' 'border-radius'", true);
+        assert_eq!(
+            normalized,
+            "Select-String -Path 'styles.css' -Pattern 'border-radius'"
+        );
+    }
 }

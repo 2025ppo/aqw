@@ -1,6 +1,6 @@
 // ========== 代码图谱构建 - 提取导入/调用/引用关系 ==========
-use std::collections::{HashMap, HashSet};
 use crate::perceptual_index::{CodeChunk, GraphEdge};
+use std::collections::{HashMap, HashSet};
 
 /// 最大边数上限，防止图谱爆炸
 const MAX_EDGES: usize = 100_000;
@@ -67,10 +67,7 @@ pub fn build_graph(chunks: &[CodeChunk]) -> Vec<GraphEdge> {
         if edges.len() >= MAX_EDGES {
             return;
         }
-        let pair = (
-            from.min(to).to_string(),
-            from.max(to).to_string(),
-        );
+        let pair = (from.min(to).to_string(), from.max(to).to_string());
         if used_pairs.insert(pair) {
             edges.push(GraphEdge {
                 from_chunk: from.to_string(),
@@ -124,7 +121,13 @@ pub fn build_graph(chunks: &[CodeChunk]) -> Vec<GraphEdge> {
                     if suffixes.iter().any(|s| fp.ends_with(s)) {
                         for target_id in cids {
                             if target_id != &chunk.id {
-                                add_edge(&mut edges, &mut used_pairs, &chunk.id, target_id, "imports");
+                                add_edge(
+                                    &mut edges,
+                                    &mut used_pairs,
+                                    &chunk.id,
+                                    target_id,
+                                    "imports",
+                                );
                                 break;
                             }
                         }
@@ -153,7 +156,13 @@ pub fn build_graph(chunks: &[CodeChunk]) -> Vec<GraphEdge> {
                 if neighbor.id == chunk.id {
                     continue;
                 }
-                add_edge(&mut edges, &mut used_pairs, &chunk.id, &neighbor.id, "references");
+                add_edge(
+                    &mut edges,
+                    &mut used_pairs,
+                    &chunk.id,
+                    &neighbor.id,
+                    "references",
+                );
                 count += 1;
                 if count >= 3 {
                     break;
@@ -221,29 +230,60 @@ fn extract_identifier(s: &str) -> Option<String> {
 fn is_keyword(name: &str, language: &str) -> bool {
     let keywords: &[&str] = match language {
         "rust" => &[
-            "fn", "struct", "enum", "trait", "impl", "mod", "pub", "use",
-            "let", "mut", "const", "static", "if", "else", "match", "for",
-            "while", "loop", "return", "self", "Self", "super", "crate",
-            "true", "false", "async", "await", "move", "ref", "type",
-            "where", "unsafe", "extern", "as", "in", "dyn", "box",
+            "fn", "struct", "enum", "trait", "impl", "mod", "pub", "use", "let", "mut", "const",
+            "static", "if", "else", "match", "for", "while", "loop", "return", "self", "Self",
+            "super", "crate", "true", "false", "async", "await", "move", "ref", "type", "where",
+            "unsafe", "extern", "as", "in", "dyn", "box",
         ],
         "typescript" | "javascript" => &[
-            "function", "class", "interface", "type", "const", "let", "var",
-            "if", "else", "for", "while", "return", "this", "true", "false",
-            "null", "undefined", "import", "export", "default", "from",
-            "async", "await", "new", "typeof", "instanceof", "in", "of",
-            "switch", "case", "break", "continue", "try", "catch", "throw",
-            "extends", "implements", "static", "public", "private", "protected",
+            "function",
+            "class",
+            "interface",
+            "type",
+            "const",
+            "let",
+            "var",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "this",
+            "true",
+            "false",
+            "null",
+            "undefined",
+            "import",
+            "export",
+            "default",
+            "from",
+            "async",
+            "await",
+            "new",
+            "typeof",
+            "instanceof",
+            "in",
+            "of",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "try",
+            "catch",
+            "throw",
+            "extends",
+            "implements",
+            "static",
+            "public",
+            "private",
+            "protected",
         ],
         "python" => &[
-            "def", "class", "if", "elif", "else", "for", "while", "return",
-            "import", "from", "as", "True", "False", "None", "and", "or",
-            "not", "in", "is", "lambda", "try", "except", "finally", "with",
-            "raise", "yield", "pass", "break", "continue", "global", "nonlocal",
+            "def", "class", "if", "elif", "else", "for", "while", "return", "import", "from", "as",
+            "True", "False", "None", "and", "or", "not", "in", "is", "lambda", "try", "except",
+            "finally", "with", "raise", "yield", "pass", "break", "continue", "global", "nonlocal",
         ],
-        _ => &[
-            "fn", "function", "class", "def", "return", "if", "else",
-        ],
+        _ => &["fn", "function", "class", "def", "return", "if", "else"],
     };
     keywords.contains(&name)
 }
@@ -326,7 +366,9 @@ fn extract_imports(content: &str, language: &str) -> Vec<String> {
                 if trimmed.starts_with("import ") || trimmed == "import (" {
                     // 简单导入语句
                     let rest = trimmed.strip_prefix("import ").unwrap_or("");
-                    let path = rest.trim().trim_matches(|c| c == '"' || c == '(' || c == ')');
+                    let path = rest
+                        .trim()
+                        .trim_matches(|c| c == '"' || c == '(' || c == ')');
                     if !path.is_empty() {
                         imports.push(path.to_string());
                     }
@@ -350,7 +392,11 @@ fn extract_calls(content: &str, _language: &str) -> Vec<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         // 跳过注释
-        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+        if trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+        {
             continue;
         }
 

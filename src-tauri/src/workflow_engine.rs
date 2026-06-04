@@ -6,20 +6,23 @@ use std::fs;
 use std::path::PathBuf;
 
 static FUNCTION_CALCULATOR_TITLE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"functioncalculator\s*:\s*['"]函数计算器['"]"#).expect("valid function title regex")
+    Regex::new(r#"functioncalculator\s*:\s*['"]函数计算器['"]"#)
+        .expect("valid function title regex")
 });
 static FUNCTION_CALCULATOR_CASE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"case\s*'functioncalculator'\s*:\s*renderFunctionCalculator\s*\("#)
         .expect("valid function case regex")
 });
-static FUNCTION_CALCULATOR_RENDER_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"function\s+renderFunctionCalculator\s*\("#).expect("valid function render regex"));
+static FUNCTION_CALCULATOR_RENDER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"function\s+renderFunctionCalculator\s*\("#).expect("valid function render regex")
+});
 static FUNCTION_CALCULATOR_ICON_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"functioncalculator\s*:\s*'icon-functioncalculator\.svg'"#)
         .expect("valid function icon regex")
 });
-static FUNCTION_CALCULATOR_ENTRY_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"data-app="functioncalculator""#).expect("valid function entry regex"));
+static FUNCTION_CALCULATOR_ENTRY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"data-app="functioncalculator""#).expect("valid function entry regex")
+});
 static EMOJI_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\p{Extended_Pictographic}"#).expect("valid emoji regex"));
 static GLOBAL_EMOJI_TASK_RE: Lazy<Regex> = Lazy::new(|| {
@@ -116,19 +119,25 @@ pub struct ExpertReplyGuardDecision {
     pub final_failure_message: Option<String>,
 }
 
-fn read_workspace_relative_file(workspace_path: &str, relative_path: &str) -> Result<String, String> {
+fn read_workspace_relative_file(
+    workspace_path: &str,
+    relative_path: &str,
+) -> Result<String, String> {
     let workspace_root = dunce::canonicalize(PathBuf::from(workspace_path))
         .map_err(|e| format!("解析工作区失败: {}", e))?;
     let target = workspace_root.join(relative_path);
-    let canonical_target = dunce::canonicalize(&target)
-        .map_err(|e| format!("读取 {} 失败: {}", relative_path, e))?;
+    let canonical_target =
+        dunce::canonicalize(&target).map_err(|e| format!("读取 {} 失败: {}", relative_path, e))?;
     if !canonical_target.starts_with(&workspace_root) {
         return Err(format!("文件路径越界: {}", relative_path));
     }
     fs::read_to_string(&canonical_target).map_err(|e| format!("读取 {} 失败: {}", relative_path, e))
 }
 
-pub fn verify_workspace_delivery(user_task_text: &str, workspace_path: &str) -> Result<Vec<String>, String> {
+pub fn verify_workspace_delivery(
+    user_task_text: &str,
+    workspace_path: &str,
+) -> Result<Vec<String>, String> {
     let mut issues: Vec<String> = Vec::new();
     let wants_function_calculator = user_task_text.contains("函数计算器");
     let wants_global_emoji_replacement = GLOBAL_EMOJI_TASK_RE.is_match(user_task_text);
@@ -208,7 +217,7 @@ fn has_file_mutation_deliverable_text(text: &str) -> bool {
     let extracted = extract_delivery_payload(&[WorkflowInputSource {
         content: text.to_string(),
     }]);
-    !extracted.executable_mutations.is_empty() || has_structured_mutation_deliverable_text(text)
+    extracted.structured_change_count > 0 || has_structured_mutation_deliverable_text(text)
 }
 
 fn has_source_file_mutation_deliverable_text(text: &str) -> bool {
@@ -218,8 +227,8 @@ fn has_source_file_mutation_deliverable_text(text: &str) -> bool {
     let extracted = extract_delivery_payload(&[WorkflowInputSource {
         content: text.to_string(),
     }]);
-    let source_action = extracted.executable_mutations.iter().any(|entry| {
-        ["CREATE_FILE", "WRITE_FILE", "EDIT_FILE"].contains(&entry.action_type.as_str())
+    let source_action = extracted.change_sets.iter().any(|entry| {
+        ["create_file", "write_file", "edit_file"].contains(&entry.operation.as_str())
             && Regex::new(r"(?:app\.js|index\.html|styles\.css|src/|src\\|public/|public\\|components/|components\\|pages/|pages\\|assets/|assets\\)")
                 .expect("source path regex")
                 .is_match(&entry.path)
@@ -233,6 +242,16 @@ fn has_source_file_mutation_deliverable_text(text: &str) -> bool {
         )
         .expect("source op regex")
         .is_match(text)
+}
+
+fn has_unexecutable_file_mutation_declaration(text: &str) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let extracted = extract_delivery_payload(&[WorkflowInputSource {
+        content: text.to_string(),
+    }]);
+    !extracted.executable_mutations.is_empty() && extracted.structured_change_count == 0
 }
 
 fn has_approximate_file_mutation_payload(text: &str) -> bool {
@@ -255,6 +274,20 @@ fn has_approximate_file_mutation_payload(text: &str) -> bool {
     .any(|pattern| pattern.is_match(text))
 }
 
+fn has_unstructured_diff_edit_payload(text: &str) -> bool {
+    if text.trim().is_empty() || !has_file_mutation_deliverable_text(text) {
+        return false;
+    }
+    Regex::new(
+        r"(?is)\[ACTION:EDIT_FILE(?::[^\]]+|\s+[^\]]+)\](?:\*\*)?\s*```diff\b[\s\S]*?(?:```|$)",
+    )
+    .expect("diff edit regex")
+    .is_match(text)
+        || Regex::new(r"(?is)\[ACTION:EDIT_FILE[\s\S]{0,1200}---\s+a/[\s\S]{0,1200}\+\+\+\s+b/")
+            .expect("unified diff regex")
+            .is_match(text)
+}
+
 fn mentions_saved_artifact_without_action(text: &str) -> bool {
     if text.trim().is_empty() || has_file_mutation_deliverable_text(text) {
         return false;
@@ -267,13 +300,19 @@ fn mentions_saved_artifact_without_action(text: &str) -> bool {
             .is_match(text)
 }
 
-pub fn evaluate_step_deliverable_guard(request: &StepDeliverableGuardRequest) -> StepDeliverableGuardDecision {
-    let designer_step = request.step_expert_ids.iter().any(|id| id == "jiang-dingchu");
+pub fn evaluate_step_deliverable_guard(
+    request: &StepDeliverableGuardRequest,
+) -> StepDeliverableGuardDecision {
+    let designer_step = request
+        .step_expert_ids
+        .iter()
+        .any(|id| id == "jiang-dingchu");
     let implementation_step = request
         .step_expert_ids
         .iter()
         .any(|id| ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&id.as_str()));
-    let requires_real_artifact = request.has_workspace_context && (designer_step || implementation_step);
+    let requires_real_artifact =
+        request.has_workspace_context && (designer_step || implementation_step);
     if !requires_real_artifact {
         return StepDeliverableGuardDecision {
             requires_real_artifact,
@@ -289,7 +328,9 @@ pub fn evaluate_step_deliverable_guard(request: &StepDeliverableGuardRequest) ->
         } else {
             has_source_file_mutation_deliverable_text(output)
         };
-        deliverable_ok && !has_approximate_file_mutation_payload(output)
+        deliverable_ok
+            && !has_approximate_file_mutation_payload(output)
+            && !has_unstructured_diff_edit_payload(output)
     });
 
     let blocker_message = if has_real_artifact {
@@ -308,7 +349,8 @@ pub fn evaluate_step_deliverable_guard(request: &StepDeliverableGuardRequest) ->
 }
 
 pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertReplyGuardDecision {
-    let implementation_expert = ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&request.expert_id.as_str());
+    let implementation_expert =
+        ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&request.expert_id.as_str());
     let requires_real_artifact = request.has_workspace_context
         && (implementation_expert || request.expert_id == "jiang-dingchu");
     if !requires_real_artifact {
@@ -325,8 +367,15 @@ pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertR
     let has_file_mutation = has_file_mutation_deliverable_text(reply);
     let has_source_mutation = has_source_file_mutation_deliverable_text(reply);
     let has_approximate = has_approximate_file_mutation_payload(reply);
+    let has_diff_payload = has_unstructured_diff_edit_payload(reply);
+    let has_unexecutable_declaration = has_unexecutable_file_mutation_declaration(reply);
     let mentions_saved = mentions_saved_artifact_without_action(reply);
-    let requires_retry = !has_file_mutation || (implementation_expert && !has_source_mutation) || mentions_saved || has_approximate;
+    let requires_retry = !has_file_mutation
+        || (implementation_expert && !has_source_mutation)
+        || mentions_saved
+        || has_approximate
+        || has_diff_payload
+        || has_unexecutable_declaration;
     if !requires_retry {
         return ExpertReplyGuardDecision {
             should_enforce: true,
@@ -341,12 +390,16 @@ pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertR
         "你当前声称已经输出/保存了设计文件，但回复里没有任何真实落盘动作，这在 code-development 场景里等同于未完成。请立刻通过 [ACTION:CREATE_FILE] / [ACTION:WRITE_FILE] 真正写出设计文档；如果你并没有保存成功，就必须明确撤回“已保存/已输出文档”的说法，禁止继续空口声称文件已存在。".to_string()
     } else if request.workspace_looks_empty && !has_file_mutation {
         "当前工作区几乎是空目录（例如只有 .xt 或没有现成业务源码），这类场景不需要继续探测旧文件，也不要继续讨论技术选型/框架选择。请直接交付最小可运行文件集合，并优先拆成较短的小文件动作：至少创建 [ACTION:CREATE_FILE:index.html]、[ACTION:CREATE_FILE:styles.css]、[ACTION:CREATE_FILE:app.js]，必要时再补 [ACTION:CREATE_FILE:README.md]。创建新文件时优先用代码块格式（例如 [ACTION:CREATE_FILE:styles.css] 后跟 ```css 代码块），不要把大段源码塞进单行 content=\"...\" 内联字符串。只有在内容很短时才允许单文件 index.html 方案。禁止继续只做目录探测、只写分析、只说“需要先读取文件”。".to_string()
+    } else if has_unexecutable_declaration {
+        "你已经声明了文件动作，但没有提供系统可直接执行的精确变更主体。不要再输出“代码块片段 + 解释箭头/说明文字”这种格式。EDIT_FILE 必须直接给完整 searchText / replaceText：可以使用两段独立代码块，或在单代码块中使用 <searchText>...</searchText> 和 <replaceText>...</replaceText>；CREATE_FILE / WRITE_FILE 必须直接给完整文件内容代码块。对于 index.html / styles.css / README.md 这类短小静态文件，优先改用 WRITE_FILE 直接给完整最新文件内容。禁止只写“替换原来的某块/整个区域”这种口头描述。".to_string()
+    } else if has_diff_payload {
+        "你刚才给出的是 unified diff / ```diff 补丁格式，这不是当前执行链可可靠落盘的格式。不要再输出 --- a/+++ b/@@ 这种补丁。请改用严格结构化的可执行变更：优先使用 [ACTION:EDIT_FILE ...] + search/replace 两段代码块，或输出结构化 JSON changes（包含 operation/path/searchText/replaceText 或 content）。".to_string()
     } else if has_approximate {
         "你刚才给出的文件动作仍然是近似/截断补丁（例如带省略号、truncated、略去等占位），系统无法可靠落盘，这在 code-development 场景里等同于未完成。请基于真实文件内容重新输出精确可执行的文件动作：searchText / replaceText / content 必须是完整原文，不允许出现 ...、…、(truncated)、（省略）等占位。如果目标文件内容仍不完整，必须先用 [ACTION:READ_FILE path=\"相对路径\" start_line=\"起始行\" end_line=\"结束行\"] 继续分段读取后再改。".to_string()
     } else if implementation_expert && !has_source_mutation {
         "你当前只交付了目录动作、资源文件或其它非源码文件，这对本次代码改造任务仍然等同于未完成。请至少对一个真实源码文件直接交付可执行变更：优先修改 app.js / index.html / styles.css，其次才是 icons/*.svg 等资源文件。禁止只创建 icons 目录、只写单个 SVG、只补资源而不改源码。".to_string()
     } else {
-        "你当前还没有交付任何真实文件变更，这在 code-development 场景里等同于未完成。请立刻基于已有证据输出至少一个可执行文件动作（[ACTION:EDIT_FILE] / [ACTION:WRITE_FILE] / [ACTION:CREATE_FILE] / 结构化 changes）来真正修改代码；如果仍然缺少具体文件内容，你的回复里必须直接包含 [ACTION:READ_FILE:相对路径]。已知目标源码文件（如 app.js / index.html / styles.css）时，禁止用 [ACTION:EXECUTE_CMD] 的 grep/rg/Select-String/Get-Content 代替源码读取。禁止继续重复目录探测、只给设计文档，或只输出命令列表。".to_string()
+        "你当前还没有交付任何真实文件变更，这在 code-development 场景里等同于未完成。请立刻基于已有证据输出至少一个可执行文件动作（[ACTION:EDIT_FILE] / [ACTION:WRITE_FILE] / [ACTION:CREATE_FILE] / 结构化 changes）来真正修改代码；如果仍然缺少具体文件内容，你的回复里必须直接包含 [ACTION:READ_FILE:相对路径]。已知目标源码文件（如 app.js / index.html / styles.css）时，禁止用 [ACTION:EXECUTE_CMD] 的 grep/rg/Select-String/Get-Content 代替源码读取。对于 index.html / styles.css / README.md 这类短小静态文件，优先直接交付 WRITE_FILE 完整内容。禁止继续重复目录探测、只给设计文档，或只输出命令列表。".to_string()
     };
 
     let final_failure_message = if request.expert_id == "jiang-dingchu" {
@@ -371,7 +424,8 @@ fn normalize_action_path(raw_path: &str) -> String {
 
     let mut value = decode_action_param_value(raw_path).trim().to_string();
     for pattern in [
-        Regex::new(r"\r?\n\s*(?:searchText|replaceText|content|reason|dir)\s*:").expect("marker regex"),
+        Regex::new(r"\r?\n\s*(?:searchText|replaceText|content|reason|dir)\s*:")
+            .expect("marker regex"),
         Regex::new(r"\s+(?:searchText|replaceText|content|reason|dir)\s*:").expect("marker regex"),
     ] {
         if let Some(found) = pattern.find(&value) {
@@ -417,7 +471,8 @@ fn parse_action_params(params_str: &str) -> std::collections::HashMap<String, St
     ];
 
     let key_pattern = ACTION_PARAM_KEYS.join("|");
-    let matcher = Regex::new(&format!(r#"(?:^|\s)({})=(["'])"#, key_pattern)).expect("valid param regex");
+    let matcher =
+        Regex::new(&format!(r#"(?:^|\s)({})=(["'])"#, key_pattern)).expect("valid param regex");
     let matches: Vec<(String, String, usize, usize)> = matcher
         .captures_iter(params_str)
         .filter_map(|caps| {
@@ -426,7 +481,12 @@ fn parse_action_params(params_str: &str) -> std::collections::HashMap<String, St
             let quote = caps.get(2)?.as_str().to_string();
             let prefix_length = full.as_str().len().saturating_sub(key.len() + 2);
             let key_start = full.start() + prefix_length;
-            Some((key, quote, key_start, key_start + caps.get(1)?.as_str().len() + 2))
+            Some((
+                key,
+                quote,
+                key_start,
+                key_start + caps.get(1)?.as_str().len() + 2,
+            ))
         })
         .collect();
 
@@ -450,11 +510,41 @@ fn parse_action_params(params_str: &str) -> std::collections::HashMap<String, St
 
 fn parse_labeled_edit_payload(payload: &str) -> Option<(String, String)> {
     let normalized = payload.replace("\r\n", "\n").trim().to_string();
-    let regex =
-        Regex::new(r"(?is)^\s*searchText:\s*([\s\S]*?)\n\s*replaceText:\s*([\s\S]*)$").expect("labeled edit regex");
+    let regex = Regex::new(r"(?is)^\s*searchText:\s*([\s\S]*?)\n\s*replaceText:\s*([\s\S]*)$")
+        .expect("labeled edit regex");
     let captures = regex.captures(&normalized)?;
     let search_text = captures.get(1)?.as_str().trim_end().to_string();
     let replace_text = captures.get(2)?.as_str().trim_end().to_string();
+    Some((search_text, replace_text))
+}
+
+fn parse_tagged_edit_payload(payload: &str) -> Option<(String, String)> {
+    let normalized = payload.replace("\r\n", "\n").trim().to_string();
+    let regex = Regex::new(
+        r"(?is)^\s*<searchText>\s*([\s\S]*?)\s*</searchText>\s*<replaceText>\s*([\s\S]*?)\s*</replaceText>\s*$",
+    )
+    .expect("tagged edit regex");
+    let captures = regex.captures(&normalized)?;
+    let search_text = captures.get(1)?.as_str().trim_end().to_string();
+    let replace_text = captures.get(2)?.as_str().trim_end().to_string();
+    if search_text.is_empty() || replace_text.is_empty() {
+        return None;
+    }
+    Some((search_text, replace_text))
+}
+
+fn parse_annotated_edit_payload(payload: &str) -> Option<(String, String)> {
+    let normalized = payload.replace("\r\n", "\n").trim().to_string();
+    let regex = Regex::new(
+        r"(?is)^\s*(?:(?:/\*|<!--)\s*[^\n]*(?:搜索块|当前|原始|旧|before|search)[^\n]*(?:\*/|-->)\s*)([\s\S]*?)\s*(?:(?:/\*|<!--)\s*[^\n]*(?:替换|改为|修改后|after|replace)[^\n]*(?:\*/|-->)\s*)([\s\S]*)$",
+    )
+    .expect("annotated edit regex");
+    let captures = regex.captures(&normalized)?;
+    let search_text = captures.get(1)?.as_str().trim_end().to_string();
+    let replace_text = captures.get(2)?.as_str().trim_end().to_string();
+    if search_text.is_empty() || replace_text.is_empty() {
+        return None;
+    }
     Some((search_text, replace_text))
 }
 
@@ -598,13 +688,43 @@ fn parse_inline_action_change_sets(text: &str) -> Vec<WorkflowChangeSet> {
         });
     }
 
+    let replace_marker_edit_regex = Regex::new(
+        r"(?is)\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?\s*```(?:\w*\r?\n)?([\s\S]*?)```\s*(?:替换为|替换成|replace(?:\s+with)?)[：: ]*\s*```(?:\w*\r?\n)?([\s\S]*?)```",
+    )
+    .expect("replace marker edit regex");
+    for caps in replace_marker_edit_regex.captures_iter(text) {
+        let legacy_path = caps.get(1).map(|m| m.as_str());
+        let param_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let params = parse_action_params(param_str);
+        let raw_path = legacy_path
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| params.get("path").cloned())
+            .unwrap_or_default();
+        let path = normalize_action_path(&raw_path);
+        if path.is_empty() {
+            continue;
+        }
+        changes.push(WorkflowChangeSet {
+            operation: "edit_file".to_string(),
+            path,
+            search_text: caps.get(3).map(|m| m.as_str().trim_end().to_string()),
+            replace_text: caps.get(4).map(|m| m.as_str().trim_end().to_string()),
+            content: None,
+            rationale: None,
+            risk: Some("medium".to_string()),
+            allow_overwrite: None,
+        });
+    }
+
     let compact_edit_regex =
-        Regex::new(r"(?is)\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w+)?\r?\n([\s\S]*?)```").expect("compact edit regex");
+        Regex::new(r"(?is)\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?\s*```(?:\w+)?\r?\n([\s\S]*?)```").expect("compact edit regex");
     for caps in compact_edit_regex.captures_iter(text) {
-        let Some((search_text, replace_text)) = caps
-            .get(3)
-            .and_then(|m| parse_labeled_edit_payload(m.as_str()))
-        else {
+        let Some((search_text, replace_text)) = caps.get(3).and_then(|m| {
+            parse_labeled_edit_payload(m.as_str())
+                .or_else(|| parse_tagged_edit_payload(m.as_str()))
+                .or_else(|| parse_annotated_edit_payload(m.as_str()))
+        }) else {
             continue;
         };
         let legacy_path = caps.get(1).map(|m| m.as_str());
@@ -631,7 +751,8 @@ fn parse_inline_action_change_sets(text: &str) -> Vec<WorkflowChangeSet> {
         });
     }
 
-    let delete_regex = Regex::new(r"(?is)\[ACTION:DELETE(?::([^\]]+)|(\s+[^\]]+))\]").expect("delete regex");
+    let delete_regex =
+        Regex::new(r"(?is)\[ACTION:DELETE(?::([^\]]+)|(\s+[^\]]+))\]").expect("delete regex");
     for caps in delete_regex.captures_iter(text) {
         let legacy_path = caps.get(1).map(|m| m.as_str());
         let param_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -660,7 +781,11 @@ fn parse_inline_action_change_sets(text: &str) -> Vec<WorkflowChangeSet> {
     let seen_inline_blocks = Regex::new(r#"(?is)\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE)((?:\s+\w+=(?:"[^"]*"|'[\s\S]*?'))*)\]"#)
         .expect("inline block regex");
     for caps in seen_inline_blocks.captures_iter(text) {
-        let action_type = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_ascii_lowercase();
+        let action_type = caps
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let params = parse_action_params(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
         let raw_path = params
             .get("path")
@@ -672,9 +797,15 @@ fn parse_inline_action_change_sets(text: &str) -> Vec<WorkflowChangeSet> {
         if path.is_empty() {
             continue;
         }
-        let content = params.get("content").map(|value| decode_action_param_value(value));
-        let search_text = params.get("searchText").map(|value| decode_action_param_value(value));
-        let replace_text = params.get("replaceText").map(|value| decode_action_param_value(value));
+        let content = params
+            .get("content")
+            .map(|value| decode_action_param_value(value));
+        let search_text = params
+            .get("searchText")
+            .map(|value| decode_action_param_value(value));
+        let replace_text = params
+            .get("replaceText")
+            .map(|value| decode_action_param_value(value));
         let rationale = params
             .get("reason")
             .or_else(|| params.get("rationale"))
@@ -759,7 +890,8 @@ fn collect_executable_mutation_paths(text: &str) -> Vec<WorkflowMutationPath> {
     }
 
     let legacy_regex =
-        Regex::new(r"\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE):([^\]]+)\]").expect("legacy regex");
+        Regex::new(r"\[ACTION:(CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE):([^\]]+)\]")
+            .expect("legacy regex");
     for caps in legacy_regex.captures_iter(text) {
         let action_type = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_uppercase();
         let path = normalize_action_path(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
@@ -811,7 +943,15 @@ fn parse_changes_from_value(value: &serde_json::Value, changes: &mut Vec<Workflo
             .unwrap_or("")
             .to_lowercase()
             .replace('-', "_");
-        if !["create_folder", "create_file", "write_file", "edit_file", "delete"].contains(&operation.as_str()) {
+        if ![
+            "create_folder",
+            "create_file",
+            "write_file",
+            "edit_file",
+            "delete",
+        ]
+        .contains(&operation.as_str())
+        {
             continue;
         }
 
@@ -828,9 +968,18 @@ fn parse_changes_from_value(value: &serde_json::Value, changes: &mut Vec<Workflo
                 .or_else(|| raw.get("replace_text"))
                 .and_then(|entry| entry.as_str())
                 .map(|value| value.to_string()),
-            content: raw.get("content").and_then(|entry| entry.as_str()).map(|value| value.to_string()),
-            rationale: raw.get("rationale").and_then(|entry| entry.as_str()).map(|value| value.to_string()),
-            risk: raw.get("risk").and_then(|entry| entry.as_str()).map(|value| value.to_string()),
+            content: raw
+                .get("content")
+                .and_then(|entry| entry.as_str())
+                .map(|value| value.to_string()),
+            rationale: raw
+                .get("rationale")
+                .and_then(|entry| entry.as_str())
+                .map(|value| value.to_string()),
+            risk: raw
+                .get("risk")
+                .and_then(|entry| entry.as_str())
+                .map(|value| value.to_string()),
             allow_overwrite: raw
                 .get("allowOverwrite")
                 .or_else(|| raw.get("allow_overwrite"))
@@ -840,7 +989,13 @@ fn parse_changes_from_value(value: &serde_json::Value, changes: &mut Vec<Workflo
 }
 
 fn try_parse_json(raw: &str) -> Option<serde_json::Value> {
-    for candidate in [raw.to_string(), Regex::new(r",\s*([}\]])").expect("cleanup regex").replace_all(raw, "$1").to_string()] {
+    for candidate in [
+        raw.to_string(),
+        Regex::new(r",\s*([}\]])")
+            .expect("cleanup regex")
+            .replace_all(raw, "$1")
+            .to_string(),
+    ] {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
             return Some(value);
         }
@@ -857,7 +1012,8 @@ fn extract_structured_change_sets(text: &str) -> Vec<WorkflowChangeSet> {
         }
     }
 
-    let raw_json_regex = Regex::new(r#"(\{[\s\S]*?"changes"\s*:\s*\[[\s\S]*?\][\s\S]*?\})"#).expect("raw json regex");
+    let raw_json_regex = Regex::new(r#"(\{[\s\S]*?"changes"\s*:\s*\[[\s\S]*?\][\s\S]*?\})"#)
+        .expect("raw json regex");
     for caps in raw_json_regex.captures_iter(text) {
         if let Some(parsed) = caps.get(1).and_then(|m| try_parse_json(m.as_str())) {
             parse_changes_from_value(&parsed, &mut changes);
@@ -898,8 +1054,14 @@ fn extract_required_files(text: &str) -> Vec<String> {
                             .or_else(|| raw.get("type"))
                             .and_then(|entry| entry.as_str())
                             .map(|value| {
-                                ["create_folder", "create_file", "write_file", "edit_file", "delete"]
-                                    .contains(&value.to_lowercase().replace('-', "_").as_str())
+                                [
+                                    "create_folder",
+                                    "create_file",
+                                    "write_file",
+                                    "edit_file",
+                                    "delete",
+                                ]
+                                .contains(&value.to_lowercase().replace('-', "_").as_str())
                             })
                             .unwrap_or(false)
                 })
@@ -988,14 +1150,15 @@ pub fn extract_delivery_payload(sources: &[WorkflowInputSource]) -> ExtractedDel
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_agent_delivery, evaluate_step_deliverable_guard, extract_delivery_payload, StepDeliverableGuardRequest,
-        StepDeliverableTask, WorkflowInputSource,
+        analyze_agent_delivery, evaluate_step_deliverable_guard, extract_delivery_payload,
+        StepDeliverableGuardRequest, StepDeliverableTask, WorkflowInputSource,
     };
 
     #[test]
     fn parses_inline_mutation_actions() {
         let sources = vec![WorkflowInputSource {
-            content: r#"[ACTION:EDIT_FILE path="app.js" searchText="a" replaceText="b"]"#.to_string(),
+            content: r#"[ACTION:EDIT_FILE path="app.js" searchText="a" replaceText="b"]"#
+                .to_string(),
         }];
         let analysis = analyze_agent_delivery(&sources, "", None).expect("analysis");
         assert_eq!(analysis.parsed_action_count, 1);
@@ -1024,7 +1187,10 @@ mod tests {
         let analysis = analyze_agent_delivery(&sources, "", None).expect("analysis");
         assert_eq!(analysis.structured_change_count, 1);
         assert!(analysis.has_executable_mutation);
-        assert_eq!(analysis.required_files, vec!["index.html".to_string(), "styles.css".to_string()]);
+        assert_eq!(
+            analysis.required_files,
+            vec!["index.html".to_string(), "styles.css".to_string()]
+        );
     }
 
     #[test]
@@ -1032,7 +1198,8 @@ mod tests {
         let sources = vec![WorkflowInputSource {
             content: r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]
 [ACTION:CREATE_FILE path="icons/a.svg" content='<svg></svg>']
-[ACTION:CREATE_FOLDER path="icons"]"#.to_string(),
+[ACTION:CREATE_FOLDER path="icons"]"#
+                .to_string(),
         }];
         let extracted = extract_delivery_payload(&sources);
         assert_eq!(extracted.change_sets.len(), 3);
@@ -1067,7 +1234,156 @@ mod tests {
             .iter()
             .any(|change| change.operation == "create_file"
                 && change.path == "index.html"
-                && change.content.as_deref().unwrap_or("").contains("<body>todo</body>")));
+                && change
+                    .content
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("<body>todo</body>")));
+    }
+
+    #[test]
+    fn extracts_annotated_compact_edit_blocks() {
+        let sources = vec![WorkflowInputSource {
+            content: r#"**[ACTION:EDIT_FILE:styles.css]**
+```css
+/* 搜索块：h1 当前样式 */
+h1 {
+    color: #333;
+}
+
+/* 替换为更温和的标题颜色 */
+h1 {
+    color: #4a5568;
+}
+```"#
+                .to_string(),
+        }];
+        let extracted = extract_delivery_payload(&sources);
+        assert!(extracted.change_sets.iter().any(|change| {
+            change.operation == "edit_file"
+                && change.path == "styles.css"
+                && change
+                    .search_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("color: #333;")
+                && change
+                    .replace_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("color: #4a5568;")
+        }));
+    }
+
+    #[test]
+    fn extracts_annotated_compact_edit_blocks_with_marker_comments() {
+        let sources = vec![WorkflowInputSource {
+            content: r#"[ACTION:EDIT_FILE:styles.css]
+```css
+/* 🎯 搜索块 2: #add-btn 原始 border-radius */
+#add-btn {
+    padding: 0.65rem 1.5rem;
+    font-size: 1rem;
+    background-color: #4a90d9;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+
+/* 替换为加大圆角 */
+#add-btn {
+    padding: 0.65rem 1.5rem;
+    font-size: 1rem;
+    background-color: #4a90d9;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+```"#
+                .to_string(),
+        }];
+        let extracted = extract_delivery_payload(&sources);
+        assert!(extracted.change_sets.iter().any(|change| {
+            change.operation == "edit_file"
+                && change.path == "styles.css"
+                && change
+                    .search_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("border-radius: 6px;")
+                && change
+                    .replace_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("border-radius: 12px;")
+        }));
+    }
+
+    #[test]
+    fn extracts_tagged_compact_edit_blocks() {
+        let sources = vec![WorkflowInputSource {
+            content: r#"[ACTION:EDIT_FILE:index.html]
+```html
+<searchText>
+<h1>待办事项</h1>
+</searchText>
+<replaceText>
+<h1>我的小记</h1>
+</replaceText>
+```"#
+                .to_string(),
+        }];
+        let extracted = extract_delivery_payload(&sources);
+        assert!(extracted.change_sets.iter().any(|change| {
+            change.operation == "edit_file"
+                && change.path == "index.html"
+                && change
+                    .search_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("<h1>待办事项</h1>")
+                && change
+                    .replace_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("<h1>我的小记</h1>")
+        }));
+    }
+
+    #[test]
+    fn extracts_replace_marker_edit_blocks() {
+        let sources = vec![WorkflowInputSource {
+            content: r#"[ACTION:EDIT_FILE:index.html]
+```html
+<h1>待办事项</h1>
+```
+替换为：
+```html
+<h1>📋 待办事项</h1>
+```"#
+                .to_string(),
+        }];
+        let extracted = extract_delivery_payload(&sources);
+        assert!(extracted.change_sets.iter().any(|change| {
+            change.operation == "edit_file"
+                && change.path == "index.html"
+                && change
+                    .search_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("<h1>待办事项</h1>")
+                && change
+                    .replace_text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("<h1>📋 待办事项</h1>")
+        }));
     }
 
     #[test]
@@ -1090,7 +1406,10 @@ mod tests {
             step_expert_ids: vec!["jiang-yumo".to_string()],
             has_workspace_context: true,
             tasks: vec![StepDeliverableTask {
-                output: Some(r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]"#.to_string()),
+                output: Some(
+                    r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]"#
+                        .to_string(),
+                ),
             }],
         });
         assert!(decision.has_real_artifact);
@@ -1103,7 +1422,8 @@ mod tests {
             expert_id: "jiang-yumo".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: false,
-            reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old..." replaceText="new"]"#.to_string(),
+            reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old..." replaceText="new"]"#
+                .to_string(),
         });
         assert!(decision.should_enforce);
         assert!(decision.requires_retry);
@@ -1115,12 +1435,35 @@ mod tests {
     }
 
     #[test]
+    fn expert_reply_guard_retries_on_unexecutable_edit_declaration() {
+        let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
+            expert_id: "jiang-yumo".to_string(),
+            has_workspace_context: true,
+            workspace_looks_empty: false,
+            reply: r#"[ACTION:EDIT_FILE:index.html]
+```html
+<h1>我的待办</h1>
+```
+→ 替换原来的 `<h1>待办事项</h1>`"#
+                .to_string(),
+        });
+        assert!(decision.should_enforce);
+        assert!(decision.requires_retry);
+        assert!(decision
+            .reminder_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("精确变更主体"));
+    }
+
+    #[test]
     fn expert_reply_guard_accepts_precise_source_patch() {
         let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
             expert_id: "jiang-yumo".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: false,
-            reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]"#.to_string(),
+            reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]"#
+                .to_string(),
         });
         assert!(decision.should_enforce);
         assert!(!decision.requires_retry);

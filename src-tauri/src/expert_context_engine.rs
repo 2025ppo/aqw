@@ -163,14 +163,21 @@ pub fn build_initial_messages(
             .join("\n");
         messages.push(ContextMessage {
             role: "user".to_string(),
-            content: format!("以下是前置专家的工作结果，请在此基础上继续你的工作：\n\n{}", prev_context),
+            content: format!(
+                "以下是前置专家的工作结果，请在此基础上继续你的工作：\n\n{}",
+                prev_context
+            ),
         });
     }
 
     let enhanced_task = if retrieval_context.trim().is_empty() {
         task_description.to_string()
     } else {
-        format!("{}\n{}", task_description, summarize_tool_text(retrieval_context, 6500))
+        format!(
+            "{}\n{}",
+            task_description,
+            summarize_tool_text(retrieval_context, 6500)
+        )
     };
     messages.push(ContextMessage {
         role: "user".to_string(),
@@ -181,7 +188,10 @@ pub fn build_initial_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_initial_messages, build_retrieval_context, format_cards_context, format_memory_context, PreviousExpertResult};
+    use super::{
+        build_initial_messages, build_retrieval_context, format_cards_context,
+        format_memory_context, PreviousExpertResult,
+    };
     use crate::{memory, repo_wiki};
 
     #[test]

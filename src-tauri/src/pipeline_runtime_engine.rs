@@ -62,7 +62,10 @@ pub fn apply_decision(request: &PipelineRuntimeDecisionRequest) -> PipelineRunti
     let action = request.action.trim().to_ascii_lowercase();
     match action.as_str() {
         "retry" | "artifact-missing" => {
-            let retried = state.step_retry_counts.entry(state.current_step_index).or_insert(0);
+            let retried = state
+                .step_retry_counts
+                .entry(state.current_step_index)
+                .or_insert(0);
             *retried += 1;
             let retry_count = *retried;
             let exceeded = retry_count > state.max_step_retry;
@@ -151,7 +154,9 @@ pub fn apply_decision(request: &PipelineRuntimeDecisionRequest) -> PipelineRunti
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_decision, init_runtime, PipelineRuntimeDecisionRequest, PipelineRuntimeInitRequest};
+    use super::{
+        apply_decision, init_runtime, PipelineRuntimeDecisionRequest, PipelineRuntimeInitRequest,
+    };
 
     #[test]
     fn retries_current_step_until_limit() {

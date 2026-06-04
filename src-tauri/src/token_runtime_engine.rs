@@ -204,7 +204,12 @@ pub fn check_quota(request: &QuotaCheckRequest) -> QuotaCheckResponse {
     let now_ms = request.now_ms.unwrap_or_else(now_ms);
     let now = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms as i64)
         .unwrap_or_else(chrono::Utc::now);
-    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() as u64;
+    let today_start = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis() as u64;
     let month_start = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
         .unwrap()
         .and_hms_opt(0, 0, 0)
@@ -335,7 +340,11 @@ pub fn build_dashboard_snapshot(request: &TokenDashboardRequest) -> TokenDashboa
     expert_distribution.sort_by(|a, b| b.total.cmp(&a.total));
 
     let mut model_stats_map = std::collections::HashMap::<String, ModelStatsItem>::new();
-    for record in data.records.iter().filter(|record| record.timestamp >= range_start) {
+    for record in data
+        .records
+        .iter()
+        .filter(|record| record.timestamp >= range_start)
+    {
         let entry = model_stats_map
             .entry(record.model.clone())
             .or_insert(ModelStatsItem {
@@ -353,7 +362,11 @@ pub fn build_dashboard_snapshot(request: &TokenDashboardRequest) -> TokenDashboa
         .experts
         .iter()
         .filter(|expert| !request.quota_exempt_ids.iter().any(|id| id == &expert.id))
-        .filter(|expert| expert.daily_limit.is_some() || expert.monthly_limit.is_some() || expert.yearly_limit.is_some())
+        .filter(|expert| {
+            expert.daily_limit.is_some()
+                || expert.monthly_limit.is_some()
+                || expert.yearly_limit.is_some()
+        })
         .map(|expert| QuotaStatusItem {
             expert_id: expert.id.clone(),
             name: expert.name.clone(),
@@ -448,7 +461,11 @@ fn get_range_start(range: &str, now: chrono::DateTime<chrono::Utc>) -> u64 {
         "week" => {
             let weekday = now.weekday().number_from_monday() as i64 - 1;
             let start = now.date_naive() - chrono::Days::new(weekday as u64);
-            start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() as u64
+            start
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis() as u64
         }
         "month" => start_of_month_ms(now),
         "year" => start_of_year_ms(now),
@@ -457,7 +474,11 @@ fn get_range_start(range: &str, now: chrono::DateTime<chrono::Utc>) -> u64 {
 }
 
 fn start_of_day_ms(now: chrono::DateTime<chrono::Utc>) -> u64 {
-    now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() as u64
+    now.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis() as u64
 }
 
 fn start_of_month_ms(now: chrono::DateTime<chrono::Utc>) -> u64 {
@@ -486,10 +507,14 @@ fn build_trend_series(
     match range {
         "today" => {
             let mut buckets = vec![0u64; 24];
-            for record in records.iter().filter(|record| record.timestamp >= start_of_day_ms(now)) {
-                let hour = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
-                    .map(|dt| dt.hour() as usize)
-                    .unwrap_or(0);
+            for record in records
+                .iter()
+                .filter(|record| record.timestamp >= start_of_day_ms(now))
+            {
+                let hour =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
+                        .map(|dt| dt.hour() as usize)
+                        .unwrap_or(0);
                 buckets[hour] += record.total_tokens;
             }
             TrendSeries {
@@ -501,9 +526,10 @@ fn build_trend_series(
             let mut buckets = vec![0u64; 7];
             let start = get_range_start("week", now);
             for record in records.iter().filter(|record| record.timestamp >= start) {
-                let weekday = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
-                    .map(|dt| dt.weekday().number_from_monday() as usize - 1)
-                    .unwrap_or(0);
+                let weekday =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
+                        .map(|dt| dt.weekday().number_from_monday() as usize - 1)
+                        .unwrap_or(0);
                 buckets[weekday] += record.total_tokens;
             }
             TrendSeries {
@@ -525,9 +551,10 @@ fn build_trend_series(
             let mut buckets = vec![0u64; days_in_month];
             let start = start_of_month_ms(now);
             for record in records.iter().filter(|record| record.timestamp >= start) {
-                let day = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
-                    .map(|dt| dt.day() as usize - 1)
-                    .unwrap_or(0);
+                let day =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
+                        .map(|dt| dt.day() as usize - 1)
+                        .unwrap_or(0);
                 if day < buckets.len() {
                     buckets[day] += record.total_tokens;
                 }
@@ -541,9 +568,10 @@ fn build_trend_series(
             let mut buckets = vec![0u64; 12];
             let start = start_of_year_ms(now);
             for record in records.iter().filter(|record| record.timestamp >= start) {
-                let month = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
-                    .map(|dt| dt.month0() as usize)
-                    .unwrap_or(0);
+                let month =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
+                        .map(|dt| dt.month0() as usize)
+                        .unwrap_or(0);
                 buckets[month] += record.total_tokens;
             }
             TrendSeries {
@@ -566,8 +594,11 @@ fn build_trend_series(
                 })
                 .collect::<Vec<_>>();
             for record in records {
-                if let Some(record_dt) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64) {
-                    let diff = (now.year() - record_dt.year()) * 12 + now.month() as i32 - record_dt.month() as i32;
+                if let Some(record_dt) =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(record.timestamp as i64)
+                {
+                    let diff = (now.year() - record_dt.year()) * 12 + now.month() as i32
+                        - record_dt.month() as i32;
                     if (0..12).contains(&diff) {
                         buckets[11 - diff as usize] += record.total_tokens;
                     }
@@ -640,7 +671,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_token_usage, check_quota, AppendTokenUsageRequest, QuotaCheckRequest, TokenAllocation, TokenData, TokenUsageRecord, UsageSummary};
+    use super::{
+        append_token_usage, check_quota, AppendTokenUsageRequest, QuotaCheckRequest,
+        TokenAllocation, TokenData, TokenUsageRecord, UsageSummary,
+    };
 
     fn empty_token_data() -> TokenData {
         TokenData {
@@ -679,7 +713,10 @@ mod tests {
             now_ms: Some(1_780_531_200_000),
         });
         assert!(!decision.allowed);
-        assert!(decision.reason.unwrap_or_default().contains("日词元配额已耗尽"));
+        assert!(decision
+            .reason
+            .unwrap_or_default()
+            .contains("日词元配额已耗尽"));
     }
 
     #[test]

@@ -27,15 +27,25 @@ pub struct ToolFollowupMessage {
     pub content: String,
 }
 
-const VIDEO_TRIGGER_KEYWORDS: &[&str] = &["视频", "分镜", "镜头", "片段", "segment", "timeline", "storyboard"];
+const VIDEO_TRIGGER_KEYWORDS: &[&str] = &[
+    "视频",
+    "分镜",
+    "镜头",
+    "片段",
+    "segment",
+    "timeline",
+    "storyboard",
+];
 const SEARCH_INTENT_PATTERNS: &[&str] = &[
     r"需要.*搜索",
     r"建议.*搜索",
+    r"需要.*查",
+    r"建议.*查",
+    r"需要.*联网",
+    r"建议.*联网",
     r"查一下",
+    r"搜索一下",
     r"查找",
-    r"官方文档",
-    r"最新资料",
-    r"联网",
 ];
 const COMMAND_INTENT_PATTERNS: &[&str] = &[
     r"需要.*(?:运行|执行)",
@@ -47,17 +57,26 @@ const COMMAND_INTENT_PATTERNS: &[&str] = &[
 ];
 
 fn detect_tool_intent_without_action(reply: &str) -> (bool, bool, bool) {
-    let needs_web_search = SEARCH_INTENT_PATTERNS
+    let needs_web_search = SEARCH_INTENT_PATTERNS.iter().any(|pattern| {
+        Regex::new(pattern)
+            .expect("search intent regex")
+            .is_match(reply)
+    });
+    let needs_command = COMMAND_INTENT_PATTERNS.iter().any(|pattern| {
+        Regex::new(pattern)
+            .expect("command intent regex")
+            .is_match(reply)
+    });
+    let needs_video_workflow = VIDEO_TRIGGER_KEYWORDS
         .iter()
-        .any(|pattern| Regex::new(pattern).expect("search intent regex").is_match(reply));
-    let needs_command = COMMAND_INTENT_PATTERNS
-        .iter()
-        .any(|pattern| Regex::new(pattern).expect("command intent regex").is_match(reply));
-    let needs_video_workflow = VIDEO_TRIGGER_KEYWORDS.iter().any(|keyword| reply.contains(keyword));
+        .any(|keyword| reply.contains(keyword));
     (needs_web_search, needs_command, needs_video_workflow)
 }
 
-pub fn evaluate_tool_reminder(request: &ToolReminderRequest, has_tool_requests: bool) -> ToolReminderDecision {
+pub fn evaluate_tool_reminder(
+    request: &ToolReminderRequest,
+    has_tool_requests: bool,
+) -> ToolReminderDecision {
     if has_tool_requests {
         return ToolReminderDecision {
             needs_retry: false,
@@ -87,7 +106,7 @@ pub fn evaluate_tool_reminder(request: &ToolReminderRequest, has_tool_requests: 
     ToolReminderDecision {
         needs_retry: true,
         reminder_message: Some(format!(
-            "你刚才已经表现出可能需要{}来完成任务。如果确实需要，请直接输出标准 ACTION 发起；如果不需要，就直接给出最终结果，不要停留在“建议后续再查/再跑命令”的层面。",
+            "你刚才提到了可能会用到{}。如果你判断确实需要，就直接输出标准 ACTION 发起；如果不需要，就直接给出最终结果，不要停留在“建议后续再查/再跑命令”的层面。",
             reminder_targets.join("、")
         )),
         reminder_targets,
@@ -105,18 +124,32 @@ pub fn build_tool_followup_message(request: &ToolFollowupMessageRequest) -> Tool
 
 #[cfg(test)]
 mod tests {
-    use super::{build_tool_followup_message, evaluate_tool_reminder, ToolFollowupMessageRequest, ToolReminderRequest};
+    use super::{
+        build_tool_followup_message, evaluate_tool_reminder, ToolFollowupMessageRequest,
+        ToolReminderRequest,
+    };
 
     #[test]
-    fn requests_retry_when_reply_mentions_search_without_action() {
+    fn requests_retry_when_reply_explicitly_requests_search_without_action() {
         let decision = evaluate_tool_reminder(
             &ToolReminderRequest {
-                reply: "建议先搜索一下官方文档再回答".to_string(),
+                reply: "我先查一下这个版本兼容性，再继续给结论".to_string(),
             },
             false,
         );
         assert!(decision.needs_retry);
         assert!(decision.reminder_targets.contains(&"网络搜索".to_string()));
+    }
+
+    #[test]
+    fn does_not_force_retry_for_plain_official_docs_reference() {
+        let decision = evaluate_tool_reminder(
+            &ToolReminderRequest {
+                reply: "这个实现可以参考官方文档里的写法，我先直接给出可行方案。".to_string(),
+            },
+            false,
+        );
+        assert!(!decision.needs_retry);
     }
 
     #[test]

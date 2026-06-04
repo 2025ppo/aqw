@@ -20,13 +20,13 @@ pub enum Permission {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Role {
-    Supervisor,    // 主管：全部权限
-    LeadEngineer,  // 主工程师：读写文件、执行代码、访问记忆
-    Engineer,      // 工程师：读写文件、访问记忆
-    Reviewer,      // 审查员：读文件、访问记忆
-    Researcher,    // 调研员：读文件、访问记忆、调用外部API
-    Designer,      // 设计师：读文件、写设计相关文件
-    Assistant,     // 助手：访问记忆、读文件
+    Supervisor,   // 主管：全部权限
+    LeadEngineer, // 主工程师：读写文件、执行代码、访问记忆
+    Engineer,     // 工程师：读写文件、访问记忆
+    Reviewer,     // 审查员：读文件、访问记忆
+    Researcher,   // 调研员：读文件、访问记忆、调用外部API
+    Designer,     // 设计师：读文件、写设计相关文件
+    Assistant,    // 助手：访问记忆、读文件
 }
 
 impl Role {
@@ -57,10 +57,7 @@ impl Role {
                 Permission::WriteFiles,
                 Permission::AccessMemory,
             ],
-            Role::Reviewer => vec![
-                Permission::ReadFiles,
-                Permission::AccessMemory,
-            ],
+            Role::Reviewer => vec![Permission::ReadFiles, Permission::AccessMemory],
             Role::Researcher => vec![
                 Permission::ReadFiles,
                 Permission::AccessMemory,
@@ -71,10 +68,7 @@ impl Role {
                 Permission::WriteFiles,
                 Permission::AccessMemory,
             ],
-            Role::Assistant => vec![
-                Permission::ReadFiles,
-                Permission::AccessMemory,
-            ],
+            Role::Assistant => vec![Permission::ReadFiles, Permission::AccessMemory],
         }
     }
 }
@@ -133,9 +127,18 @@ pub fn check_permission(expert_id: &str, permission: Permission) -> AccessDecisi
 pub fn check_path_access(expert_id: &str, path: &str) -> AccessDecision {
     // 敏感路径列表
     let sensitive_paths = [
-        ".env", ".ssh", "id_rsa", "id_dsa", ".p12", ".pem",
-        "credentials", "secret", "password", "token",
-        ".git/config", ".git/credentials",
+        ".env",
+        ".ssh",
+        "id_rsa",
+        "id_dsa",
+        ".p12",
+        ".pem",
+        "credentials",
+        "secret",
+        "password",
+        "token",
+        ".git/config",
+        ".git/credentials",
     ];
 
     let lower_path = path.to_lowercase();
@@ -154,10 +157,7 @@ pub fn check_path_access(expert_id: &str, path: &str) -> AccessDecision {
                 _ => {
                     return AccessDecision {
                         allowed: false,
-                        reason: Some(format!(
-                            "专家 {} 无权访问敏感路径 {}",
-                            expert_id, path
-                        )),
+                        reason: Some(format!("专家 {} 无权访问敏感路径 {}", expert_id, path)),
                         required_permissions: vec![Permission::ReadFiles],
                     };
                 }
@@ -193,10 +193,7 @@ pub fn check_permissions(expert_id: &str, permissions: &[Permission]) -> AccessD
     } else {
         AccessDecision {
             allowed: false,
-            reason: Some(format!(
-                "专家 {} 缺少以下权限: {:?}",
-                expert_id, missing
-            )),
+            reason: Some(format!("专家 {} 缺少以下权限: {:?}", expert_id, missing)),
             required_permissions: permissions.to_vec(),
         }
     }

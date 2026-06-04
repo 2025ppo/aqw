@@ -70,10 +70,7 @@ impl ApprovalStore {
         // 1. 检查 block_patterns → Blocked
         for pattern in &self.block_patterns {
             if cmd_lower.contains(&pattern.to_lowercase()) {
-                return ApprovalCheckResult::Blocked(format!(
-                    "命令匹配危险模式: {}",
-                    pattern
-                ));
+                return ApprovalCheckResult::Blocked(format!("命令匹配危险模式: {}", pattern));
             }
         }
 

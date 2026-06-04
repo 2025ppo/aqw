@@ -139,7 +139,7 @@ export const PROMPT_MODULES: Record<PromptModuleId, PromptModuleDefinition> = {
 - 当前系统不会执行 \`file_patch\` / \`*** Begin Patch\` 这类补丁文本；不要输出补丁语法。
 - 你必须输出系统可直接落盘的文件动作：\`[ACTION:CREATE_FILE ...]\`、\`[ACTION:WRITE_FILE ...]\`、\`[ACTION:EDIT_FILE ...]\`、\`[ACTION:CREATE_FOLDER ...]\`、\`[ACTION:DELETE ...]\`，或结构化 JSON \`changes\`。
 - 修改已有文件前，先读取真实文件内容，再给出精确的 \`searchText\` / \`replaceText\`；不要凭空编造上下文。
-- 如果是局部修改，优先用 \`[ACTION:EDIT_FILE ...]\`，并提供稳定、可唯一定位的 search/replace 片段。
+- 如果目标是短小、展示型、文本型文件（如 \`index.html\`、\`styles.css\`、\`README.md\`、静态配置），优先用 \`[ACTION:WRITE_FILE ...]\` 直接给出完整最新文件内容；只有在文件较大、确实需要局部修改且 \`searchText\` 来自刚读取的真实原文时，才使用 \`[ACTION:EDIT_FILE ...]\`。
 - 如果一个任务涉及多个文件，逐个输出可执行动作，不要把修改藏在说明文字里。
 - 不要虚构 \`task-1-patch.md\`、\`task-3-patch-1.md\` 之类中间补丁文件；除非你真的用 \`[ACTION:CREATE_FILE]\` 明确创建它们，否则后续专家不得把它们当成已存在的交付物。
 - 永远使用相对项目根目录的路径，不要输出绝对路径。`,

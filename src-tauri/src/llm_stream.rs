@@ -213,8 +213,7 @@ impl StreamingLLMClient {
                         tool_calls: if tool_calls_map.is_empty() {
                             None
                         } else {
-                            let mut calls: Vec<(u32, ToolCall)> =
-                                tool_calls_map.drain().collect();
+                            let mut calls: Vec<(u32, ToolCall)> = tool_calls_map.drain().collect();
                             calls.sort_by_key(|(idx, _)| *idx);
                             Some(calls.into_iter().map(|(_, tc)| tc).collect())
                         },
@@ -238,9 +237,7 @@ impl StreamingLLMClient {
                 if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) {
                     // 提取usage（如果存在）
                     if let Some(u) = chunk_json.get("usage") {
-                        if let Ok(parsed_usage) =
-                            serde_json::from_value::<TokenUsage>(u.clone())
-                        {
+                        if let Ok(parsed_usage) = serde_json::from_value::<TokenUsage>(u.clone()) {
                             usage = parsed_usage;
                         }
                     }
@@ -249,16 +246,13 @@ impl StreamingLLMClient {
                     if let Some(choices) = chunk_json.get("choices").and_then(|c| c.as_array()) {
                         for choice in choices {
                             // finish_reason
-                            if let Some(fr) =
-                                choice.get("finish_reason").and_then(|f| f.as_str())
-                            {
+                            if let Some(fr) = choice.get("finish_reason").and_then(|f| f.as_str()) {
                                 finish_reason = fr.to_string();
                             }
 
                             // delta content
                             if let Some(delta) = choice.get("delta") {
-                                if let Some(content) =
-                                    delta.get("content").and_then(|c| c.as_str())
+                                if let Some(content) = delta.get("content").and_then(|c| c.as_str())
                                 {
                                     if !content.is_empty() {
                                         full_content.push_str(content);
@@ -273,48 +267,39 @@ impl StreamingLLMClient {
                                 }
 
                                 // delta tool_calls
-                                if let Some(tc_array) = delta
-                                    .get("tool_calls")
-                                    .and_then(|t| t.as_array())
+                                if let Some(tc_array) =
+                                    delta.get("tool_calls").and_then(|t| t.as_array())
                                 {
                                     for tc in tc_array {
-                                        let index = tc
-                                            .get("index")
-                                            .and_then(|i| i.as_u64())
-                                            .unwrap_or(0)
-                                            as u32;
+                                        let index =
+                                            tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0)
+                                                as u32;
 
-                                        let entry = tool_calls_map
-                                            .entry(index)
-                                            .or_insert_with(|| ToolCall {
-                                                id: String::new(),
-                                                r#type: "function".to_string(),
-                                                function: ToolCallFunction {
-                                                    name: String::new(),
-                                                    arguments: String::new(),
-                                                },
+                                        let entry =
+                                            tool_calls_map.entry(index).or_insert_with(|| {
+                                                ToolCall {
+                                                    id: String::new(),
+                                                    r#type: "function".to_string(),
+                                                    function: ToolCallFunction {
+                                                        name: String::new(),
+                                                        arguments: String::new(),
+                                                    },
+                                                }
                                             });
 
-                                        if let Some(id) =
-                                            tc.get("id").and_then(|i| i.as_str())
-                                        {
+                                        if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
                                             entry.id = id.to_string();
                                         }
                                         if let Some(func) = tc.get("function") {
-                                            if let Some(name) = func
-                                                .get("name")
-                                                .and_then(|n| n.as_str())
+                                            if let Some(name) =
+                                                func.get("name").and_then(|n| n.as_str())
                                             {
                                                 entry.function.name = name.to_string();
                                             }
-                                            if let Some(args) = func
-                                                .get("arguments")
-                                                .and_then(|a| a.as_str())
+                                            if let Some(args) =
+                                                func.get("arguments").and_then(|a| a.as_str())
                                             {
-                                                entry
-                                                    .function
-                                                    .arguments
-                                                    .push_str(args);
+                                                entry.function.arguments.push_str(args);
                                             }
                                         }
                                     }
@@ -500,12 +485,8 @@ impl StreamingLLMClient {
             // Ollama等本地provider无需key
             return Ok(String::new());
         }
-        std::env::var(&provider.api_key_env).map_err(|_| {
-            format!(
-                "环境变量 {} 未设置，请配置API Key",
-                provider.api_key_env
-            )
-        })
+        std::env::var(&provider.api_key_env)
+            .map_err(|_| format!("环境变量 {} 未设置，请配置API Key", provider.api_key_env))
     }
 
     /// 指数退避等待时长

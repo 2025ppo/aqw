@@ -66,8 +66,8 @@ fn persist_memory_entries(
         return Ok(());
     }
 
-    let json = serde_json::to_string_pretty(entries)
-        .map_err(|e| format!("序列化记忆失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(entries).map_err(|e| format!("序列化记忆失败: {}", e))?;
     fs::write(&file_path, json).map_err(|e| format!("写入记忆文件失败: {}", e))?;
     Ok(())
 }
@@ -113,16 +113,18 @@ pub fn save_memory(project_dir: &Path, entry: &MemoryEntry) -> Result<(), String
 }
 
 /// 加载指定类型的所有记忆条目
-pub fn load_memory_entries(project_dir: &Path, memory_type: &str) -> Result<Vec<MemoryEntry>, String> {
+pub fn load_memory_entries(
+    project_dir: &Path,
+    memory_type: &str,
+) -> Result<Vec<MemoryEntry>, String> {
     let file_path = get_memory_file(project_dir, memory_type);
     if !file_path.exists() {
         return Ok(vec![]);
     }
 
-    let content = fs::read_to_string(&file_path)
-        .map_err(|e| format!("读取记忆文件失败: {}", e))?;
-    let entries: Vec<MemoryEntry> = serde_json::from_str(&content)
-        .map_err(|e| format!("解析记忆文件失败: {}", e))?;
+    let content = fs::read_to_string(&file_path).map_err(|e| format!("读取记忆文件失败: {}", e))?;
+    let entries: Vec<MemoryEntry> =
+        serde_json::from_str(&content).map_err(|e| format!("解析记忆文件失败: {}", e))?;
 
     Ok(entries)
 }
@@ -227,9 +229,7 @@ pub fn search_memories(
     }
 
     // 3. 对查询文本分词
-    let query_tokens: HashSet<String> = tfidf::tokenize(trimmed_query)
-        .into_iter()
-        .collect();
+    let query_tokens: HashSet<String> = tfidf::tokenize(trimmed_query).into_iter().collect();
 
     if query_tokens.is_empty() {
         return Ok(vec![]);
@@ -276,7 +276,8 @@ pub fn search_memories(
         };
 
         // 综合得分
-        let score = (keyword_score * 0.5 + content_score * 0.3) * time_decay * access_boost * type_weight;
+        let score =
+            (keyword_score * 0.5 + content_score * 0.3) * time_decay * access_boost * type_weight;
 
         if score > 0.01 {
             scored.push((score, entry));
@@ -442,23 +443,175 @@ fn random_suffix() -> String {
 #[allow(dead_code)]
 fn is_common_stopword(word: &str) -> bool {
     let stopwords: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
-        "may", "might", "must", "shall", "can", "need", "dare", "ought", "used",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
-        "through", "during", "before", "after", "above", "below", "between", "under",
-        "and", "but", "or", "yet", "so", "if", "because", "although", "though",
-        "while", "where", "when", "that", "which", "who", "whom", "whose", "what",
-        "this", "these", "those", "i", "you", "he", "she", "it", "we", "they",
-        "me", "him", "her", "us", "them", "my", "your", "his", "its", "our", "their",
-        "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
-        "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
-        "自己", "这", "那", "个", "为", "之", "与", "及", "等", "或", "但", "而", "因",
-        "于", "以", "所", "被", "把", "给", "让", "向", "从", "到", "对", "关于", "根据",
-        "function", "const", "let", "var", "return", "if", "else", "for", "while",
-        "import", "export", "from", "class", "interface", "type", "async", "await",
-        "pub", "fn", "struct", "enum", "impl", "use", "mod", "let", "mut",
-    ].iter().copied().collect();
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "and",
+        "but",
+        "or",
+        "yet",
+        "so",
+        "if",
+        "because",
+        "although",
+        "though",
+        "while",
+        "where",
+        "when",
+        "that",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "this",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "的",
+        "了",
+        "在",
+        "是",
+        "我",
+        "有",
+        "和",
+        "就",
+        "不",
+        "人",
+        "都",
+        "一",
+        "一个",
+        "上",
+        "也",
+        "很",
+        "到",
+        "说",
+        "要",
+        "去",
+        "你",
+        "会",
+        "着",
+        "没有",
+        "看",
+        "好",
+        "自己",
+        "这",
+        "那",
+        "个",
+        "为",
+        "之",
+        "与",
+        "及",
+        "等",
+        "或",
+        "但",
+        "而",
+        "因",
+        "于",
+        "以",
+        "所",
+        "被",
+        "把",
+        "给",
+        "让",
+        "向",
+        "从",
+        "到",
+        "对",
+        "关于",
+        "根据",
+        "function",
+        "const",
+        "let",
+        "var",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "import",
+        "export",
+        "from",
+        "class",
+        "interface",
+        "type",
+        "async",
+        "await",
+        "pub",
+        "fn",
+        "struct",
+        "enum",
+        "impl",
+        "use",
+        "mod",
+        "let",
+        "mut",
+    ]
+    .iter()
+    .copied()
+    .collect();
 
     stopwords.contains(word.to_lowercase().as_str())
 }
@@ -483,10 +636,10 @@ pub fn search_memories_enhanced(
         .collect();
 
     for result in &mut results {
-        let memory_words: HashSet<String> = tfidf::tokenize(&result.entry.content)
-            .into_iter()
-            .collect();
-        let co_occurrence = query_words.iter()
+        let memory_words: HashSet<String> =
+            tfidf::tokenize(&result.entry.content).into_iter().collect();
+        let co_occurrence = query_words
+            .iter()
             .filter(|w| memory_words.contains(*w))
             .count();
         if co_occurrence >= 2 {
@@ -504,16 +657,23 @@ pub fn search_memories_enhanced(
     }
 
     // 4. 重新排序
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // 5. Token预算截断
     if let Some(budget) = max_tokens {
         let mut token_count = 0usize;
-        results = results.into_iter().take_while(|r| {
-            let est = estimate_tokens(&r.entry.content);
-            token_count += est;
-            token_count <= budget
-        }).collect();
+        results = results
+            .into_iter()
+            .take_while(|r| {
+                let est = estimate_tokens(&r.entry.content);
+                token_count += est;
+                token_count <= budget
+            })
+            .collect();
     }
 
     results.truncate(query.limit);
@@ -522,22 +682,44 @@ pub fn search_memories_enhanced(
 
 /// 估算文本的Token数(简单版)
 fn estimate_tokens(text: &str) -> usize {
-    let chinese_count = text.chars().filter(|c| *c >= '\u{4e00}' && *c <= '\u{9fff}').count();
-    let rest_words = text.split_whitespace().count().saturating_sub(chinese_count);
+    let chinese_count = text
+        .chars()
+        .filter(|c| *c >= '\u{4e00}' && *c <= '\u{9fff}')
+        .count();
+    let rest_words = text
+        .split_whitespace()
+        .count()
+        .saturating_sub(chinese_count);
     (chinese_count as f64 * 2.5 + rest_words as f64 * 1.5) as usize
 }
 
 /// 记忆相似度合并检测
 #[allow(dead_code)]
-pub fn find_similar_memories(project_dir: &Path, memory_type: &str, new_content: &str, threshold: f64) -> Result<Vec<String>, String> {
+pub fn find_similar_memories(
+    project_dir: &Path,
+    memory_type: &str,
+    new_content: &str,
+    threshold: f64,
+) -> Result<Vec<String>, String> {
     let entries = load_memory_entries(project_dir, memory_type)?;
     let new_keywords: HashSet<String> = tfidf::tokenize(new_content).into_iter().collect();
-    let similar_ids: Vec<String> = entries.iter().filter_map(|m| {
-        let existing_keywords: HashSet<String> = tfidf::tokenize(&m.content).into_iter().collect();
-        let overlap = new_keywords.iter().filter(|w| existing_keywords.contains(*w)).count();
-        let similarity = overlap as f64 / (new_keywords.len().max(1) as f64);
-        if similarity > threshold { Some(m.id.clone()) } else { None }
-    }).collect();
+    let similar_ids: Vec<String> = entries
+        .iter()
+        .filter_map(|m| {
+            let existing_keywords: HashSet<String> =
+                tfidf::tokenize(&m.content).into_iter().collect();
+            let overlap = new_keywords
+                .iter()
+                .filter(|w| existing_keywords.contains(*w))
+                .count();
+            let similarity = overlap as f64 / (new_keywords.len().max(1) as f64);
+            if similarity > threshold {
+                Some(m.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     Ok(similar_ids)
 }
 
@@ -574,12 +756,22 @@ mod tests {
 
         save_memory(
             &dir,
-            &make_entry("working-1", "working", "修复记忆检索与打断转达逻辑", now - 30),
+            &make_entry(
+                "working-1",
+                "working",
+                "修复记忆检索与打断转达逻辑",
+                now - 30,
+            ),
         )
         .expect("save working memory");
         save_memory(
             &dir,
-            &make_entry("longterm-1", "longterm", "专家团会把主管结论沉淀为长期知识", now - 10),
+            &make_entry(
+                "longterm-1",
+                "longterm",
+                "专家团会把主管结论沉淀为长期知识",
+                now - 10,
+            ),
         )
         .expect("save longterm memory");
 
@@ -598,7 +790,10 @@ mod tests {
         assert_eq!(results.len(), 2);
 
         let touched = load_memory_entries(&dir, "longterm").expect("reload longterm");
-        let longterm = touched.iter().find(|e| e.id == "longterm-1").expect("find longterm");
+        let longterm = touched
+            .iter()
+            .find(|e| e.id == "longterm-1")
+            .expect("find longterm");
         assert_eq!(longterm.access_count, 1);
         assert!(longterm.last_accessed >= now);
 
@@ -633,10 +828,14 @@ mod tests {
         assert!(summary.contains("working -> longterm"));
 
         let working_entries = load_memory_entries(&dir, "working").expect("reload working");
-        assert!(working_entries.iter().any(|e| e.id == "working-ephemeral-1"));
+        assert!(working_entries
+            .iter()
+            .any(|e| e.id == "working-ephemeral-1"));
 
         let longterm_entries = load_memory_entries(&dir, "longterm").expect("reload longterm");
-        assert!(longterm_entries.iter().any(|e| e.id == "longterm-working-legacy"));
+        assert!(longterm_entries
+            .iter()
+            .any(|e| e.id == "longterm-working-legacy"));
 
         let _ = fs::remove_dir_all(&dir);
     }

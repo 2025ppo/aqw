@@ -81,7 +81,10 @@ impl ToolRegistry {
     }
 
     pub fn list_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.definition().clone()).collect()
+        self.tools
+            .values()
+            .map(|t| t.definition().clone())
+            .collect()
     }
 
     /// 根据专家角色过滤可用工具
@@ -189,8 +192,7 @@ impl ShellExecTool {
         Self {
             definition: ToolDefinition {
                 name: "shell_exec".into(),
-                description: "在项目目录中执行shell命令。可用于运行构建、测试、git操作等。"
-                    .into(),
+                description: "在项目目录中执行shell命令。可用于运行构建、测试、git操作等。".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -311,14 +313,22 @@ impl ToolExecutor for FileReadTool {
             });
         }
 
-        let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| ToolError {
-            code: "IO_ERROR".into(),
-            message: format!("Failed to read file: {}", e),
-            retryable: false,
-        })?;
+        let content = tokio::fs::read_to_string(&full_path)
+            .await
+            .map_err(|e| ToolError {
+                code: "IO_ERROR".into(),
+                message: format!("Failed to read file: {}", e),
+                retryable: false,
+            })?;
 
-        let start_line = args.get("start_line").and_then(|v| v.as_u64()).map(|v| v as usize);
-        let end_line = args.get("end_line").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let start_line = args
+            .get("start_line")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let end_line = args
+            .get("end_line")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
 
         let result = if let (Some(start), Some(end)) = (start_line, end_line) {
             let lines: Vec<&str> = content.lines().collect();
@@ -391,7 +401,10 @@ impl ToolExecutor for FileWriteTool {
                 message: "Missing required parameter: content".into(),
                 retryable: false,
             })?;
-        let append = args.get("append").and_then(|v| v.as_bool()).unwrap_or(false);
+        let append = args
+            .get("append")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let full_path = std::path::Path::new(&ctx.project_dir).join(path);
         if !full_path.starts_with(&ctx.project_dir) {
@@ -404,11 +417,13 @@ impl ToolExecutor for FileWriteTool {
 
         // Ensure parent directory exists
         if let Some(parent) = full_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| ToolError {
-                code: "IO_ERROR".into(),
-                message: format!("Failed to create directory: {}", e),
-                retryable: false,
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| ToolError {
+                    code: "IO_ERROR".into(),
+                    message: format!("Failed to create directory: {}", e),
+                    retryable: false,
+                })?;
         }
 
         if append {
@@ -423,17 +438,21 @@ impl ToolExecutor for FileWriteTool {
                     message: format!("Failed to open file: {}", e),
                     retryable: false,
                 })?;
-            file.write_all(content.as_bytes()).await.map_err(|e| ToolError {
-                code: "IO_ERROR".into(),
-                message: format!("Failed to write file: {}", e),
-                retryable: false,
-            })?;
+            file.write_all(content.as_bytes())
+                .await
+                .map_err(|e| ToolError {
+                    code: "IO_ERROR".into(),
+                    message: format!("Failed to write file: {}", e),
+                    retryable: false,
+                })?;
         } else {
-            tokio::fs::write(&full_path, content).await.map_err(|e| ToolError {
-                code: "IO_ERROR".into(),
-                message: format!("Failed to write file: {}", e),
-                retryable: false,
-            })?;
+            tokio::fs::write(&full_path, content)
+                .await
+                .map_err(|e| ToolError {
+                    code: "IO_ERROR".into(),
+                    message: format!("Failed to write file: {}", e),
+                    retryable: false,
+                })?;
         }
 
         Ok(ToolOutput {
@@ -456,8 +475,7 @@ impl FilePatchTool {
         Self {
             definition: ToolDefinition {
                 name: "file_patch".into(),
-                description: "应用结构化补丁到项目文件。支持新增、修改、删除和移动文件。"
-                    .into(),
+                description: "应用结构化补丁到项目文件。支持新增、修改、删除和移动文件。".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -493,8 +511,11 @@ impl ToolExecutor for FilePatchTool {
 
         match file_patch::parse_and_apply_patch(patch, &ctx.project_dir) {
             Ok(result) => {
-                let applied_files: Vec<String> =
-                    result.applied.iter().map(|change| change.path.clone()).collect();
+                let applied_files: Vec<String> = result
+                    .applied
+                    .iter()
+                    .map(|change| change.path.clone())
+                    .collect();
                 let first_error = result.errors.first();
                 Ok(ToolOutput {
                     success: result.success,
@@ -561,7 +582,10 @@ impl ToolExecutor for FileListTool {
         ctx: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let recursive = args
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
 
         let full_path = std::path::Path::new(&ctx.project_dir).join(path);
@@ -574,12 +598,19 @@ impl ToolExecutor for FileListTool {
         }
 
         let mut entries = Vec::new();
-        Self::list_dir_impl(&full_path, &ctx.project_dir, recursive, max_depth, 0, &mut entries)
-            .map_err(|e| ToolError {
-                code: "IO_ERROR".into(),
-                message: format!("Failed to list directory: {}", e),
-                retryable: false,
-            })?;
+        Self::list_dir_impl(
+            &full_path,
+            &ctx.project_dir,
+            recursive,
+            max_depth,
+            0,
+            &mut entries,
+        )
+        .map_err(|e| ToolError {
+            code: "IO_ERROR".into(),
+            message: format!("Failed to list directory: {}", e),
+            retryable: false,
+        })?;
 
         Ok(ToolOutput {
             success: true,
@@ -601,8 +632,7 @@ impl FileListTool {
         if current_depth > max_depth {
             return Ok(());
         }
-        let read_dir =
-            std::fs::read_dir(dir).map_err(|e| format!("Cannot read dir: {}", e))?;
+        let read_dir = std::fs::read_dir(dir).map_err(|e| format!("Cannot read dir: {}", e))?;
         for entry in read_dir.flatten() {
             let path = entry.path();
             let rel = path
@@ -614,7 +644,14 @@ impl FileListTool {
             let prefix = if is_dir { "[DIR]" } else { "[FILE]" };
             entries.push(format!("{} {}", prefix, rel));
             if is_dir && recursive && current_depth < max_depth {
-                Self::list_dir_impl(&path, project_dir, recursive, max_depth, current_depth + 1, entries)?;
+                Self::list_dir_impl(
+                    &path,
+                    project_dir,
+                    recursive,
+                    max_depth,
+                    current_depth + 1,
+                    entries,
+                )?;
             }
         }
         Ok(())
@@ -665,7 +702,10 @@ impl ToolExecutor for WebSearchTool {
                 message: "Missing required parameter: query".into(),
                 retryable: false,
             })?;
-        let max_results = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
 
         let _ctx = ctx; // suppress unused warning
         let results = crate::web_search::search(query, max_results)
@@ -734,7 +774,10 @@ impl ToolExecutor for MemoryQueryTool {
         // Returns a simplified result since actual DB search needs the pool
         Ok(ToolOutput {
             success: true,
-            result: format!("Memory query for '{}' - use memory_search Tauri command for full DB access", query),
+            result: format!(
+                "Memory query for '{}' - use memory_search Tauri command for full DB access",
+                query
+            ),
             metadata: Some(serde_json::json!({ "query": query })),
         })
     }
@@ -815,7 +858,8 @@ mod tests {
         };
 
         let router = ToolRouter::with_builtin_tools(&ctx.project_dir);
-        let patch = "*** Begin Patch\n*** Add File: smoke-test.txt\n+patched content\n*** End Patch\n";
+        let patch =
+            "*** Begin Patch\n*** Add File: smoke-test.txt\n+patched content\n*** End Patch\n";
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         let output = runtime

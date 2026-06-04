@@ -118,7 +118,10 @@ fn get_relevant_followups_for_expert<'a>(
                 return false;
             }
             if !followup.target_expert_ids.is_empty()
-                && !followup.target_expert_ids.iter().any(|item| item == expert_id)
+                && !followup
+                    .target_expert_ids
+                    .iter()
+                    .any(|item| item == expert_id)
             {
                 return false;
             }
@@ -155,12 +158,20 @@ pub fn build_expert_task_payload(request: &ExpertTaskBuildRequest) -> ExpertTask
     };
     let blackboard_context = request.blackboard_context.clone().unwrap_or_default();
     ExpertTaskBuildResponse {
-        text: format!("{}{}{}", request.base_task_description, followup_context, blackboard_context),
-        followup_ids: relevant_followups.iter().map(|item| item.id.clone()).collect(),
+        text: format!(
+            "{}{}{}",
+            request.base_task_description, followup_context, blackboard_context
+        ),
+        followup_ids: relevant_followups
+            .iter()
+            .map(|item| item.id.clone())
+            .collect(),
     }
 }
 
-pub fn apply_task_completion_state(request: &TaskCompletionStateRequest) -> TaskCompletionStateResponse {
+pub fn apply_task_completion_state(
+    request: &TaskCompletionStateRequest,
+) -> TaskCompletionStateResponse {
     let mut completed_results = request.completed_results.clone();
     let mut pending_followups = request.pending_followups.clone();
 
@@ -286,9 +297,10 @@ pub fn plan_current_step_tasks(request: &StepTaskPlanRequest) -> StepTaskPlanRes
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_task_completion_state, build_expert_task_payload, plan_current_step_tasks, plan_step_followup_round,
-        CompletedExpertResult, ExpertTaskBuildRequest, FollowupRoundPlanRequest, PipelineFollowup,
-        StepTaskPlanRequest, TaskCompletionStateRequest, TaskCompletionSummary,
+        apply_task_completion_state, build_expert_task_payload, plan_current_step_tasks,
+        plan_step_followup_round, CompletedExpertResult, ExpertTaskBuildRequest,
+        FollowupRoundPlanRequest, PipelineFollowup, StepTaskPlanRequest,
+        TaskCompletionStateRequest, TaskCompletionSummary,
     };
     use crate::blackboard_engine::BlackboardTask;
 
@@ -340,7 +352,10 @@ mod tests {
             followup_ids: vec!["f1".to_string()],
         });
         assert_eq!(response.completed_results.len(), 2);
-        assert_eq!(response.pending_followups[0].consumed_by, vec!["jiang-yumo".to_string()]);
+        assert_eq!(
+            response.pending_followups[0].consumed_by,
+            vec!["jiang-yumo".to_string()]
+        );
     }
 
     #[test]

@@ -17,11 +17,11 @@ pub struct Experience沉淀 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperienceDimensions {
-    pub memory: MemoryExperience,      // 记忆沉淀
-    pub skill: SkillExperience,        // 技能沉淀
-    pub strategy: StrategyExperience,  // 策略沉淀
+    pub memory: MemoryExperience,         // 记忆沉淀
+    pub skill: SkillExperience,           // 技能沉淀
+    pub strategy: StrategyExperience,     // 策略沉淀
     pub validation: ValidationExperience, // 验证沉淀
-    pub workflow: WorkflowExperience,  // 工作流沉淀
+    pub workflow: WorkflowExperience,     // 工作流沉淀
 }
 
 // 1. 记忆沉淀：专家在特定项目中的上下文记忆
@@ -128,11 +128,15 @@ fn extract_memory_experience(expert_id: &str, records: &[MemoryRecord]) -> Memor
     let project_memories: Vec<ProjectMemory> = project_map
         .iter()
         .map(|(name, recs)| {
-            let topics = extract_key_topics(&recs.iter().map(|r| r.content.as_str()).collect::<Vec<_>>());
+            let topics =
+                extract_key_topics(&recs.iter().map(|r| r.content.as_str()).collect::<Vec<_>>());
             ProjectMemory {
                 project_name: name.clone(),
                 memory_count: recs.len(),
-                last_accessed: recs.last().map(|r| r.created_at.clone()).unwrap_or_default(),
+                last_accessed: recs
+                    .last()
+                    .map(|r| r.created_at.clone())
+                    .unwrap_or_default(),
                 key_topics: topics,
             }
         })

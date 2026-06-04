@@ -6,10 +6,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ExpertToolRequest {
     #[serde(rename_all = "camelCase")]
-    WebSearch {
-        query: String,
-        reason: String,
-    },
+    WebSearch { query: String, reason: String },
     #[serde(rename_all = "camelCase")]
     Command {
         command: String,
@@ -59,13 +56,14 @@ fn parse_action_params(params_str: &str) -> std::collections::HashMap<String, St
             break;
         }
         let rest: String = chars[cursor..].iter().collect();
-        let Some(caps) = Regex::new(r"^(\w+)=")
-            .expect("param regex")
-            .captures(&rest)
-        else {
+        let Some(caps) = Regex::new(r"^(\w+)=").expect("param regex").captures(&rest) else {
             break;
         };
-        let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default().to_string();
+        let key = caps
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string();
         cursor += key.len() + 1;
         if cursor >= chars.len() {
             break;
@@ -160,7 +158,11 @@ fn resolve_working_dir(raw_dir: Option<&str>, workspace_root: Option<&Path>) -> 
         return base_dir;
     }
     if trimmed.starts_with("./") {
-        return format!("{}/{}", base_dir.trim_end_matches('/'), trimmed.trim_start_matches("./"));
+        return format!(
+            "{}/{}",
+            base_dir.trim_end_matches('/'),
+            trimmed.trim_start_matches("./")
+        );
     }
     trimmed.to_string()
 }
@@ -186,7 +188,11 @@ fn extract_pattern_candidates(command: &str) -> Vec<String> {
         .split('|')
         .map(|part| part.trim().to_string())
         .filter(|part| !part.is_empty())
-        .filter(|part| !Regex::new(r"[()[\]{}^$*+?]").expect("meta regex").is_match(part))
+        .filter(|part| {
+            !Regex::new(r"[()[\]{}^$*+?]")
+                .expect("meta regex")
+                .is_match(part)
+        })
         .collect()
 }
 
@@ -205,7 +211,10 @@ fn parse_line_window_from_command(command: &str, content: &str) -> Option<(usize
         .captures(command)
     {
         let count = caps.get(1)?.as_str().parse::<usize>().ok()?;
-        return Some((total_lines.saturating_sub(count).saturating_add(1).max(1), total_lines));
+        return Some((
+            total_lines.saturating_sub(count).saturating_add(1).max(1),
+            total_lines,
+        ));
     }
     let candidates = extract_pattern_candidates(command);
     if candidates.is_empty() {
@@ -213,15 +222,21 @@ fn parse_line_window_from_command(command: &str, content: &str) -> Option<(usize
     }
     let found_index = candidates.iter().find_map(|candidate| {
         let lowered = candidate.to_lowercase();
-        lines.iter().position(|line| line.to_lowercase().contains(&lowered))
+        lines
+            .iter()
+            .position(|line| line.to_lowercase().contains(&lowered))
     })?;
     let (before, after) = if let Some(caps) = Regex::new(r"\b-Context\s+(\d+)\s*,\s*(\d+)")
         .expect("context regex")
         .captures(command)
     {
         (
-            caps.get(1).and_then(|m| m.as_str().parse::<usize>().ok()).unwrap_or(0),
-            caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok()).unwrap_or(0),
+            caps.get(1)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(0),
+            caps.get(2)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(0),
         )
     } else {
         (6, 28)
@@ -232,7 +247,10 @@ fn parse_line_window_from_command(command: &str, content: &str) -> Option<(usize
     ))
 }
 
-fn extract_readable_file_path_from_command(command: &str, workspace_root: Option<&Path>) -> Option<String> {
+fn extract_readable_file_path_from_command(
+    command: &str,
+    workspace_root: Option<&Path>,
+) -> Option<String> {
     let patterns = [
         r#"\btype\s+['"]?([^'"\s|]+?\.(?:js|jsx|ts|tsx|css|html|md|json|yml|yaml|toml|txt))['"]?"#,
         r#"\bGet-Content\b[\s\S]*?-Path\s+['"]?([^'"\s|]+?\.(?:js|jsx|ts|tsx|css|html|md|json|yml|yaml|toml|txt))['"]?"#,
@@ -242,7 +260,10 @@ fn extract_readable_file_path_from_command(command: &str, workspace_root: Option
         r#"\brg\b[\s\S]*?\s['"]?([^'"\s|]+?\.(?:js|jsx|ts|tsx|css|html|md|json|yml|yaml|toml|txt))['"]?"#,
     ];
     for pattern in patterns {
-        if let Some(caps) = Regex::new(pattern).expect("read path regex").captures(command) {
+        if let Some(caps) = Regex::new(pattern)
+            .expect("read path regex")
+            .captures(command)
+        {
             let candidate = normalize_tool_path(caps.get(1).map(|m| m.as_str()), workspace_root);
             if !candidate.is_empty() {
                 return Some(candidate);
@@ -265,7 +286,8 @@ fn strip_inline_tool_actions(text: &str) -> String {
 
 pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<ExpertToolRequest> {
     let mut requests = Vec::new();
-    let action_regex = Regex::new(r#"\[ACTION:(WEB_SEARCH|EXECUTE_CMD)((?:\s+\w+="[^"]*")*)\]"#).expect("tool action regex");
+    let action_regex = Regex::new(r#"\[ACTION:(WEB_SEARCH|EXECUTE_CMD)((?:\s+\w+="[^"]*")*)\]"#)
+        .expect("tool action regex");
     for caps in action_regex.captures_iter(text) {
         let action_type = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
         let params = parse_action_params(caps.get(2).map(|m| m.as_str()).unwrap_or_default());
@@ -283,7 +305,10 @@ pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<E
             }
             continue;
         }
-        let command = params.get("command").map(|value| value.trim()).unwrap_or("");
+        let command = params
+            .get("command")
+            .map(|value| value.trim())
+            .unwrap_or("");
         if !command.is_empty() {
             requests.push(ExpertToolRequest::Command {
                 command: command.to_string(),
@@ -292,12 +317,16 @@ pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<E
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .unwrap_or_else(|| "需要通过本地命令核实环境或验证当前结论".to_string()),
-                working_dir: resolve_working_dir(params.get("dir").map(|s| s.as_str()), workspace_root),
+                working_dir: resolve_working_dir(
+                    params.get("dir").map(|s| s.as_str()),
+                    workspace_root,
+                ),
             });
         }
     }
 
-    let read_legacy_regex = Regex::new(r"\[ACTION:READ_FILE:([^\]]+)\]").expect("read legacy regex");
+    let read_legacy_regex =
+        Regex::new(r"\[ACTION:READ_FILE:([^\]]+)\]").expect("read legacy regex");
     for caps in read_legacy_regex.captures_iter(text) {
         let path = normalize_tool_path(caps.get(1).map(|m| m.as_str()), workspace_root);
         if !path.is_empty() {
@@ -310,7 +339,8 @@ pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<E
         }
     }
 
-    let read_param_regex = Regex::new(r#"\[ACTION:READ_FILE((?:\s+\w+="[^"]*")*)\]"#).expect("read param regex");
+    let read_param_regex =
+        Regex::new(r#"\[ACTION:READ_FILE((?:\s+\w+="[^"]*")*)\]"#).expect("read param regex");
     for caps in read_param_regex.captures_iter(text) {
         let params = parse_action_params(caps.get(1).map(|m| m.as_str()).unwrap_or_default());
         let path = normalize_tool_path(params.get("path").map(|s| s.as_str()), workspace_root);
@@ -322,23 +352,39 @@ pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<E
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .unwrap_or_else(|| "需要基于真实文件内容继续分析或生成增量修改".to_string()),
-                start_line: parse_optional_positive_int(params.get("start_line").or_else(|| params.get("startLine")).map(|s| s.as_str())),
-                end_line: parse_optional_positive_int(params.get("end_line").or_else(|| params.get("endLine")).map(|s| s.as_str())),
+                start_line: parse_optional_positive_int(
+                    params
+                        .get("start_line")
+                        .or_else(|| params.get("startLine"))
+                        .map(|s| s.as_str()),
+                ),
+                end_line: parse_optional_positive_int(
+                    params
+                        .get("end_line")
+                        .or_else(|| params.get("endLine"))
+                        .map(|s| s.as_str()),
+                ),
             });
         }
     }
 
-    let list_legacy_regex = Regex::new(r"\[ACTION:LIST_FILES:([^\]]+)\]").expect("list legacy regex");
+    let list_legacy_regex =
+        Regex::new(r"\[ACTION:LIST_FILES:([^\]]+)\]").expect("list legacy regex");
     for caps in list_legacy_regex.captures_iter(text) {
         let path = normalize_tool_path(caps.get(1).map(|m| m.as_str()), workspace_root);
         requests.push(ExpertToolRequest::FileList {
-            path: if path.is_empty() { ".".to_string() } else { path },
+            path: if path.is_empty() {
+                ".".to_string()
+            } else {
+                path
+            },
             reason: "需要先确认目录结构和候选文件位置".to_string(),
             recursive: true,
         });
     }
 
-    let list_param_regex = Regex::new(r#"\[ACTION:LIST_FILES((?:\s+\w+="[^"]*")*)\]"#).expect("list param regex");
+    let list_param_regex =
+        Regex::new(r#"\[ACTION:LIST_FILES((?:\s+\w+="[^"]*")*)\]"#).expect("list param regex");
     for caps in list_param_regex.captures_iter(text) {
         let params = parse_action_params(caps.get(1).map(|m| m.as_str()).unwrap_or_default());
         let path = normalize_tool_path(params.get("path").map(|s| s.as_str()), workspace_root);
@@ -361,7 +407,10 @@ pub fn rewrite_command_requests_for_source_reading(
     expert_title: &str,
     workspace_root: Option<&Path>,
 ) -> Vec<ExpertToolRequest> {
-    if !Regex::new(r"(工程师|调研员)").expect("expert title regex").is_match(expert_title) {
+    if !Regex::new(r"(工程师|调研员)")
+        .expect("expert title regex")
+        .is_match(expert_title)
+    {
         return requests.to_vec();
     }
     let mut rewritten = Vec::new();
@@ -370,7 +419,8 @@ pub fn rewrite_command_requests_for_source_reading(
             ExpertToolRequest::Command {
                 command, reason, ..
             } => {
-                let Some(path) = extract_readable_file_path_from_command(command, workspace_root) else {
+                let Some(path) = extract_readable_file_path_from_command(command, workspace_root)
+                else {
                     rewritten.push(request.clone());
                     continue;
                 };
@@ -383,7 +433,10 @@ pub fn rewrite_command_requests_for_source_reading(
                     .and_then(|body| parse_line_window_from_command(command, body));
                 rewritten.push(ExpertToolRequest::FileRead {
                     path,
-                    reason: format!("需要基于真实源码内容继续分析，已将源码探测命令改写为 READ_FILE：{}", reason),
+                    reason: format!(
+                        "需要基于真实源码内容继续分析，已将源码探测命令改写为 READ_FILE：{}",
+                        reason
+                    ),
                     start_line: window.map(|item| item.0),
                     end_line: window.map(|item| item.1),
                 });
@@ -400,7 +453,8 @@ pub fn build_tool_request_plan(
     workspace_root: Option<&Path>,
 ) -> ToolRequestPlan {
     let extracted = extract_tool_requests(text, workspace_root);
-    let rewritten = rewrite_command_requests_for_source_reading(&extracted, expert_title, workspace_root);
+    let rewritten =
+        rewrite_command_requests_for_source_reading(&extracted, expert_title, workspace_root);
     ToolRequestPlan {
         requests: rewritten,
         stripped_reply: strip_inline_tool_actions(text),

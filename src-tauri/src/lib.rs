@@ -1,19 +1,23 @@
-﻿// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dunce;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Row, Sqlite};
 use std::fs;
-use std::io::Write;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Manager;
 
+mod approval_store;
+mod blackboard_engine;
 mod code_chunker;
 mod code_graph;
 mod code_retention;
 mod collaboration_engine;
+mod config;
 mod deliverables;
 mod doc_processor;
 mod experience;
@@ -23,30 +27,27 @@ mod expert_runtime_engine;
 mod expert_session_engine;
 mod expert_tool_engine;
 mod expert_tool_runtime_engine;
-mod blackboard_engine;
+mod file_patch;
 mod health_score;
+mod hooks;
 mod llm_provider;
 mod llm_stream;
 mod memory;
+mod perceptual_index;
 mod pipeline_engine;
 mod pipeline_progress_engine;
 mod pipeline_runtime_engine;
 mod pipeline_session_engine;
 mod pipeline_step_engine;
-mod perceptual_index;
 mod prompt_module_engine;
 mod rbac;
 mod repo_wiki;
 mod shell_executor;
-mod token_runtime_engine;
-mod tfidf;
-mod tool_system;
-mod approval_store;
-mod web_search;
-mod config;
-mod file_patch;
-mod hooks;
 mod supervisor_engine;
+mod tfidf;
+mod token_runtime_engine;
+mod tool_system;
+mod web_search;
 mod workflow_engine;
 
 /// 全局数据库连接池（应用级共享）
@@ -316,9 +317,7 @@ fn parse_llm_reply_envelope(raw: &str) -> Result<LlmReplyEnvelope, String> {
     serde_json::from_str(raw).map_err(|e| format!("解析 LLM 响应失败: {}", e))
 }
 
-fn supervisor_quota_guard(
-    context: &SupervisorTokenRuntimeContext,
-) -> Option<String> {
+fn supervisor_quota_guard(context: &SupervisorTokenRuntimeContext) -> Option<String> {
     let decision = token_runtime_engine::check_quota(&token_runtime_engine::QuotaCheckRequest {
         expert_id: "jiang-xingtu".to_string(),
         expert_name: "江星图".to_string(),
@@ -331,7 +330,11 @@ fn supervisor_quota_guard(
         ],
         now_ms: None,
     });
-    if decision.allowed { None } else { decision.reason }
+    if decision.allowed {
+        None
+    } else {
+        decision.reason
+    }
 }
 
 fn build_current_project_context_text(
@@ -357,7 +360,8 @@ fn build_current_project_context_text(
             format!("- 项目名称：{}", name),
             format!("- 工作目录：{}", workspace),
             format!("- 当前会话：{}", session_label),
-            "- 说明：用户当前正在这个项目内发起提问、检索和修改，请不要忽略项目上下文。".to_string(),
+            "- 说明：用户当前正在这个项目内发起提问、检索和修改，请不要忽略项目上下文。"
+                .to_string(),
         ]
         .join("\n"),
     )
@@ -379,9 +383,10 @@ fn build_general_memory_context_text(
         limit: 3,
     };
     match memory::search_memories(project_dir, &query) {
-        Ok(results) if !results.is_empty() => {
-            Some(expert_context_engine::format_memory_context(&results, "相关历史记忆"))
-        }
+        Ok(results) if !results.is_empty() => Some(expert_context_engine::format_memory_context(
+            &results,
+            "相关历史记忆",
+        )),
         _ => None,
     }
 }
@@ -427,7 +432,9 @@ fn summarize_expert_tasks_message(content: &str) -> String {
                 Some("running") => "执行中".to_string(),
                 Some("error") => format!(
                     "失败：{}",
-                    task.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误")
+                    task.get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("未知错误")
                 ),
                 _ => "等待中".to_string(),
             };
@@ -445,11 +452,17 @@ fn summarize_expert_tasks_message(content: &str) -> String {
                 .and_then(|v| v.as_str())
                 .or_else(|| task.get("expertId").and_then(|v| v.as_str()))
                 .unwrap_or("未知专家");
-            let expert_title = task.get("expertTitle").and_then(|v| v.as_str()).unwrap_or("未知角色");
+            let expert_title = task
+                .get("expertTitle")
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知角色");
             if detail.is_empty() {
                 format!("- {}（{}）：{}", expert_name, expert_title, status)
             } else {
-                format!("- {}（{}）：{}；{}", expert_name, expert_title, status, detail)
+                format!(
+                    "- {}（{}）：{}；{}",
+                    expert_name, expert_title, status, detail
+                )
             }
         })
         .collect::<Vec<_>>();
@@ -462,8 +475,16 @@ fn summarize_tool_event_message(content: &str) -> String {
     };
     let initiator = format!(
         "{}（{}）",
-        event.get("initiator").and_then(|v| v.get("expertName")).and_then(|v| v.as_str()).unwrap_or("未知专家"),
-        event.get("initiator").and_then(|v| v.get("expertTitle")).and_then(|v| v.as_str()).unwrap_or("未知角色")
+        event
+            .get("initiator")
+            .and_then(|v| v.get("expertName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知专家"),
+        event
+            .get("initiator")
+            .and_then(|v| v.get("expertTitle"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知角色")
     );
     let status = match event.get("status").and_then(|v| v.as_str()) {
         Some("success") => "成功",
@@ -508,8 +529,14 @@ fn summarize_command_auth_message(content: &str) -> String {
     };
     let initiator = format!(
         "{}（{}）",
-        auth.get("initiator").and_then(|v| v.get("expertName")).and_then(|v| v.as_str()).unwrap_or("未知专家"),
-        auth.get("initiator").and_then(|v| v.get("expertTitle")).and_then(|v| v.as_str()).unwrap_or("未知角色")
+        auth.get("initiator")
+            .and_then(|v| v.get("expertName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知专家"),
+        auth.get("initiator")
+            .and_then(|v| v.get("expertTitle"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知角色")
     );
     let status = match auth.get("status").and_then(|v| v.as_str()) {
         Some("approved") => "用户已同意",
@@ -577,25 +604,29 @@ fn append_supervisor_usage(
     context: &SupervisorTokenRuntimeContext,
     model: &str,
     usage: Option<DeepSeekUsage>,
-) -> (token_runtime_engine::TokenData, token_runtime_engine::TokenData) {
+) -> (
+    token_runtime_engine::TokenData,
+    token_runtime_engine::TokenData,
+) {
     let Some(usage) = usage else {
         return (context.project_data.clone(), context.user_data.clone());
     };
-    let result = token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
-        project_data: context.project_data.clone(),
-        user_data: context.user_data.clone(),
-        expert_id: "jiang-xingtu".to_string(),
-        expert_name: "江星图".to_string(),
-        expert_title: Some("主管".to_string()),
-        model: model.to_string(),
-        key_id: context.key_id.clone(),
-        usage: token_runtime_engine::UsageSummary {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            total_tokens: usage.total_tokens,
-        },
-        timestamp: None,
-    });
+    let result =
+        token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
+            project_data: context.project_data.clone(),
+            user_data: context.user_data.clone(),
+            expert_id: "jiang-xingtu".to_string(),
+            expert_name: "江星图".to_string(),
+            expert_title: Some("主管".to_string()),
+            model: model.to_string(),
+            key_id: context.key_id.clone(),
+            usage: token_runtime_engine::UsageSummary {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+            },
+            timestamp: None,
+        });
     (result.project_data, result.user_data)
 }
 
@@ -612,7 +643,11 @@ fn check_expert_quota_internal(
         exempt_expert_ids: context.quota_exempt_ids.clone(),
         now_ms: None,
     });
-    if decision.allowed { None } else { decision.reason }
+    if decision.allowed {
+        None
+    } else {
+        decision.reason
+    }
 }
 
 fn append_expert_usage(
@@ -622,30 +657,37 @@ fn append_expert_usage(
     expert_title: Option<&str>,
     model: &str,
     usage: Option<DeepSeekUsage>,
-) -> (token_runtime_engine::TokenData, token_runtime_engine::TokenData) {
+) -> (
+    token_runtime_engine::TokenData,
+    token_runtime_engine::TokenData,
+) {
     let Some(usage) = usage else {
         return (context.project_data.clone(), context.user_data.clone());
     };
-    let result = token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
-        project_data: context.project_data.clone(),
-        user_data: context.user_data.clone(),
-        expert_id: expert_id.to_string(),
-        expert_name: expert_name.to_string(),
-        expert_title: expert_title.map(|value| value.to_string()),
-        model: model.to_string(),
-        key_id: context.key_id.clone(),
-        usage: token_runtime_engine::UsageSummary {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            total_tokens: usage.total_tokens,
-        },
-        timestamp: None,
-    });
+    let result =
+        token_runtime_engine::append_token_usage(&token_runtime_engine::AppendTokenUsageRequest {
+            project_data: context.project_data.clone(),
+            user_data: context.user_data.clone(),
+            expert_id: expert_id.to_string(),
+            expert_name: expert_name.to_string(),
+            expert_title: expert_title.map(|value| value.to_string()),
+            model: model.to_string(),
+            key_id: context.key_id.clone(),
+            usage: token_runtime_engine::UsageSummary {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+            },
+            timestamp: None,
+        });
     (result.project_data, result.user_data)
 }
 
 fn workspace_looks_empty_for_direct_creation(project_path: Option<&str>) -> bool {
-    let Some(path) = project_path.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(path) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return false;
     };
     let root = Path::new(path);
@@ -663,7 +705,10 @@ fn workspace_looks_empty_for_direct_creation(project_path: Option<&str>) -> bool
 }
 
 #[tauri::command]
-fn verify_workspace_delivery(user_task_text: String, workspace_path: String) -> Result<String, String> {
+fn verify_workspace_delivery(
+    user_task_text: String,
+    workspace_path: String,
+) -> Result<String, String> {
     let issues = workflow_engine::verify_workspace_delivery(&user_task_text, &workspace_path)?;
     serde_json::to_string(&issues).map_err(|e| e.to_string())
 }
@@ -676,8 +721,11 @@ fn analyze_agent_delivery(
 ) -> Result<String, String> {
     let sources: Vec<workflow_engine::WorkflowInputSource> =
         serde_json::from_str(&sources_json).map_err(|e| format!("解析专家输出失败: {}", e))?;
-    let analysis =
-        workflow_engine::analyze_agent_delivery(&sources, &user_task_text, workspace_path.as_deref())?;
+    let analysis = workflow_engine::analyze_agent_delivery(
+        &sources,
+        &user_task_text,
+        workspace_path.as_deref(),
+    )?;
     serde_json::to_string(&analysis).map_err(|e| e.to_string())
 }
 
@@ -689,10 +737,12 @@ async fn supervisor_analyze_dispatch(
     supervisor_api_key: String,
     model: String,
 ) -> Result<String, String> {
-    let conversation_history: Vec<DeepSeekMessage> = serde_json::from_str(&conversation_history_json)
-        .map_err(|e| format!("解析主管历史上下文失败: {}", e))?;
-    let available_experts: Vec<supervisor_engine::SupervisorExpertInfo> = serde_json::from_str(&available_experts_json)
-        .map_err(|e| format!("解析可用专家失败: {}", e))?;
+    let conversation_history: Vec<DeepSeekMessage> =
+        serde_json::from_str(&conversation_history_json)
+            .map_err(|e| format!("解析主管历史上下文失败: {}", e))?;
+    let available_experts: Vec<supervisor_engine::SupervisorExpertInfo> =
+        serde_json::from_str(&available_experts_json)
+            .map_err(|e| format!("解析可用专家失败: {}", e))?;
     let system_prompt = supervisor_engine::build_supervisor_prompt(&available_experts);
 
     let mut messages: Vec<DeepSeekMessage> = Vec::new();
@@ -705,7 +755,11 @@ async fn supervisor_analyze_dispatch(
         let history_text = recent_history
             .iter()
             .map(|message| {
-                let role_label = if message.role == "user" { "用户" } else { "助手" };
+                let role_label = if message.role == "user" {
+                    "用户"
+                } else {
+                    "助手"
+                };
                 let snippet: String = message.content.chars().take(300).collect();
                 format!("{}：{}", role_label, snippet)
             })
@@ -740,16 +794,18 @@ async fn supervisor_review_delivery(
     supervisor_api_key: String,
     model: String,
 ) -> Result<String, String> {
-    let expert_results: Vec<supervisor_engine::SupervisorExpertResult> = serde_json::from_str(&expert_results_json)
-        .map_err(|e| format!("解析专家结果失败: {}", e))?;
+    let expert_results: Vec<supervisor_engine::SupervisorExpertResult> =
+        serde_json::from_str(&expert_results_json)
+            .map_err(|e| format!("解析专家结果失败: {}", e))?;
     let raw_reply = call_llm(
         supervisor_engine::build_review_prompt().to_string(),
-        vec![
-            DeepSeekMessage {
-                role: "user".to_string(),
-                content: supervisor_engine::build_review_user_message(&task_description, &expert_results),
-            },
-        ],
+        vec![DeepSeekMessage {
+            role: "user".to_string(),
+            content: supervisor_engine::build_review_user_message(
+                &task_description,
+                &expert_results,
+            ),
+        }],
         supervisor_api_key,
         &model,
     )
@@ -768,8 +824,8 @@ async fn supervisor_quick_answer(
     supervisor_api_key: String,
     model: String,
 ) -> Result<String, String> {
-    let messages: Vec<DeepSeekMessage> =
-        serde_json::from_str(&messages_json).map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
+    let messages: Vec<DeepSeekMessage> = serde_json::from_str(&messages_json)
+        .map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
     let raw_reply = call_llm(
         "你是「江星图」，项目主管。现在用户有一个简单问题，请直接回答。回答要简洁明了；如果问题涉及当前项目、当前目录、当前对话或当前正在处理的内容，必须优先依据提供的项目上下文直接回答，不要假装不知道当前项目。".to_string(),
         messages,
@@ -792,8 +848,8 @@ async fn supervisor_quick_answer_runtime(
     model: String,
     token_context_json: String,
 ) -> Result<String, String> {
-    let token_context: SupervisorTokenRuntimeContext =
-        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let token_context: SupervisorTokenRuntimeContext = serde_json::from_str(&token_context_json)
+        .map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
     if let Some(reason) = supervisor_quota_guard(&token_context) {
         let response = SupervisorRuntimeQuickAnswerResponse {
             reply: format!("主管快速回复被配额阻断：{}", reason),
@@ -826,8 +882,8 @@ async fn supervisor_prepare_quick_answer_runtime(
     model: String,
     token_context_json: String,
 ) -> Result<String, String> {
-    let chat_messages: Vec<UiChatMessage> =
-        serde_json::from_str(&chat_messages_json).map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
+    let chat_messages: Vec<UiChatMessage> = serde_json::from_str(&chat_messages_json)
+        .map_err(|e| format!("解析主管快速回复消息失败: {}", e))?;
     let mut messages = sanitize_chat_messages_for_supervisor(&chat_messages);
     if let Some(project_context) = build_current_project_context_text(
         project_name.as_deref(),
@@ -857,8 +913,8 @@ async fn supervisor_analyze_followup(
     supervisor_api_key: String,
     model: String,
 ) -> Result<String, String> {
-    let request: supervisor_engine::FollowupIntentRequest = serde_json::from_str(&request_json)
-        .map_err(|e| format!("解析跟进请求失败: {}", e))?;
+    let request: supervisor_engine::FollowupIntentRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("解析跟进请求失败: {}", e))?;
     let raw_reply = call_llm(
         supervisor_engine::build_followup_prompt(&request),
         vec![DeepSeekMessage {
@@ -886,8 +942,8 @@ async fn supervisor_analyze_dispatch_runtime(
     model: String,
     token_context_json: String,
 ) -> Result<String, String> {
-    let token_context: SupervisorTokenRuntimeContext =
-        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let token_context: SupervisorTokenRuntimeContext = serde_json::from_str(&token_context_json)
+        .map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
     if let Some(reason) = supervisor_quota_guard(&token_context) {
         let response = SupervisorRuntimeAnalyzeResponse {
             plan: supervisor_engine::SupervisorDispatchPlan {
@@ -937,12 +993,19 @@ async fn supervisor_prepare_and_analyze_dispatch_runtime(
     token_context_json: String,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let chat_messages: Vec<UiChatMessage> =
-        serde_json::from_str(&chat_messages_json).map_err(|e| format!("解析主管调度会话消息失败: {}", e))?;
+    let chat_messages: Vec<UiChatMessage> = serde_json::from_str(&chat_messages_json)
+        .map_err(|e| format!("解析主管调度会话消息失败: {}", e))?;
     let conversation_history =
-        serde_json::to_string(&sanitize_chat_messages_for_supervisor(&chat_messages)).map_err(|e| e.to_string())?;
-    let project_dir = if project_name.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
-        || project_path.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
+        serde_json::to_string(&sanitize_chat_messages_for_supervisor(&chat_messages))
+            .map_err(|e| e.to_string())?;
+    let project_dir = if project_name
+        .as_ref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || project_path
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
     {
         Some(resolve_sandbox_project_dir(
             project_name.as_deref().unwrap_or_default(),
@@ -1000,18 +1063,31 @@ async fn supervisor_review_delivery_runtime(
     model: String,
     token_context_json: String,
 ) -> Result<String, String> {
-    let token_context: SupervisorTokenRuntimeContext =
-        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let token_context: SupervisorTokenRuntimeContext = serde_json::from_str(&token_context_json)
+        .map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
     let expert_results: Vec<supervisor_engine::SupervisorExpertResult> =
-        serde_json::from_str(&expert_results_json).map_err(|e| format!("解析专家结果失败: {}", e))?;
+        serde_json::from_str(&expert_results_json)
+            .map_err(|e| format!("解析专家结果失败: {}", e))?;
     if let Some(reason) = supervisor_quota_guard(&token_context) {
         let summary = expert_results
             .iter()
-            .map(|r| format!("{}（{}）：{}", r.expert_name, r.expert_title, r.output.as_deref().unwrap_or(r.error.as_deref().unwrap_or("无输出"))))
+            .map(|r| {
+                format!(
+                    "{}（{}）：{}",
+                    r.expert_name,
+                    r.expert_title,
+                    r.output
+                        .as_deref()
+                        .unwrap_or(r.error.as_deref().unwrap_or("无输出"))
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let response = SupervisorRuntimeReviewResponse {
-            reply: format!("专家团已执行完毕，但主管审核被配额阻断：{}\n\n各专家结果：\n{}", reason, summary),
+            reply: format!(
+                "专家团已执行完毕，但主管审核被配额阻断：{}\n\n各专家结果：\n{}",
+                reason, summary
+            ),
             blocked_reason: Some(reason),
             project_data: token_context.project_data,
             user_data: token_context.user_data,
@@ -1067,11 +1143,12 @@ async fn finalize_pipeline_delivery_runtime(
         token_context_json,
     )
     .await?;
-    let mut review: SupervisorRuntimeReviewResponse =
-        serde_json::from_str(&review_raw).map_err(|e| format!("解析主管审核收尾结果失败: {}", e))?;
+    let mut review: SupervisorRuntimeReviewResponse = serde_json::from_str(&review_raw)
+        .map_err(|e| format!("解析主管审核收尾结果失败: {}", e))?;
 
     let action_sources: Vec<workflow_engine::WorkflowInputSource> =
-        serde_json::from_str(&action_sources_json).map_err(|e| format!("解析交付动作源失败: {}", e))?;
+        serde_json::from_str(&action_sources_json)
+            .map_err(|e| format!("解析交付动作源失败: {}", e))?;
     let delivery_analysis = workflow_engine::analyze_agent_delivery(
         &action_sources,
         &final_task_description,
@@ -1099,8 +1176,8 @@ async fn supervisor_analyze_followup_runtime(
     model: String,
     token_context_json: String,
 ) -> Result<String, String> {
-    let token_context: SupervisorTokenRuntimeContext =
-        serde_json::from_str(&token_context_json).map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
+    let token_context: SupervisorTokenRuntimeContext = serde_json::from_str(&token_context_json)
+        .map_err(|e| format!("解析主管 token 上下文失败: {}", e))?;
     let request: supervisor_engine::FollowupIntentRequest =
         serde_json::from_str(&request_json).map_err(|e| format!("解析跟进请求失败: {}", e))?;
     if let Some(reason) = supervisor_quota_guard(&token_context) {
@@ -1165,7 +1242,8 @@ async fn supervisor_mid_check(
 #[tauri::command]
 fn finalize_pipeline_step_without_supervisor(request_json: String) -> Result<String, String> {
     let request: pipeline_step_engine::PipelineStepFinalizeRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线步骤收尾请求失败: {}", e))?;
+        serde_json::from_str(&request_json)
+            .map_err(|e| format!("解析流水线步骤收尾请求失败: {}", e))?;
     let response = PipelineStepFinalizeEnvelope {
         decision: pipeline_step_engine::finalize_step_without_supervisor(&request),
     };
@@ -1179,7 +1257,8 @@ async fn finalize_pipeline_step_with_supervisor(
     model: String,
 ) -> Result<String, String> {
     let request: pipeline_step_engine::PipelineStepFinalizeRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线步骤主管收尾请求失败: {}", e))?;
+        serde_json::from_str(&request_json)
+            .map_err(|e| format!("解析流水线步骤主管收尾请求失败: {}", e))?;
     let mut decision = pipeline_step_engine::finalize_step_without_supervisor(&request);
     if decision.should_stop || decision.runtime_transition.should_stop {
         let response = PipelineStepFinalizeEnvelope { decision };
@@ -1191,7 +1270,8 @@ async fn finalize_pipeline_step_with_supervisor(
     } else {
         String::new()
     };
-    let midcheck_request = pipeline_step_engine::build_midcheck_request(&request, &blackboard_context);
+    let midcheck_request =
+        pipeline_step_engine::build_midcheck_request(&request, &blackboard_context);
     let raw_reply = call_llm(
         "你是项目主管，负责监督专家团执行。仅输出 JSON，不要其他内容。".to_string(),
         vec![DeepSeekMessage {
@@ -1204,18 +1284,22 @@ async fn finalize_pipeline_step_with_supervisor(
     .await?;
     let envelope = parse_llm_reply_envelope(&raw_reply)?;
     let midcheck = supervisor_engine::parse_mid_check_decision(&envelope.content);
-    let transition = pipeline_runtime_engine::apply_decision(&pipeline_runtime_engine::PipelineRuntimeDecisionRequest {
-        state: request.runtime_state.clone(),
-        action: midcheck.action.clone(),
-        current_step_expert_ids: request.step_expert_ids.clone(),
-    });
-    let blocker_task = transition.breaker_message.clone().map(|message| pipeline_step_engine::PipelineTaskSnapshot {
-        expert_id: "pipeline-breaker".to_string(),
-        expert_name: "流水线熔断".to_string(),
-        expert_title: "协作门禁".to_string(),
-        dispatch_wave: Some(request.step_index + 1),
-        output: None,
-        error: Some(message),
+    let transition = pipeline_runtime_engine::apply_decision(
+        &pipeline_runtime_engine::PipelineRuntimeDecisionRequest {
+            state: request.runtime_state.clone(),
+            action: midcheck.action.clone(),
+            current_step_expert_ids: request.step_expert_ids.clone(),
+        },
+    );
+    let blocker_task = transition.breaker_message.clone().map(|message| {
+        pipeline_step_engine::PipelineTaskSnapshot {
+            expert_id: "pipeline-breaker".to_string(),
+            expert_name: "流水线熔断".to_string(),
+            expert_title: "协作门禁".to_string(),
+            dispatch_wave: Some(request.step_index + 1),
+            output: None,
+            error: Some(message),
+        }
     });
 
     decision.runtime_transition = transition.clone();
@@ -1228,12 +1312,16 @@ async fn finalize_pipeline_step_with_supervisor(
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
 
-fn collect_workspace_snapshot_from_dir(project_dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+fn collect_workspace_snapshot_from_dir(
+    project_dir: &Path,
+) -> Result<(Vec<String>, Vec<String>), String> {
     fn walk(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<(), String> {
         for entry in fs::read_dir(current).map_err(|e| format!("读取目录失败: {}", e))? {
             let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
             let path = entry.path();
-            let metadata = entry.metadata().map_err(|e| format!("读取目录项元数据失败: {}", e))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|e| format!("读取目录项元数据失败: {}", e))?;
             if metadata.is_dir() {
                 walk(root, &path, files)?;
             } else if metadata.is_file() {
@@ -1256,7 +1344,13 @@ fn collect_workspace_snapshot_from_dir(project_dir: &Path) -> Result<(Vec<String
     let roots = fs::read_dir(project_dir)
         .map_err(|e| format!("读取根目录失败: {}", e))?
         .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path().strip_prefix(project_dir).ok().map(|p| p.to_string_lossy().replace('\\', "/")))
+        .map(|entry| {
+            entry
+                .path()
+                .strip_prefix(project_dir)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
         .flatten()
         .take(120)
         .collect::<Vec<_>>();
@@ -1280,8 +1374,8 @@ async fn prepare_pipeline_launch(
         experts: Vec<pipeline_engine::PipelineExpertInfo>,
     }
 
-    let request: PipelineLaunchRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线启动准备请求失败: {}", e))?;
+    let request: PipelineLaunchRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析流水线启动准备请求失败: {}", e))?;
     let layout = pipeline_engine::compute_pipeline_layout(&request.plan);
     let pipeline_id = format!(
         "pipeline-{}-{}",
@@ -1290,7 +1384,8 @@ async fn prepare_pipeline_launch(
     );
 
     let project_name = request.project_name.unwrap_or_default();
-    let project_dir = resolve_sandbox_project_dir(&project_name, request.project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, request.project_path.as_deref(), &app_handle)?;
     let (workspace_files, workspace_roots) = if project_dir.exists() {
         collect_workspace_snapshot_from_dir(&project_dir)?
     } else {
@@ -1302,14 +1397,16 @@ async fn prepare_pipeline_launch(
         workspace_roots,
         chrono::Utc::now().timestamp_millis() as u64,
     );
-    let response = pipeline_session_engine::bootstrap_pipeline_session(&pipeline_session_engine::PipelineSessionBootstrapRequest {
-        pipeline_id: pipeline_id.clone(),
-        plan: request.plan.clone(),
-        layout: layout.clone(),
-        blackboard,
-        pending_followups: request.pending_followups.unwrap_or_default(),
-        max_step_retry: request.max_step_retry,
-    });
+    let response = pipeline_session_engine::bootstrap_pipeline_session(
+        &pipeline_session_engine::PipelineSessionBootstrapRequest {
+            pipeline_id: pipeline_id.clone(),
+            plan: request.plan.clone(),
+            layout: layout.clone(),
+            blackboard,
+            pending_followups: request.pending_followups.unwrap_or_default(),
+            max_step_retry: request.max_step_retry,
+        },
+    );
     let narrative = pipeline_engine::build_dispatch_narrative(&layout, &request.experts);
     let joining_tasks = layout
         .waves
@@ -1384,8 +1481,8 @@ async fn settle_pipeline_execution_round(
         experts: Vec<pipeline_engine::PipelineExpertInfo>,
     }
 
-    let request: PipelineRoundSettleRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析流水线轮次收尾请求失败: {}", e))?;
+    let request: PipelineRoundSettleRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析流水线轮次收尾请求失败: {}", e))?;
 
     let settled_state = pipeline_session_engine::apply_pipeline_round_outcomes(
         &request.session_state,
@@ -1395,13 +1492,15 @@ async fn settle_pipeline_execution_round(
         },
     );
 
-    let finalize_request = pipeline_step_engine::build_finalize_request(&pipeline_step_engine::PipelineStepRuntimeFinalizeRequest {
-        plan: request.plan,
-        layout: request.layout,
-        session_state: settled_state.clone(),
-        has_workspace_context: request.has_workspace_context,
-        experts: request.experts,
-    });
+    let finalize_request = pipeline_step_engine::build_finalize_request(
+        &pipeline_step_engine::PipelineStepRuntimeFinalizeRequest {
+            plan: request.plan,
+            layout: request.layout,
+            session_state: settled_state.clone(),
+            has_workspace_context: request.has_workspace_context,
+            experts: request.experts,
+        },
+    );
 
     let should_use_supervisor = supervisor_api_key
         .as_ref()
@@ -1418,8 +1517,8 @@ async fn settle_pipeline_execution_round(
             model.unwrap_or_else(|| "deepseek-chat".to_string()),
         )
         .await?;
-        let parsed: PipelineStepFinalizeEnvelope =
-            serde_json::from_str(&response).map_err(|e| format!("解析流水线轮次收尾结果失败: {}", e))?;
+        let parsed: PipelineStepFinalizeEnvelope = serde_json::from_str(&response)
+            .map_err(|e| format!("解析流水线轮次收尾结果失败: {}", e))?;
         parsed.decision
     };
 
@@ -1438,8 +1537,8 @@ async fn settle_pipeline_execution_round(
 
 #[tauri::command]
 fn build_token_dashboard_snapshot(request_json: String) -> Result<String, String> {
-    let request: token_runtime_engine::TokenDashboardRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析词元仪表盘请求失败: {}", e))?;
+    let request: token_runtime_engine::TokenDashboardRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析词元仪表盘请求失败: {}", e))?;
     let response = TokenDashboardEnvelope {
         snapshot: token_runtime_engine::build_dashboard_snapshot(&request),
     };
@@ -1448,8 +1547,9 @@ fn build_token_dashboard_snapshot(request_json: String) -> Result<String, String
 
 #[tauri::command]
 fn build_pipeline_progress_snapshot(request_json: String) -> Result<String, String> {
-    let request: pipeline_progress_engine::PipelineProgressSnapshotRequest = serde_json::from_str(&request_json)
-        .map_err(|e| format!("解析流水线进度快照请求失败: {}", e))?;
+    let request: pipeline_progress_engine::PipelineProgressSnapshotRequest =
+        serde_json::from_str(&request_json)
+            .map_err(|e| format!("解析流水线进度快照请求失败: {}", e))?;
     let response = PipelineProgressEnvelope {
         snapshot: pipeline_progress_engine::build_progress_snapshot(&request),
     };
@@ -1462,8 +1562,8 @@ async fn build_expert_context(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
-    let request: expert_context_engine::ExpertContextRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析专家上下文请求失败: {}", e))?;
+    let request: expert_context_engine::ExpertContextRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析专家上下文请求失败: {}", e))?;
     let context = build_expert_context_internal(&request, &app_handle, &state).await?;
     let response = ExpertContextEnvelope { context };
     serde_json::to_string(&response).map_err(|e| e.to_string())
@@ -1492,10 +1592,12 @@ async fn build_expert_context_internal(
 
         if request.project_id.is_some() {
             match perceptual_index::search_formatted(&project_dir, &request.task_description) {
-                Ok(result) if !result.trim().is_empty() && result != "(未找到相关代码段)" => {
+                Ok(result) if !result.trim().is_empty() && result != "(未找到相关代码段)" =>
+                {
                     vector_context = Some(result);
                 }
-                Ok(_) => negative_index.push("向量检索未命中相关代码段，可能存在索引覆盖盲区".to_string()),
+                Ok(_) => negative_index
+                    .push("向量检索未命中相关代码段，可能存在索引覆盖盲区".to_string()),
                 Err(_) => negative_index.push("向量检索执行失败".to_string()),
             }
         }
@@ -1510,10 +1612,14 @@ async fn build_expert_context_internal(
             };
             match memory::search_memories(&project_dir, &expert_query) {
                 Ok(results) if !results.is_empty() => {
-                    expert_memory_context =
-                        Some(expert_context_engine::format_memory_context(&results, "相关历史记忆"));
+                    expert_memory_context = Some(expert_context_engine::format_memory_context(
+                        &results,
+                        "相关历史记忆",
+                    ));
                 }
-                Ok(_) => negative_index.push("无相关历史记忆，当前任务缺乏历史经验参照".to_string()),
+                Ok(_) => {
+                    negative_index.push("无相关历史记忆，当前任务缺乏历史经验参照".to_string())
+                }
                 Err(_) => negative_index.push("记忆检索失败".to_string()),
             }
 
@@ -1526,8 +1632,10 @@ async fn build_expert_context_internal(
             };
             if let Ok(results) = memory::search_memories(&project_dir, &shared_query) {
                 if !results.is_empty() {
-                    shared_memory_context =
-                        Some(expert_context_engine::format_memory_context(&results, "共享项目记忆"));
+                    shared_memory_context = Some(expert_context_engine::format_memory_context(
+                        &results,
+                        "共享项目记忆",
+                    ));
                 }
             }
         }
@@ -1568,7 +1676,11 @@ fn build_expert_tool_plan(
         None
     };
     let response = ExpertToolPlanEnvelope {
-        plan: expert_tool_engine::build_tool_request_plan(&text, &expert_title, workspace_root.as_deref()),
+        plan: expert_tool_engine::build_tool_request_plan(
+            &text,
+            &expert_title,
+            workspace_root.as_deref(),
+        ),
     };
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
@@ -1598,8 +1710,8 @@ fn resolve_expert_prompt_plan(
     request_json: String,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let request: prompt_module_engine::PromptPlanRequest =
-        serde_json::from_str(&request_json).map_err(|e| format!("解析提示词模块计划失败: {}", e))?;
+    let request: prompt_module_engine::PromptPlanRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("解析提示词模块计划失败: {}", e))?;
     let plan = resolve_expert_prompt_plan_internal(&request, &app_handle)?;
     serde_json::to_string(&PromptPlanEnvelope { plan }).map_err(|e| e.to_string())
 }
@@ -1617,9 +1729,11 @@ fn resolve_expert_prompt_plan_internal(
         let trace_file = project_dir.join(".xt").join("prompt_module_traces.json");
         if trace_file.exists() {
             match fs::read_to_string(&trace_file) {
-                Ok(content) => serde_json::from_str::<Vec<prompt_module_engine::PromptModuleTrace>>(&content)
-                    .map(prompt_module_engine::dedupe_traces)
-                    .unwrap_or_default(),
+                Ok(content) => {
+                    serde_json::from_str::<Vec<prompt_module_engine::PromptModuleTrace>>(&content)
+                        .map(prompt_module_engine::dedupe_traces)
+                        .unwrap_or_default()
+                }
                 Err(_) => vec![],
             }
         } else {
@@ -1670,9 +1784,7 @@ async fn execute_expert_tool_request_internal(
                 Ok(results) => {
                     expert_tool_runtime_engine::build_web_search_success(&request, results)
                 }
-                Err(error) => {
-                    expert_tool_runtime_engine::build_web_search_error(&request, &error)
-                }
+                Err(error) => expert_tool_runtime_engine::build_web_search_error(&request, &error),
             }
         }
         expert_tool_engine::ExpertToolRequest::FileRead {
@@ -1709,9 +1821,7 @@ async fn execute_expert_tool_request_internal(
                         expert_tool_runtime_engine::build_file_read_error(&request, &parsed.result)
                     }
                 }
-                Err(error) => {
-                    expert_tool_runtime_engine::build_file_read_error(&request, &error)
-                }
+                Err(error) => expert_tool_runtime_engine::build_file_read_error(&request, &error),
             }
         }
         expert_tool_engine::ExpertToolRequest::FileList {
@@ -1745,9 +1855,7 @@ async fn execute_expert_tool_request_internal(
                         expert_tool_runtime_engine::build_file_list_error(&request, &parsed.result)
                     }
                 }
-                Err(error) => {
-                    expert_tool_runtime_engine::build_file_list_error(&request, &error)
-                }
+                Err(error) => expert_tool_runtime_engine::build_file_list_error(&request, &error),
             }
         }
         expert_tool_engine::ExpertToolRequest::Command {
@@ -1759,8 +1867,7 @@ async fn execute_expert_tool_request_internal(
                 .as_ref()
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_else(|| working_dir.clone());
-            let safety =
-                shell_executor::check_safety(command, &[], working_dir, &project_dir);
+            let safety = shell_executor::check_safety(command, &[], working_dir, &project_dir);
             if safety.requires_auth {
                 match request.approval_decision {
                     None => expert_tool_runtime_engine::build_command_authorization(
@@ -1795,9 +1902,11 @@ async fn execute_expert_tool_request_internal(
                         working_dir,
                         "",
                     ),
-                    Err(error) => {
-                        expert_tool_runtime_engine::build_command_error(&request, working_dir, &error)
-                    }
+                    Err(error) => expert_tool_runtime_engine::build_command_error(
+                        &request,
+                        working_dir,
+                        &error,
+                    ),
                 }
             }
         }
@@ -1848,15 +1957,17 @@ async fn advance_expert_postprocess_internal(
                     &workflow_engine::ExpertReplyGuardRequest {
                         expert_id: state.expert_id.clone(),
                         has_workspace_context: state.has_workspace_context,
-                        workspace_looks_empty: workspace_looks_empty_for_direct_creation(state.project_path.as_deref()),
+                        workspace_looks_empty: workspace_looks_empty_for_direct_creation(
+                            state.project_path.as_deref(),
+                        ),
                         reply: state.reply.clone(),
                     },
                 );
                 if reply_guard.should_enforce && reply_guard.requires_retry {
                     if state.deliverable_attempt >= state.max_deliverable_attempts {
-                        state.reply = reply_guard
-                            .final_failure_message
-                            .unwrap_or_else(|| "未交付任何可执行文件变更，当前实现失败，需要重试。".to_string());
+                        state.reply = reply_guard.final_failure_message.unwrap_or_else(|| {
+                            "未交付任何可执行文件变更，当前实现失败，需要重试。".to_string()
+                        });
                         state.completed = true;
                         break;
                     }
@@ -2072,9 +2183,9 @@ async fn initialize_expert_postprocess_internal(
             });
             state.messages.push(DeepSeekMessage {
                 role: "user".to_string(),
-                content: reminder_decision
-                    .reminder_message
-                    .unwrap_or_else(|| "如果确实需要工具，请直接输出标准 ACTION 发起。".to_string()),
+                content: reminder_decision.reminder_message.unwrap_or_else(|| {
+                    "如果确实需要工具，请直接输出标准 ACTION 发起。".to_string()
+                }),
             });
             let raw_retry_reply = call_llm(
                 state.system_prompt.clone(),
@@ -2095,7 +2206,11 @@ async fn finalize_expert_task_internal(
     request: FinalizeExpertTaskRequest,
     app_handle: &tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(project_name) = request.project_name.as_ref().filter(|value| !value.trim().is_empty()) {
+    if let Some(project_name) = request
+        .project_name
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         if !request.learned_module_ids.is_empty() {
             let normalized_task_description =
                 prompt_module_engine::sanitize_task_description(&request.task_description);
@@ -2124,13 +2239,19 @@ async fn finalize_expert_task_internal(
             } else {
                 request.reply.clone()
             };
-            let keyword_text = format!("{} {} {}", request.task_description, request.expert_name, content);
+            let keyword_text = format!(
+                "{} {} {}",
+                request.task_description, request.expert_name, content
+            );
             let entry = memory::MemoryEntry {
                 id: memory::generate_memory_id(),
                 project_id,
                 expert_id: request.expert_id.clone(),
                 memory_type: "working".to_string(),
-                content: format!("[{}] {}\n\n{}", request.expert_name, request.task_description, content),
+                content: format!(
+                    "[{}] {}\n\n{}",
+                    request.expert_name, request.task_description, content
+                ),
                 keywords: memory::extract_keywords(&keyword_text),
                 context_summary: request.task_description.chars().take(100).collect(),
                 created_at: chrono::Utc::now().timestamp(),
@@ -2147,7 +2268,11 @@ async fn finalize_expert_task_internal(
                 .as_ref()
                 .filter(|value| !value.trim().is_empty())
                 .is_some()
-            && request.model.as_ref().filter(|value| !value.trim().is_empty()).is_some()
+            && request
+                .model
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .is_some()
         {
             let _ = repo_incremental_update(
                 project_name.to_string(),
@@ -2237,8 +2362,16 @@ async fn start_expert_session_internal(
         system_prompt: prompt_plan.prompt.clone(),
         project_name: request.project_name.clone(),
         project_path: request.project_path.clone(),
-        has_workspace_context: request.project_path.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false)
-            || request.project_name.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false),
+        has_workspace_context: request
+            .project_path
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            || request
+                .project_name
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
         messages,
         reply: envelope.content,
         usage: envelope.usage,
@@ -2294,7 +2427,8 @@ async fn start_expert_task_runtime(
         return serde_json::to_string(&envelope).map_err(|e| e.to_string());
     }
 
-    let started = start_expert_session_internal(request.session_request.clone(), &app_handle, &state).await?;
+    let started =
+        start_expert_session_internal(request.session_request.clone(), &app_handle, &state).await?;
     let postprocess_response = advance_expert_postprocess_internal(
         expert_postprocess_engine::ExpertPostprocessRequest {
             state: started.state,
@@ -2475,12 +2609,21 @@ fn apply_agent_delivery_changes(
     };
 
     if changes.is_empty() {
+        if result.parsed_action_count > 0 {
+            result.failed = 1;
+            result.errors.push(
+                "检测到文件动作声明，但没有解析出可执行的文件变更。请改用完整的 CREATE_FILE / WRITE_FILE 内容，或使用带精确 searchText / replaceText 的 EDIT_FILE。"
+                    .to_string(),
+            );
+        }
         return serde_json::to_string(&result).map_err(|e| e.to_string());
     }
 
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let workspace_path = project_dir.to_string_lossy().to_string();
-    let delivery_check = workflow_engine::analyze_agent_delivery(&sources, &user_task_text, Some(&workspace_path))?;
+    let delivery_check =
+        workflow_engine::analyze_agent_delivery(&sources, &user_task_text, Some(&workspace_path))?;
     if !delivery_check.has_executable_mutation {
         return serde_json::to_string(&result).map_err(|e| e.to_string());
     }
@@ -2502,12 +2645,7 @@ fn apply_agent_delivery_changes(
         return serde_json::to_string(&result).map_err(|e| e.to_string());
     }
 
-    let applied_raw = apply_approved_patch(
-        project_name,
-        proposed.id,
-        project_path,
-        app_handle,
-    )?;
+    let applied_raw = apply_approved_patch(project_name, proposed.id, project_path, app_handle)?;
     let applied: ChangeSession =
         serde_json::from_str(&applied_raw).map_err(|e| format!("解析已合入会话失败: {}", e))?;
 
@@ -2530,6 +2668,17 @@ fn apply_agent_delivery_changes(
         .count();
     result.failed = applied.errors.len();
     result.errors = applied.errors;
+    if result.parsed_action_count > 0
+        && result.applied == 0
+        && result.failed == 0
+        && result.folder_ops_applied == 0
+    {
+        result.failed = 1;
+        result.errors.push(
+            "检测到文件动作，但没有任何源码或目录变更真正落盘。请重新输出精确可执行的文件动作。"
+                .to_string(),
+        );
+    }
 
     serde_json::to_string(&result).map_err(|e| e.to_string())
 }
@@ -2933,23 +3082,23 @@ async fn call_llm(
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let implementation_session =
-        joined_prompt.contains("前端工程师")
-            || joined_prompt.contains("后端工程师")
-            || joined_prompt.contains("实现步骤")
-            || joined_prompt.contains("补交真实文件变更中")
-            || joined_prompt.contains("CREATE_FILE:index.html")
-            || joined_prompt.contains("CREATE_FILE:./index.html");
-    let large_deliverable_request =
-        implementation_session
-            && (
-                joined_prompt.contains("当前工作区几乎为空目录")
-                    || joined_prompt.contains("未交付任何可执行文件变更")
-                    || joined_prompt.contains("支持添加")
-                    || joined_prompt.contains("待办")
-                    || joined_prompt.contains("HTML")
-            );
-    let max_tokens = if large_deliverable_request { 5200 } else { 2200 };
+    let implementation_session = joined_prompt.contains("前端工程师")
+        || joined_prompt.contains("后端工程师")
+        || joined_prompt.contains("实现步骤")
+        || joined_prompt.contains("补交真实文件变更中")
+        || joined_prompt.contains("CREATE_FILE:index.html")
+        || joined_prompt.contains("CREATE_FILE:./index.html");
+    let large_deliverable_request = implementation_session
+        && (joined_prompt.contains("当前工作区几乎为空目录")
+            || joined_prompt.contains("未交付任何可执行文件变更")
+            || joined_prompt.contains("支持添加")
+            || joined_prompt.contains("待办")
+            || joined_prompt.contains("HTML"));
+    let max_tokens = if large_deliverable_request {
+        5200
+    } else {
+        2200
+    };
 
     let request_body = DeepSeekRequest {
         model: model.to_string(),
@@ -3019,7 +3168,8 @@ fn read_frontend_e2e_control(app_handle: tauri::AppHandle) -> Result<Option<Stri
     if !path.exists() {
         return Ok(None);
     }
-    let data = fs::read_to_string(&path).map_err(|e| format!("读取前端 E2E 控制文件失败: {}", e))?;
+    let data =
+        fs::read_to_string(&path).map_err(|e| format!("读取前端 E2E 控制文件失败: {}", e))?;
     Ok(Some(data))
 }
 
@@ -3613,7 +3763,8 @@ fn resolve_sandbox_project_dir(
                 }
             } else {
                 // 路径不存在时自动创建，确保工作目录可用
-                fs::create_dir_all(&path).map_err(|e| format!("工作目录不存在且创建失败: {}", e))?;
+                fs::create_dir_all(&path)
+                    .map_err(|e| format!("工作目录不存在且创建失败: {}", e))?;
                 match path.canonicalize() {
                     Ok(canon) => return Ok(canon),
                     Err(_) => return Ok(dunce::simplified(&path).to_path_buf()),
@@ -3703,7 +3854,8 @@ fn sandbox_create_folder(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -3725,7 +3877,8 @@ fn sandbox_create_file(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -3760,7 +3913,8 @@ fn sandbox_read_file(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -3781,7 +3935,8 @@ fn sandbox_read_file_base64(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -3805,7 +3960,8 @@ fn sandbox_edit_file(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -3840,7 +3996,8 @@ fn sandbox_write_file(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -4026,17 +4183,23 @@ fn replace_unique_trimmed_line_block(
 
     let mut matched_range: Option<(usize, usize)> = None;
     for start_idx in 0..=spans.len() - search_lines.len() {
-        let is_match = search_lines.iter().enumerate().all(|(offset, search_line)| {
-            let (line_start, line_end) = spans[start_idx + offset];
-            let line = normalized_content[line_start..line_end]
-                .trim_end_matches('\n')
-                .trim();
-            line == search_line.trim()
-        });
+        let is_match = search_lines
+            .iter()
+            .enumerate()
+            .all(|(offset, search_line)| {
+                let (line_start, line_end) = spans[start_idx + offset];
+                let line = normalized_content[line_start..line_end]
+                    .trim_end_matches('\n')
+                    .trim();
+                line == search_line.trim()
+            });
         if !is_match {
             continue;
         }
-        let candidate = (spans[start_idx].0, spans[start_idx + search_lines.len() - 1].1);
+        let candidate = (
+            spans[start_idx].0,
+            spans[start_idx + search_lines.len() - 1].1,
+        );
         if matched_range.is_some() {
             return None;
         }
@@ -4055,6 +4218,35 @@ fn apply_text_replacement(
     search_text: &str,
     replace_text: &str,
 ) -> Result<String, String> {
+    if search_text.is_empty() {
+        return Err("局部编辑缺少 searchText，拒绝生成不可定位补丁".to_string());
+    }
+    if let Some(merged) = try_apply_text_replacement_variants(content, search_text, replace_text) {
+        return Ok(merged);
+    }
+
+    let stripped_search = strip_leading_descriptive_comments(search_text);
+    let stripped_replace = strip_leading_descriptive_comments(replace_text);
+    if stripped_search != search_text || stripped_replace != replace_text {
+        if let Some(merged) =
+            try_apply_text_replacement_variants(content, &stripped_search, &stripped_replace)
+        {
+            return Ok(merged);
+        }
+        if let Some(merged) = replace_unique_css_rule(content, &stripped_search, &stripped_replace)
+        {
+            return Ok(merged);
+        }
+    }
+
+    Err("局部编辑未找到 searchText，拒绝静默失败或全量重写".to_string())
+}
+
+fn try_apply_text_replacement_variants(
+    content: &str,
+    search_text: &str,
+    replace_text: &str,
+) -> Option<String> {
     let replace_already_present = |haystack: &str, replacement: &str| -> bool {
         if replacement.is_empty() {
             return false;
@@ -4067,12 +4259,12 @@ fn apply_text_replacement(
     };
 
     if search_text.is_empty() {
-        return Err("局部编辑缺少 searchText，拒绝生成不可定位补丁".to_string());
+        return None;
     }
     if let Some(pos) = content.find(search_text) {
         let before = &content[..pos];
         let after = &content[pos + search_text.len()..];
-        return Ok(format!("{}{}{}", before, replace_text, after));
+        return Some(format!("{}{}{}", before, replace_text, after));
     }
 
     let normalized_content = content.replace("\r\n", "\n");
@@ -4082,47 +4274,108 @@ fn apply_text_replacement(
         let before = &normalized_content[..pos];
         let after = &normalized_content[pos + normalized_search.len()..];
         let merged = format!("{}{}{}", before, normalized_replace, after);
-        if content.contains("\r\n") {
-            Ok(merged.replace('\n', "\r\n"))
+        return Some(if content.contains("\r\n") {
+            merged.replace('\n', "\r\n")
         } else {
-            Ok(merged)
-        }
-    } else if replace_already_present(content, replace_text)
+            merged
+        });
+    }
+
+    if replace_already_present(content, replace_text)
         || replace_already_present(&normalized_content, &normalized_replace)
     {
-        Ok(content.to_string())
-    } else if !normalized_search.trim().is_empty() {
-        let trimmed_search = normalized_search.trim();
-        let mut matches = normalized_content.match_indices(trimmed_search);
-        let first = matches.next();
-        let second = matches.next();
-        if let (Some((pos, _)), None) = (first, second) {
-            let before = &normalized_content[..pos];
-            let after = &normalized_content[pos + trimmed_search.len()..];
-            let merged = format!("{}{}{}", before, normalized_replace, after);
-            if content.contains("\r\n") {
-                Ok(merged.replace('\n', "\r\n"))
-            } else {
-                Ok(merged)
-            }
-        } else if let Some(merged) =
-            replace_unique_trimmed_line_block(&normalized_content, &normalized_search, &normalized_replace)
-        {
-            if content.contains("\r\n") {
-                Ok(merged.replace('\n', "\r\n"))
-            } else {
-                Ok(merged)
-            }
-        } else if replace_already_present(content, replace_text)
-            || replace_already_present(&normalized_content, &normalized_replace)
-        {
-            Ok(content.to_string())
-        } else {
-            Err("局部编辑未找到 searchText，拒绝静默失败或全量重写".to_string())
-        }
-    } else {
-        Err("局部编辑未找到 searchText，拒绝静默失败或全量重写".to_string())
+        return Some(content.to_string());
     }
+
+    if normalized_search.trim().is_empty() {
+        return None;
+    }
+
+    let trimmed_search = normalized_search.trim();
+    let mut matches = normalized_content.match_indices(trimmed_search);
+    let first = matches.next();
+    let second = matches.next();
+    if let (Some((pos, _)), None) = (first, second) {
+        let before = &normalized_content[..pos];
+        let after = &normalized_content[pos + trimmed_search.len()..];
+        let merged = format!("{}{}{}", before, normalized_replace, after);
+        return Some(if content.contains("\r\n") {
+            merged.replace('\n', "\r\n")
+        } else {
+            merged
+        });
+    }
+
+    if let Some(merged) = replace_unique_trimmed_line_block(
+        &normalized_content,
+        &normalized_search,
+        &normalized_replace,
+    ) {
+        return Some(if content.contains("\r\n") {
+            merged.replace('\n', "\r\n")
+        } else {
+            merged
+        });
+    }
+
+    if replace_already_present(content, replace_text)
+        || replace_already_present(&normalized_content, &normalized_replace)
+    {
+        return Some(content.to_string());
+    }
+
+    None
+}
+
+fn strip_leading_descriptive_comments(text: &str) -> String {
+    let comment_prefix_re =
+        Regex::new(r"(?s)^\s*(?:(?:/\*.*?\*/|<!--.*?-->)[ \t\r\n]*)+").expect("comment prefix regex");
+    comment_prefix_re.replace(text, "").to_string()
+}
+
+fn replace_unique_css_rule(content: &str, search_text: &str, replace_text: &str) -> Option<String> {
+    let normalized_content = content.replace("\r\n", "\n");
+    let normalized_search = search_text.replace("\r\n", "\n");
+    let normalized_replace = replace_text.replace("\r\n", "\n");
+    let search_selector = extract_css_rule_selector(&normalized_search)?;
+    let replace_selector = extract_css_rule_selector(&normalized_replace)?;
+    if search_selector != replace_selector {
+        return None;
+    }
+
+    let rule_re = Regex::new(&format!(
+        r"(?ms)^[ \t]*{}\s*\{{[\s\S]*?^[ \t]*\}}",
+        regex::escape(&search_selector)
+    ))
+    .ok()?;
+    let mut matches = rule_re.find_iter(&normalized_content);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let mut merged = String::with_capacity(normalized_content.len() + normalized_replace.len());
+    merged.push_str(&normalized_content[..first.start()]);
+    merged.push_str(normalized_replace.trim());
+    merged.push_str(&normalized_content[first.end()..]);
+    Some(if content.contains("\r\n") {
+        merged.replace('\n', "\r\n")
+    } else {
+        merged
+    })
+}
+
+fn extract_css_rule_selector(snippet: &str) -> Option<String> {
+    let trimmed = snippet.trim();
+    let brace_index = trimmed.find('{')?;
+    if !trimmed.ends_with('}') {
+        return None;
+    }
+    let selector = trimmed[..brace_index].trim();
+    if selector.is_empty() || selector.contains('\n') {
+        return None;
+    }
+    Some(selector.to_string())
 }
 
 fn build_simple_diff(path: &str, before: Option<&str>, after: Option<&str>) -> String {
@@ -4158,7 +4411,11 @@ fn normalize_change_operation(op: &str) -> String {
     op.trim().to_ascii_lowercase().replace('-', "_")
 }
 
-fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange, String> {
+fn prepare_change_with_before_content(
+    project_dir: &Path,
+    change: ChangeSet,
+    before_content_override: Option<Option<String>>,
+) -> Result<StoredChange, String> {
     let relative = change.path.trim().to_string();
     if relative.is_empty() {
         return Err("变更缺少 path".to_string());
@@ -4177,10 +4434,18 @@ fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange,
         });
     }
 
-    let before_content = if target.exists() {
-        Some(fs::read_to_string(&target).map_err(|e| format!("读取 {} 失败: {}", relative, e))?)
-    } else {
-        None
+    let before_content = match before_content_override {
+        Some(content) => content,
+        None => {
+            if target.exists() {
+                Some(
+                    fs::read_to_string(&target)
+                        .map_err(|e| format!("读取 {} 失败: {}", relative, e))?,
+                )
+            } else {
+                None
+            }
+        }
     };
     let before_hash = before_content.as_ref().map(|c| content_hash(c));
     let allow_overwrite = change.allow_overwrite.unwrap_or(false);
@@ -4196,12 +4461,6 @@ fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange,
             Some(change.content.clone().unwrap_or_default())
         }
         "write_file" => {
-            if before_content.is_some() && !allow_overwrite {
-                return Err(format!(
-                    "{} 已存在，WRITE_FILE 全量覆盖已被禁止；请使用 EDIT_FILE 局部补丁或显式 allowOverwrite",
-                    relative
-                ));
-            }
             Some(change.content.clone().unwrap_or_default())
         }
         "edit_file" => {
@@ -4230,6 +4489,42 @@ fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange,
     })
 }
 
+fn prepare_change(project_dir: &Path, change: ChangeSet) -> Result<StoredChange, String> {
+    prepare_change_with_before_content(project_dir, change, None)
+}
+
+fn prepare_changes_sequentially(
+    project_dir: &Path,
+    changes: Vec<ChangeSet>,
+) -> (Vec<StoredChange>, Vec<String>) {
+    let mut stored_changes = Vec::new();
+    let mut errors = Vec::new();
+    let mut current_contents: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+
+    for change in changes {
+        let relative = change.path.trim().to_string();
+        let operation = normalize_change_operation(&change.operation);
+        let before_override = if operation == "create_folder" {
+            None
+        } else {
+            current_contents.get(&relative).cloned().map(Some).unwrap_or(None)
+        };
+
+        match prepare_change_with_before_content(project_dir, change.clone(), before_override) {
+            Ok(stored) => {
+                if operation != "create_folder" {
+                    current_contents.insert(relative, stored.after_content.clone());
+                }
+                stored_changes.push(stored);
+            }
+            Err(e) => errors.push(format!("{}: {}", change.path, e)),
+        }
+    }
+
+    (stored_changes, errors)
+}
+
 #[tauri::command]
 fn create_change_session(
     project_name: String,
@@ -4237,7 +4532,8 @@ fn create_change_session(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let session = ChangeSession {
         id: format!("change-{}", uuid::Uuid::new_v4()),
         project_name,
@@ -4269,22 +4565,15 @@ fn propose_patch(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let required_files = required_files.unwrap_or_default();
     let attempted_files: std::collections::HashSet<String> = changes
         .iter()
         .map(|change| change.path.trim().to_string())
         .filter(|path| !path.is_empty())
         .collect();
-    let mut stored_changes = Vec::new();
-    let mut errors = Vec::new();
-
-    for change in changes {
-        match prepare_change(&project_dir, change.clone()) {
-            Ok(stored) => stored_changes.push(stored),
-            Err(e) => errors.push(format!("{}: {}", change.path, e)),
-        }
-    }
+    let (stored_changes, mut errors) = prepare_changes_sequentially(&project_dir, changes);
 
     let changed_files: std::collections::HashSet<String> = stored_changes
         .iter()
@@ -4352,7 +4641,8 @@ fn apply_approved_patch(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let mut session = load_change_session(&project_dir, &session_id)?;
     if session.status == "blocked" {
         return Err(format!(
@@ -4364,22 +4654,39 @@ fn apply_approved_patch(
         return Ok(serde_json::to_string(&session).map_err(|e| e.to_string())?);
     }
 
+    let mut staged_contents: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
     for stored in &session.changes {
         let relative = stored.change.path.trim();
         let target = project_dir.join(relative);
         validate_sandbox_path(&project_dir, &target)?;
         let operation = normalize_change_operation(&stored.change.operation);
 
-        if let Some(expected_hash) = &stored.before_hash {
-            let current = fs::read_to_string(&target)
-                .map_err(|e| format!("合入前读取 {} 失败: {}", relative, e))?;
-            let current_hash = content_hash(&current);
-            if &current_hash != expected_hash {
-                return Err(format!("{} 已被修改，合入停止以避免覆盖用户变更", relative));
-            }
-        } else if target.exists() && operation != "delete" && operation != "create_folder" {
-            return Err(format!("{} 在提案后被创建，合入停止以避免覆盖", relative));
+        if operation == "create_folder" {
+            continue;
         }
+
+        let current = if let Some(existing) = staged_contents.get(relative) {
+            existing.clone()
+        } else if target.exists() {
+            Some(fs::read_to_string(&target).map_err(|e| format!("合入前读取 {} 失败: {}", relative, e))?)
+        } else {
+            None
+        };
+
+        if current != stored.before_content {
+            let conflict_message = match (&stored.before_content, &current) {
+                (Some(_), Some(_)) => format!("{} 已被修改，合入停止以避免覆盖用户变更", relative),
+                (None, Some(_)) if operation != "delete" => {
+                    format!("{} 在提案后被创建，合入停止以避免覆盖", relative)
+                }
+                (Some(_), None) => format!("{} 在提案后丢失，合入停止", relative),
+                _ => format!("{} 当前内容与提案基底不一致，合入停止", relative),
+            };
+            return Err(conflict_message);
+        }
+
+        staged_contents.insert(relative.to_string(), stored.after_content.clone());
     }
 
     for stored in &session.changes {
@@ -4424,7 +4731,8 @@ fn rollback_change_session(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let mut session = load_change_session(&project_dir, &session_id)?;
     if session.status != "applied" {
         return Err("只有已合入的变更会话可以回滚".to_string());
@@ -4473,6 +4781,10 @@ struct TreeEntry {
     #[serde(rename = "type")]
     entry_type: String,
     children: Option<Vec<TreeEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(rename = "modifiedAtMs", skip_serializing_if = "Option::is_none")]
+    modified_at_ms: Option<u64>,
 }
 
 /// 词元使用记录
@@ -4516,7 +4828,8 @@ fn sandbox_list_dir(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -4564,6 +4877,7 @@ fn sandbox_list_dir(
                 .replace("\\", "/");
 
             let is_dir = full_path.is_dir();
+            let metadata = entry.metadata().ok();
             let mut tree_entry = TreeEntry {
                 name,
                 path: relative,
@@ -4573,6 +4887,12 @@ fn sandbox_list_dir(
                     "file".to_string()
                 },
                 children: None,
+                size: metadata.as_ref().map(|value| value.len()),
+                modified_at_ms: metadata
+                    .as_ref()
+                    .and_then(|value| value.modified().ok())
+                    .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|value| value.as_millis() as u64),
             };
 
             *counter += 1;
@@ -4618,7 +4938,8 @@ fn sandbox_delete(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
     let target = project_dir.join(&relative_path);
 
     validate_sandbox_path(&project_dir, &target)?;
@@ -4638,7 +4959,8 @@ fn validate_workspace_connection(
     project_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let project_dir = resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
+    let project_dir =
+        resolve_sandbox_project_dir(&project_name, project_path.as_deref(), &app_handle)?;
 
     // 检查目录存在
     if !project_dir.exists() {
@@ -4653,10 +4975,13 @@ fn validate_workspace_connection(
     if let Some(parent) = test_file.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let test_content = format!("xt-connection-test-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let test_content = format!(
+        "xt-connection-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
     fs::write(&test_file, &test_content).map_err(|e| format!("工作目录不可写: {}", e))?;
     let read_back = fs::read_to_string(&test_file).map_err(|e| format!("工作目录不可读: {}", e))?;
     let _ = fs::remove_file(&test_file); // 清理测试文件
@@ -4671,7 +4996,8 @@ fn validate_workspace_connection(
         "exists": true,
         "readable": true,
         "writable": true,
-    }).to_string())
+    })
+    .to_string())
 }
 
 /// 保存可视化目录数据到 .xt/config.json
@@ -5116,11 +5442,13 @@ async fn db_load_project_data(
 /// 删除项目（级联删除会话和消息）
 #[tauri::command]
 async fn db_delete_project(id: i64, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    sqlx::query("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)")
-        .bind(id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM sessions WHERE project_id = ?")
         .bind(id)
@@ -5349,9 +5677,11 @@ async fn perceptual_index_project_logic_graph(
         return Err("项目不存在".to_string());
     }
 
-    let result = tokio::task::spawn_blocking(move || perceptual_index::build_project_logic_canvas(&project_dir))
-        .await
-        .map_err(|e| e.to_string())??;
+    let result = tokio::task::spawn_blocking(move || {
+        perceptual_index::build_project_logic_canvas(&project_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     Ok(serde_json::to_string(&result).map_err(|e| e.to_string())?)
 }
 
@@ -5913,8 +6243,13 @@ async fn web_search_query(query: String, max_results: Option<usize>) -> Result<S
 }
 
 #[tauri::command]
-async fn web_search_enhanced(query: String, max_results: Option<usize>, max_tokens: Option<usize>) -> Result<String, String> {
-    let results = web_search::web_search_enhanced(&query, max_results.unwrap_or(5), max_tokens).await?;
+async fn web_search_enhanced(
+    query: String,
+    max_results: Option<usize>,
+    max_tokens: Option<usize>,
+) -> Result<String, String> {
+    let results =
+        web_search::web_search_enhanced(&query, max_results.unwrap_or(5), max_tokens).await?;
     serde_json::to_string(&results).map_err(|e| e.to_string())
 }
 
@@ -5951,8 +6286,7 @@ async fn dispatch_tool(
     project_dir: String,
     expert_id: String,
 ) -> Result<String, String> {
-    let args: serde_json::Value =
-        serde_json::from_str(&args_json).map_err(|e| e.to_string())?;
+    let args: serde_json::Value = serde_json::from_str(&args_json).map_err(|e| e.to_string())?;
     let ctx = tool_system::ToolContext {
         working_dir: project_dir.clone(),
         project_dir: project_dir.clone(),
@@ -6272,7 +6606,10 @@ mod tests {
             operation: "edit_file".to_string(),
             path: "style.css".to_string(),
             search_text: Some("\n.hero {\ncolor: #111;\nbackground: white;\n}\n".to_string()),
-            replace_text: Some(".hero {\n  color: #0f172a;\n  background: linear-gradient(#fff, #dbeafe);\n}\n".to_string()),
+            replace_text: Some(
+                ".hero {\n  color: #0f172a;\n  background: linear-gradient(#fff, #dbeafe);\n}\n"
+                    .to_string(),
+            ),
             content: None,
             rationale: None,
             risk: None,
@@ -6288,11 +6625,11 @@ mod tests {
     }
 
     #[test]
-    fn write_file_does_not_overwrite_existing_file_by_default() {
-        let dir = temp_project_dir("overwrite_guard");
+    fn write_file_can_stage_existing_file_without_force_flag_when_base_matches() {
+        let dir = temp_project_dir("write_file_existing_ok");
         fs::write(dir.join("app.rs"), "fn main() {}\n").expect("write fixture");
 
-        let blocked = ChangeSet {
+        let change = ChangeSet {
             operation: "write_file".to_string(),
             path: "app.rs".to_string(),
             search_text: None,
@@ -6302,19 +6639,15 @@ mod tests {
             risk: None,
             allow_overwrite: None,
         };
-        assert!(prepare_change(&dir, blocked).is_err());
-
-        let allowed = ChangeSet {
-            operation: "write_file".to_string(),
-            path: "app.rs".to_string(),
-            search_text: None,
-            replace_text: None,
-            content: Some("fn main() { println!(\"new\"); }\n".to_string()),
-            rationale: None,
-            risk: None,
-            allow_overwrite: Some(true),
-        };
-        assert!(prepare_change(&dir, allowed).is_ok());
+        let prepared = prepare_change(&dir, change).expect("prepare write file");
+        assert_eq!(
+            prepared.before_content.as_deref(),
+            Some("fn main() {}\n")
+        );
+        assert_eq!(
+            prepared.after_content.as_deref(),
+            Some("fn main() { println!(\"new\"); }\n")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -6368,8 +6701,134 @@ mod tests {
     }
 
     #[test]
-    fn check_command_safety_flags_admin_command() {
-        let dir = temp_project_dir("admin_guard");
+    fn sequential_changes_on_same_file_compose_against_latest_buffer() {
+        let dir = temp_project_dir("sequential_changes");
+        let file = dir.join("index.html");
+        fs::write(
+            &file,
+            "<h1>待办事项</h1>\n<div class=\"instructions\">\n  <ul>\n    <li>长说明</li>\n  </ul>\n</div>\n",
+        )
+        .expect("write fixture");
+
+        let changes = vec![
+            ChangeSet {
+                operation: "edit_file".to_string(),
+                path: "index.html".to_string(),
+                search_text: Some("<h1>待办事项</h1>".to_string()),
+                replace_text: Some("<h1>小事清单</h1>".to_string()),
+                content: None,
+                rationale: None,
+                risk: None,
+                allow_overwrite: None,
+            },
+            ChangeSet {
+                operation: "edit_file".to_string(),
+                path: "index.html".to_string(),
+                search_text: Some(
+                    "<div class=\"instructions\">\n  <ul>\n    <li>长说明</li>\n  </ul>\n</div>\n"
+                        .to_string(),
+                ),
+                replace_text: Some(
+                    "<div class=\"instructions\">\n  <p>短说明</p>\n</div>\n".to_string(),
+                ),
+                content: None,
+                rationale: None,
+                risk: None,
+                allow_overwrite: None,
+            },
+        ];
+
+        let (prepared, errors) = prepare_changes_sequentially(&dir, changes);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(
+            prepared[1].before_content.as_deref(),
+            prepared[0].after_content.as_deref()
+        );
+        let final_content = prepared[1]
+            .after_content
+            .as_deref()
+            .expect("missing final content");
+        assert!(final_content.contains("<h1>小事清单</h1>"));
+        assert!(final_content.contains("<p>短说明</p>"));
+        assert!(!final_content.contains("<li>长说明</li>"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_change_strips_leading_annotation_comments_before_matching() {
+        let dir = temp_project_dir("edit_comment_prefix");
+        let file = dir.join("index.html");
+        fs::write(
+            &file,
+            "<div class=\"instructions\">\n    <p>输入内容按 Enter 添加，勾选标记完成，悬停删除，数据自动保存</p>\n</div>\n",
+        )
+        .expect("write fixture");
+
+        let change = ChangeSet {
+            operation: "edit_file".to_string(),
+            path: "index.html".to_string(),
+            search_text: Some(
+                "<!-- 搜索块：使用说明 p 标签的完整内容 -->\n    <p>输入内容按 Enter 添加，勾选标记完成，悬停删除，数据自动保存</p>"
+                    .to_string(),
+            ),
+            replace_text: Some(
+                "<!-- 搜索块：使用说明缩短后的简洁版本 -->\n    <p>输入添加，勾选完成，悬停删除，数据自动保存</p>"
+                    .to_string(),
+            ),
+            content: None,
+            rationale: None,
+            risk: None,
+            allow_overwrite: None,
+        };
+
+        let prepared = prepare_change(&dir, change).expect("prepare annotated html edit");
+        assert_eq!(
+            prepared.after_content.as_deref(),
+            Some("<div class=\"instructions\">\n    <p>输入添加，勾选完成，悬停删除，数据自动保存</p>\n</div>\n")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_change_can_replace_unique_css_rule_by_selector_when_block_drifted() {
+        let dir = temp_project_dir("edit_css_selector");
+        let file = dir.join("styles.css");
+        fs::write(
+            &file,
+            "h1 {\n    font-size: 1.8rem;\n    margin-bottom: 1.2rem;\n    color: #8a8a8a;\n    font-weight: 400;\n    text-shadow: none;\n    text-align: center;\n}\n",
+        )
+        .expect("write fixture");
+
+        let change = ChangeSet {
+            operation: "edit_file".to_string(),
+            path: "styles.css".to_string(),
+            search_text: Some(
+                "/* 搜索块：h1 当前样式 */\nh1 {\n    font-size: 1.5rem;\n    color: #333;\n    margin-bottom: 1rem;\n    font-weight: bold;\n}"
+                    .to_string(),
+            ),
+            replace_text: Some(
+                "/* 搜索块：h1 调整后样式 —— 字重调低、颜色变浅 */\nh1 {\n    font-size: 1.5rem;\n    color: #555;\n    margin-bottom: 1rem;\n    font-weight: 500;\n}"
+                    .to_string(),
+            ),
+            content: None,
+            rationale: None,
+            risk: None,
+            allow_overwrite: None,
+        };
+
+        let prepared = prepare_change(&dir, change).expect("prepare selector based css edit");
+        let after = prepared.after_content.as_deref().expect("missing after content");
+        assert!(after.contains("color: #555;"));
+        assert!(after.contains("font-weight: 500;"));
+        assert!(!after.contains("font-weight: 400;"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_command_safety_allows_in_workspace_command() {
+        let dir = temp_project_dir("workspace_command_guard");
         let dir_str = dir.to_string_lossy().to_string();
         let raw = tauri::async_runtime::block_on(check_command_safety(
             "net user".to_string(),
@@ -6379,13 +6838,27 @@ mod tests {
         ))
         .expect("check command safety");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse safety json");
+        assert_eq!(parsed["requires_auth"].as_bool(), Some(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_command_safety_flags_outside_workspace_target() {
+        let dir = temp_project_dir("outside_workspace_guard");
+        let dir_str = dir.to_string_lossy().to_string();
+        let raw = tauri::async_runtime::block_on(check_command_safety(
+            "type C:\\Windows\\System32\\drivers\\etc\\hosts".to_string(),
+            vec![],
+            dir_str.clone(),
+            dir_str.clone(),
+        ))
+        .expect("check command safety");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse safety json");
         assert_eq!(parsed["requires_auth"].as_bool(), Some(true));
-        assert!(
-            parsed["auth_reason"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("管理员权限")
-        );
+        assert!(parsed["auth_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("工作区之外"));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -6408,16 +6881,17 @@ mod tests {
     #[test]
     #[ignore = "live interface test"]
     fn live_web_search_interface_returns_results() {
-        let raw = tauri::async_runtime::block_on(web_search_query(
-            "OpenAI API".to_string(),
-            Some(3),
-        ))
-        .expect("web search query");
+        let raw =
+            tauri::async_runtime::block_on(web_search_query("OpenAI API".to_string(), Some(3)))
+                .expect("web search query");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse search json");
         let results = parsed.as_array().expect("search results array");
         assert!(!results.is_empty(), "expected at least one search result");
         let first_url = results[0]["url"].as_str().unwrap_or_default();
-        assert!(!first_url.is_empty(), "expected first result to contain url");
+        assert!(
+            !first_url.is_empty(),
+            "expected first result to contain url"
+        );
     }
 }
 
@@ -6428,7 +6902,11 @@ async fn load_config(project_dir: Option<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn save_config(config_json: String, scope: String, project_dir: Option<String>) -> Result<String, String> {
+async fn save_config(
+    config_json: String,
+    scope: String,
+    project_dir: Option<String>,
+) -> Result<String, String> {
     let cfg: config::AppConfig = serde_json::from_str(&config_json).map_err(|e| e.to_string())?;
     let path = match scope.as_str() {
         "global" => config::ConfigLoader::global_config_path(),
@@ -6465,29 +6943,31 @@ async fn llm_call_streaming(
     stream_id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let request: llm_provider::LLMRequest = serde_json::from_str(&request_json)
-        .map_err(|e| format!("请求JSON解析失败: {}", e))?;
+    let request: llm_provider::LLMRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("请求JSON解析失败: {}", e))?;
 
     let registry = llm_provider::ProviderRegistry::new();
-    let provider = registry.get_provider(&request.provider_id)
+    let provider = registry
+        .get_provider(&request.provider_id)
         .ok_or_else(|| format!("Provider不存在: {}", request.provider_id))?;
 
     let client = llm_stream::StreamingLLMClient::new(None);
-    let response = client.call_streaming(&app_handle, provider, &request, &stream_id).await?;
+    let response = client
+        .call_streaming(&app_handle, provider, &request, &stream_id)
+        .await?;
 
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
 
 /// 非流式调用LLM（兼容短回复场景）
 #[tauri::command]
-async fn llm_call_blocking(
-    request_json: String,
-) -> Result<String, String> {
-    let request: llm_provider::LLMRequest = serde_json::from_str(&request_json)
-        .map_err(|e| format!("请求JSON解析失败: {}", e))?;
+async fn llm_call_blocking(request_json: String) -> Result<String, String> {
+    let request: llm_provider::LLMRequest =
+        serde_json::from_str(&request_json).map_err(|e| format!("请求JSON解析失败: {}", e))?;
 
     let registry = llm_provider::ProviderRegistry::new();
-    let provider = registry.get_provider(&request.provider_id)
+    let provider = registry
+        .get_provider(&request.provider_id)
         .ok_or_else(|| format!("Provider不存在: {}", request.provider_id))?;
 
     let client = llm_stream::StreamingLLMClient::new(None);
@@ -6513,8 +6993,8 @@ async fn apply_file_patch(patch_text: String, project_dir: String) -> Result<Str
 
 #[tauri::command]
 async fn verify_file_patch(patch_text: String, project_dir: String) -> Result<String, String> {
-    let patch = file_patch::parse_patch(&patch_text)
-        .map_err(|e| format!("Patch解析失败: {}", e))?;
+    let patch =
+        file_patch::parse_patch(&patch_text).map_err(|e| format!("Patch解析失败: {}", e))?;
     match file_patch::verify_patch(&patch, &project_dir) {
         Ok(()) => Ok(r#"{"valid": true, "errors": []}"#.into()),
         Err(errors) => {

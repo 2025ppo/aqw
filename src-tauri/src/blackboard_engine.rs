@@ -82,7 +82,12 @@ pub struct BlackboardProgressDecision {
     pub blocker_message: Option<String>,
 }
 
-pub fn new_blackboard(goal: &str, workspace_files: Vec<String>, workspace_roots: Vec<String>, now_ms: u64) -> BlackboardTask {
+pub fn new_blackboard(
+    goal: &str,
+    workspace_files: Vec<String>,
+    workspace_roots: Vec<String>,
+    now_ms: u64,
+) -> BlackboardTask {
     BlackboardTask {
         id: format!("blackboard-{}-seed", now_ms),
         goal: goal.to_string(),
@@ -101,7 +106,12 @@ pub fn new_blackboard(goal: &str, workspace_files: Vec<String>, workspace_roots:
                 source: "当前工作区".to_string(),
                 summary: format!(
                     "根目录条目：{}",
-                    workspace_roots.iter().take(24).cloned().collect::<Vec<_>>().join(", ")
+                    workspace_roots
+                        .iter()
+                        .take(24)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 created_at: now_ms,
             }]
@@ -117,15 +127,26 @@ pub fn new_blackboard(goal: &str, workspace_files: Vec<String>, workspace_roots:
     }
 }
 
-pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &ExpertTaskSummary, now_ms: u64) {
-    let output = task.output.clone().or_else(|| task.error.clone()).unwrap_or_default();
+pub fn update_blackboard_from_task(
+    blackboard: &mut BlackboardTask,
+    task: &ExpertTaskSummary,
+    now_ms: u64,
+) {
+    let output = task
+        .output
+        .clone()
+        .or_else(|| task.error.clone())
+        .unwrap_or_default();
     if output.trim().is_empty() {
         return;
     }
 
     let changed_files = extract_change_files(&output)
         .into_iter()
-        .map(|file| resolve_workspace_file_path(&file, &blackboard.workspace_files).unwrap_or_else(|| normalize_workspace_path_token(&file)))
+        .map(|file| {
+            resolve_workspace_file_path(&file, &blackboard.workspace_files)
+                .unwrap_or_else(|| normalize_workspace_path_token(&file))
+        })
         .filter(|file| !file.is_empty())
         .collect::<Vec<_>>();
     let changed_file_set = changed_files.iter().cloned().collect::<HashSet<_>>();
@@ -135,7 +156,11 @@ pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &Exper
         .map(|file| {
             resolve_workspace_file_path(&file, &blackboard.workspace_files).unwrap_or_else(|| {
                 let normalized = normalize_workspace_path_token(&file);
-                if changed_file_set.contains(&normalized) { normalized } else { String::new() }
+                if changed_file_set.contains(&normalized) {
+                    normalized
+                } else {
+                    String::new()
+                }
             })
         })
         .filter(|file| !file.is_empty())
@@ -179,7 +204,9 @@ pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &Exper
 
     if task.expert_title.contains("测试") {
         let summary: String = strip_think_tags(&output).chars().take(220).collect();
-        let command_regex = Regex::new(r"(?:npm|pnpm|yarn|cargo|python|pytest|go test|mvn|gradle|dotnet)\s+[^\n]+").expect("command regex");
+        let command_regex =
+            Regex::new(r"(?:npm|pnpm|yarn|cargo|python|pytest|go test|mvn|gradle|dotnet)\s+[^\n]+")
+                .expect("command regex");
         let commands = command_regex
             .find_iter(&output)
             .map(|m| m.as_str().trim().to_string())
@@ -188,14 +215,18 @@ pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &Exper
         if commands.is_empty() {
             blackboard.validation_runs.push(ValidationRun {
                 command: "未提取到命令".to_string(),
-                passed: !Regex::new(r"(失败|error|未通过|阻断)").expect("failure regex").is_match(&summary),
+                passed: !Regex::new(r"(失败|error|未通过|阻断)")
+                    .expect("failure regex")
+                    .is_match(&summary),
                 summary: summary.clone(),
             });
         } else {
             for command in commands {
                 blackboard.validation_runs.push(ValidationRun {
                     command,
-                    passed: !Regex::new(r"(失败|error|未通过|阻断)").expect("failure regex").is_match(&summary),
+                    passed: !Regex::new(r"(失败|error|未通过|阻断)")
+                        .expect("failure regex")
+                        .is_match(&summary),
                     summary: summary.clone(),
                 });
             }
@@ -204,16 +235,23 @@ pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &Exper
             .expect("block regex")
             .is_match(&summary)
         {
-            blackboard
-                .blockers
-                .push(format!("{}: 测试阶段发现阻断问题 - {}", task.expert_name, summary));
+            blackboard.blockers.push(format!(
+                "{}: 测试阶段发现阻断问题 - {}",
+                task.expert_name, summary
+            ));
         }
     }
 
     if task.expert_title.contains("审查") || task.expert_title.contains("审核") {
-        let decision = if Regex::new(r"(不通过|阻断|block)").expect("block review regex").is_match(&output) {
+        let decision = if Regex::new(r"(不通过|阻断|block)")
+            .expect("block review regex")
+            .is_match(&output)
+        {
             "block"
-        } else if Regex::new(r"(修改|返工|revise)").expect("revise review regex").is_match(&output) {
+        } else if Regex::new(r"(修改|返工|revise)")
+            .expect("revise review regex")
+            .is_match(&output)
+        {
             "revise"
         } else {
             "pass"
@@ -225,12 +263,17 @@ pub fn update_blackboard_from_task(blackboard: &mut BlackboardTask, task: &Exper
             reason: reason.clone(),
         });
         if decision != "pass" {
-            blackboard.blockers.push(format!("{}: {}", task.expert_name, reason));
+            blackboard
+                .blockers
+                .push(format!("{}: {}", task.expert_name, reason));
         }
     }
 }
 
-pub fn advance_blackboard_progress(blackboard: &BlackboardTask, scene: &str) -> BlackboardProgressDecision {
+pub fn advance_blackboard_progress(
+    blackboard: &BlackboardTask,
+    scene: &str,
+) -> BlackboardProgressDecision {
     let mut next = blackboard.clone();
     if scene != "code-development" {
         return BlackboardProgressDecision {
@@ -260,7 +303,10 @@ pub fn advance_blackboard_progress(blackboard: &BlackboardTask, scene: &str) -> 
     next.progress_signature = Some(signature);
 
     let blocker_message = if next.rounds_without_progress >= 3 {
-        Some("连续三轮没有新增证据、文件清单、文件变更动作或审查进展，已停止当前策略以避免空转。".to_string())
+        Some(
+            "连续三轮没有新增证据、文件清单、文件变更动作或审查进展，已停止当前策略以避免空转。"
+                .to_string(),
+        )
     } else {
         None
     };
@@ -286,12 +332,25 @@ pub fn render_blackboard_context(blackboard: &BlackboardTask) -> String {
     let workspace_roots = if blackboard.workspace_roots.is_empty() {
         "- 当前未拿到工作区目录快照".to_string()
     } else {
-        blackboard.workspace_roots.iter().take(16).map(|file| format!("- {}", file)).collect::<Vec<_>>().join("\n")
+        blackboard
+            .workspace_roots
+            .iter()
+            .take(16)
+            .map(|file| format!("- {}", file))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let required = if blackboard.required_files.files.is_empty() {
         "- 尚未锁定，当前专家必须先根据证据提出候选文件或说明无法锁定".to_string()
     } else {
-        blackboard.required_files.files.iter().take(24).map(|file| format!("- {}", file)).collect::<Vec<_>>().join("\n")
+        blackboard
+            .required_files
+            .files
+            .iter()
+            .take(24)
+            .map(|file| format!("- {}", file))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let evidence = if blackboard.evidence.is_empty() {
         "- 暂无，当前专家需要补充可验证证据".to_string()
@@ -301,7 +360,13 @@ pub fn render_blackboard_context(blackboard: &BlackboardTask) -> String {
             .iter()
             .rev()
             .take(4)
-            .map(|item| format!("- {}: {}", item.source, summarize_context_text(&item.summary, 220)))
+            .map(|item| {
+                format!(
+                    "- {}: {}",
+                    item.source,
+                    summarize_context_text(&item.summary, 220)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -313,7 +378,14 @@ pub fn render_blackboard_context(blackboard: &BlackboardTask) -> String {
             .iter()
             .rev()
             .take(4)
-            .map(|proposal| format!("- {}: {} ({})", proposal.id, summarize_file_list(&proposal.files, 8), proposal.risk))
+            .map(|proposal| {
+                format!(
+                    "- {}: {} ({})",
+                    proposal.id,
+                    summarize_file_list(&proposal.files, 8),
+                    proposal.risk
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -366,7 +438,10 @@ pub fn render_blackboard_context(blackboard: &BlackboardTask) -> String {
 }
 
 fn strip_think_tags(text: &str) -> String {
-    Regex::new(r"(?s)<think>.*?</think>").expect("think regex").replace_all(text, "").to_string()
+    Regex::new(r"(?s)<think>.*?</think>")
+        .expect("think regex")
+        .replace_all(text, "")
+        .to_string()
 }
 
 fn normalize_workspace_path_token(raw_path: &str) -> String {
@@ -382,7 +457,10 @@ fn normalize_workspace_path_token(raw_path: &str) -> String {
 fn simplify_file_token(path: &str) -> String {
     let normalized = normalize_workspace_path_token(path).to_lowercase();
     let file = normalized.split('/').last().unwrap_or(&normalized);
-    Regex::new(r"[^a-z0-9.]+").expect("simplify regex").replace_all(file, "").to_string()
+    Regex::new(r"[^a-z0-9.]+")
+        .expect("simplify regex")
+        .replace_all(file, "")
+        .to_string()
 }
 
 fn resolve_workspace_file_path(raw_path: &str, workspace_files: &[String]) -> Option<String> {
@@ -391,7 +469,10 @@ fn resolve_workspace_file_path(raw_path: &str, workspace_files: &[String]) -> Op
         return None;
     }
     let lowered = normalized.to_lowercase();
-    if let Some(exact) = workspace_files.iter().find(|file| file.to_lowercase() == lowered) {
+    if let Some(exact) = workspace_files
+        .iter()
+        .find(|file| file.to_lowercase() == lowered)
+    {
         return Some(exact.clone());
     }
     let basename = lowered.split('/').last().unwrap_or(&lowered).to_string();
@@ -432,14 +513,18 @@ fn extract_file_mentions(text: &str) -> Vec<String> {
 
 fn extract_change_files(text: &str) -> Vec<String> {
     let mut files = HashSet::new();
-    let action_regex = Regex::new(r"\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE):([^\]]+)\]").expect("change action regex");
+    let action_regex =
+        Regex::new(r"\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE):([^\]]+)\]")
+            .expect("change action regex");
     for caps in action_regex.captures_iter(text) {
         if let Some(path) = caps.get(1) {
             files.insert(path.as_str().trim().replace('\\', "/"));
         }
     }
-    let param_action_regex =
-        Regex::new(r#"\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE)\s+[^\]]*?path="([^"]+)""#).expect("change param regex");
+    let param_action_regex = Regex::new(
+        r#"\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|DELETE)\s+[^\]]*?path="([^"]+)""#,
+    )
+    .expect("change param regex");
     for caps in param_action_regex.captures_iter(text) {
         if let Some(path) = caps.get(1) {
             files.insert(path.as_str().trim().replace('\\', "/"));
@@ -455,28 +540,40 @@ fn extract_change_files(text: &str) -> Vec<String> {
 }
 
 fn summarize_context_text(text: &str, max_chars: usize) -> String {
-    let normalized = Regex::new(r"\s+").expect("whitespace regex").replace_all(text, " ").trim().to_string();
+    let normalized = Regex::new(r"\s+")
+        .expect("whitespace regex")
+        .replace_all(text, " ")
+        .trim()
+        .to_string();
     let char_count = normalized.chars().count();
     if char_count <= max_chars {
         return normalized;
     }
     let keep = max_chars.saturating_sub(24);
     let truncated: String = normalized.chars().take(keep).collect();
-    format!("{}...[已截断 {} 字符]", truncated, char_count.saturating_sub(keep))
+    format!(
+        "{}...[已截断 {} 字符]",
+        truncated,
+        char_count.saturating_sub(keep)
+    )
 }
 
 fn summarize_file_list(files: &[String], max_items: usize) -> String {
     if files.len() <= max_items {
         return files.join(", ");
     }
-    format!("{} 等 {} 个文件", files[..max_items].join(", "), files.len())
+    format!(
+        "{} 等 {} 个文件",
+        files[..max_items].join(", "),
+        files.len()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        advance_blackboard_progress, new_blackboard, render_blackboard_context, update_blackboard_from_task,
-        ExpertTaskSummary,
+        advance_blackboard_progress, new_blackboard, render_blackboard_context,
+        update_blackboard_from_task, ExpertTaskSummary,
     };
 
     #[test]
@@ -506,7 +603,10 @@ mod tests {
                 id: "task-1".to_string(),
                 expert_name: "江予墨".to_string(),
                 expert_title: "前端工程师".to_string(),
-                output: Some(r#"[ACTION:EDIT_FILE path="src/app.js" searchText="a" replaceText="b"]"#.to_string()),
+                output: Some(
+                    r#"[ACTION:EDIT_FILE path="src/app.js" searchText="a" replaceText="b"]"#
+                        .to_string(),
+                ),
                 error: None,
             },
             2,
@@ -542,7 +642,12 @@ mod tests {
 
     #[test]
     fn stops_after_three_rounds_without_progress() {
-        let blackboard = new_blackboard("补一个功能", vec!["src/app.js".to_string()], vec!["src".to_string()], 1);
+        let blackboard = new_blackboard(
+            "补一个功能",
+            vec!["src/app.js".to_string()],
+            vec!["src".to_string()],
+            1,
+        );
         let round1 = advance_blackboard_progress(&blackboard, "code-development");
         let round2 = advance_blackboard_progress(&round1.blackboard, "code-development");
         let round3 = advance_blackboard_progress(&round2.blackboard, "code-development");

@@ -40,11 +40,19 @@ pub struct PipelineProgressSnapshot {
     pub active_task_count: usize,
 }
 
-pub fn build_progress_snapshot(request: &PipelineProgressSnapshotRequest) -> PipelineProgressSnapshot {
+pub fn build_progress_snapshot(
+    request: &PipelineProgressSnapshotRequest,
+) -> PipelineProgressSnapshot {
     PipelineProgressSnapshot {
         progress_report: build_progress_report(&request.active_tasks),
-        current_step_summary: build_expert_summary(&request.active_step_expert_ids, &request.expert_labels),
-        remaining_expert_summary: build_expert_summary(&request.planned_expert_ids, &request.expert_labels),
+        current_step_summary: build_expert_summary(
+            &request.active_step_expert_ids,
+            &request.expert_labels,
+        ),
+        remaining_expert_summary: build_expert_summary(
+            &request.planned_expert_ids,
+            &request.expert_labels,
+        ),
         active_task_summary: build_active_task_summary(&request.active_tasks),
         active_task_count: request
             .active_tasks
@@ -74,7 +82,10 @@ fn build_progress_report(tasks: &[PipelineProgressTask]) -> String {
                 "error" => "失败",
                 _ => "等待中",
             };
-            format!("{icon} {}（{}）：{status}", task.expert_name, task.expert_title)
+            format!(
+                "{icon} {}（{}）：{status}",
+                task.expert_name, task.expert_title
+            )
         })
         .collect::<Vec<_>>();
 
@@ -111,7 +122,10 @@ fn build_active_task_summary(tasks: &[PipelineProgressTask]) -> String {
             let status = match task.status.as_str() {
                 "done" => "已完成".to_string(),
                 "running" => "执行中".to_string(),
-                "error" => format!("失败：{}", task.error.clone().unwrap_or_else(|| "未知错误".to_string())),
+                "error" => format!(
+                    "失败：{}",
+                    task.error.clone().unwrap_or_else(|| "未知错误".to_string())
+                ),
                 _ => "等待中".to_string(),
             };
             let detail = task
@@ -138,7 +152,8 @@ fn build_active_task_summary(tasks: &[PipelineProgressTask]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_progress_snapshot, PipelineProgressExpertLabel, PipelineProgressSnapshotRequest, PipelineProgressTask,
+        build_progress_snapshot, PipelineProgressExpertLabel, PipelineProgressSnapshotRequest,
+        PipelineProgressTask,
     };
 
     #[test]
@@ -183,9 +198,15 @@ mod tests {
         });
 
         assert_eq!(snapshot.active_task_count, 1);
-        assert!(snapshot.progress_report.contains("江予墨（前端工程师）：执行中"));
-        assert!(snapshot.current_step_summary.contains("jiang-yumo: 江予墨（前端工程师）"));
-        assert!(snapshot.remaining_expert_summary.contains("jiang-ruoxi: 江若溪（调研员）"));
+        assert!(snapshot
+            .progress_report
+            .contains("江予墨（前端工程师）：执行中"));
+        assert!(snapshot
+            .current_step_summary
+            .contains("jiang-yumo: 江予墨（前端工程师）"));
+        assert!(snapshot
+            .remaining_expert_summary
+            .contains("jiang-ruoxi: 江若溪（调研员）"));
         assert!(snapshot.active_task_summary.contains("正在读取 app.js"));
     }
 }

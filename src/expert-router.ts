@@ -680,7 +680,8 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；大文件请改用 [ACTION:READ_FILE path="相对路径" start_line="起始行" end_line="结束行"] 分段读取。如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 如果你缺少某个文件的真实内容，必须直接输出 [ACTION:READ_FILE:相对路径] 或带 start_line/end_line 的 READ_FILE；禁止只写“我需要先读取文件”“我先看下 app.js”这类口头说明代替动作。
 - 已知目标文件是源码文件（如 app.js / index.html / styles.css）时，读取代码内容只能使用 [ACTION:READ_FILE:相对路径]，不要用 [ACTION:EXECUTE_CMD] + grep/rg/Select-String/Get-Content 代替源码读取。
-- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 修改已有文件时，不要机械地一律使用 [ACTION:EDIT_FILE ...]。对短小、展示型、文本型文件（如 index.html / styles.css / README.md / 纯静态配置）优先使用 [ACTION:WRITE_FILE ...] 直接给出完整最新文件内容；只有在文件较大、确实需要局部改动且 searchText 来自刚读取的真实原文时，才使用 [ACTION:EDIT_FILE ...]。
+- 同一个文件如果需要改多个位置，优先合并成一次完整、可命中的 EDIT_FILE；不要连续输出多条依赖旧内容的同文件 EDIT_FILE，避免前一条改完后后一条 searchText 失效。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 如果当前工作区接近空目录，优先拆成多个较短文件动作（例如 index.html、styles.css、app.js、README.md），不要把整套页面硬塞进一个超长 content 字符串。
 - 创建新文件时，优先使用代码块格式：
@@ -716,7 +717,8 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；大文件请改用 [ACTION:READ_FILE path="相对路径" start_line="起始行" end_line="结束行"] 分段读取。如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 如果你缺少某个文件的真实内容，必须直接输出 [ACTION:READ_FILE:相对路径] 或带 start_line/end_line 的 READ_FILE；禁止只写“我需要先读取文件”“我先看下 app.js”这类口头说明代替动作。
 - 已知目标文件是源码文件（如 app.js / index.html / styles.css）时，读取代码内容只能使用 [ACTION:READ_FILE:相对路径]，不要用 [ACTION:EXECUTE_CMD] + grep/rg/Select-String/Get-Content 代替源码读取。
-- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 修改已有文件时，不要机械地一律使用 [ACTION:EDIT_FILE ...]。对短小、展示型、文本型文件（如 index.html / styles.css / README.md / 纯静态配置）优先使用 [ACTION:WRITE_FILE ...] 直接给出完整最新文件内容；只有在文件较大、确实需要局部改动且 searchText 来自刚读取的真实原文时，才使用 [ACTION:EDIT_FILE ...]。
+- 同一个文件如果需要改多个位置，优先合并成一次完整、可命中的 EDIT_FILE；不要连续输出多条依赖旧内容的同文件 EDIT_FILE，避免前一条改完后后一条 searchText 失效。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 如果当前工作区接近空目录，优先拆成多个较短文件动作（例如 index.html、styles.css、app.js、README.md），不要把整套页面硬塞进一个超长 content 字符串。
 - 创建新文件时，优先使用代码块格式：
@@ -752,7 +754,7 @@ const ROUTER_EXPERTS: RouterExpert[] = [
 - 增量修改已有文件前，必须先通过 [ACTION:READ_FILE:相对路径] 读取目标文件当前内容；大文件请改用 [ACTION:READ_FILE path="相对路径" start_line="起始行" end_line="结束行"] 分段读取。如果没读到真实文件内容，不得臆造页面文案、searchText 或 replaceText。
 - 如果你缺少某个文件的真实内容，必须直接输出 [ACTION:READ_FILE:相对路径] 或带 start_line/end_line 的 READ_FILE；禁止只写“我需要先读取文件”“我先看下 app.js”这类口头说明代替动作。
 - 已知目标文件是源码文件（如 app.js / index.html / styles.css）时，读取代码内容只能使用 [ACTION:READ_FILE:相对路径]，不要用 [ACTION:EXECUTE_CMD] + grep/rg/Select-String/Get-Content 代替源码读取。
-- 修改已有文件优先使用 [ACTION:EDIT_FILE ...]，并提供 search/replace 两段代码块。
+- 修改已有文件时，不要机械地一律使用 [ACTION:EDIT_FILE ...]。对短小、展示型、文本型文件（如 index.html / styles.css / README.md / 纯静态配置）优先使用 [ACTION:WRITE_FILE ...] 直接给出完整最新文件内容；只有在文件较大、确实需要局部改动且 searchText 来自刚读取的真实原文时，才使用 [ACTION:EDIT_FILE ...]。
 - 新增文件使用 [ACTION:CREATE_FILE ...]，全量改写使用 [ACTION:WRITE_FILE ...]，新目录使用 [ACTION:CREATE_FOLDER ...]，删除使用 [ACTION:DELETE ...]。
 - 可选输出结构化 JSON changes 作为补充，但要保证 path/searchText/replaceText 精确可执行。
 

@@ -1,12 +1,14 @@
 use crate::blackboard_engine::{update_blackboard_from_task, BlackboardTask, ExpertTaskSummary};
 use crate::collaboration_engine::{
-    apply_task_completion_state, plan_current_step_tasks, plan_step_followup_round, CompletedExpertResult,
-    FollowupRoundPlanRequest, FollowupRoundPlanResponse, PipelineFollowup, StepTaskPlanRequest,
-    TaskCompletionStateRequest, TaskCompletionSummary,
+    apply_task_completion_state, plan_current_step_tasks, plan_step_followup_round,
+    CompletedExpertResult, FollowupRoundPlanRequest, FollowupRoundPlanResponse, PipelineFollowup,
+    StepTaskPlanRequest, TaskCompletionStateRequest, TaskCompletionSummary,
 };
 use crate::pipeline_engine::{PipelineLayout, PipelinePlanInput, PipelineStepLayout};
+use crate::pipeline_runtime_engine::{
+    init_runtime, PipelineRuntimeInitRequest, PipelineRuntimeState,
+};
 use crate::pipeline_step_engine::PipelineTaskSnapshot;
-use crate::pipeline_runtime_engine::{init_runtime, PipelineRuntimeInitRequest, PipelineRuntimeState};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -144,7 +146,9 @@ pub fn bootstrap_pipeline_session(
     }
 }
 
-pub fn get_current_execution_round_plan(state: &PipelineSessionState) -> PipelineExecutionRoundPlan {
+pub fn get_current_execution_round_plan(
+    state: &PipelineSessionState,
+) -> PipelineExecutionRoundPlan {
     if state.runtime_state.finished || state.runtime_state.current_step_index >= state.steps.len() {
         return PipelineExecutionRoundPlan {
             finished: true,
@@ -245,7 +249,9 @@ pub fn apply_pipeline_task_outcome(request: &PipelineTaskOutcomeRequest) -> Pipe
     state
 }
 
-pub fn apply_pipeline_task_outcomes(request: &PipelineTaskOutcomeBatchRequest) -> PipelineSessionState {
+pub fn apply_pipeline_task_outcomes(
+    request: &PipelineTaskOutcomeBatchRequest,
+) -> PipelineSessionState {
     let mut state = request.state.clone();
     for task in &request.tasks {
         state = apply_pipeline_task_outcome(&PipelineTaskOutcomeRequest {
@@ -280,10 +286,12 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_pipeline_round_outcomes, apply_pipeline_task_outcome, apply_pipeline_task_outcomes, bootstrap_pipeline_session,
-        get_current_execution_round_plan, get_current_followup_execution_round_plan, get_current_followup_plan,
+        apply_pipeline_round_outcomes, apply_pipeline_task_outcome, apply_pipeline_task_outcomes,
+        bootstrap_pipeline_session, get_current_execution_round_plan,
+        get_current_followup_execution_round_plan, get_current_followup_plan,
         init_pipeline_session, PipelineRoundOutcomeBatch, PipelineSessionBootstrapRequest,
-        PipelineSessionInitRequest, PipelineTaskOutcome, PipelineTaskOutcomeBatchRequest, PipelineTaskOutcomeRequest,
+        PipelineSessionInitRequest, PipelineTaskOutcome, PipelineTaskOutcomeBatchRequest,
+        PipelineTaskOutcomeRequest,
     };
     use crate::blackboard_engine::{BlackboardTask, RequiredFileSet};
     use crate::collaboration_engine::PipelineFollowup;
@@ -369,7 +377,10 @@ mod tests {
             },
         });
         assert_eq!(next.completed_results.len(), 1);
-        assert_eq!(next.pending_followups[0].consumed_by, vec!["jiang-yumo".to_string()]);
+        assert_eq!(
+            next.pending_followups[0].consumed_by,
+            vec!["jiang-yumo".to_string()]
+        );
         assert_eq!(next.task_history.len(), 1);
         assert_eq!(next.task_history[0].dispatch_wave, Some(1));
         assert!(!next.blackboard.patch_proposals.is_empty());
@@ -572,6 +583,9 @@ mod tests {
         );
         assert_eq!(next.completed_results.len(), 1);
         assert_eq!(next.task_history.len(), 2);
-        assert_eq!(next.pending_followups[0].consumed_by, vec!["jiang-yumo".to_string()]);
+        assert_eq!(
+            next.pending_followups[0].consumed_by,
+            vec!["jiang-yumo".to_string()]
+        );
     }
 }

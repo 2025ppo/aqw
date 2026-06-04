@@ -44,6 +44,8 @@ interface TreeEntry {
   path: string;
   type: "folder" | "file";
   children: TreeEntry[] | null;
+  size?: number | null;
+  modifiedAtMs?: number | null;
 }
 
 interface ChangeSet {
@@ -1959,9 +1961,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       updateDirectoryStatus("updating");
       await checkAndBuildIndex(projectName, true);
-      await refreshProjectCanvasCaches(projectName, reason === "manual-refresh");
-
       const activeProject = sidebar.getActiveChat();
+      const targetProject = activeProject?.name === projectName
+        ? activeProject
+        : sidebar.getChats().find((project) => project.name === projectName);
+      await refreshProjectCanvasCaches(
+        projectName,
+        reason === "manual-refresh",
+        targetProject?.workspacePath,
+      );
       if (
         activeProject &&
         activeProject.name === projectName &&
@@ -1973,6 +1981,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         } else if (!isMarkdownFile(currentPreviewFile) && !isImageFile(currentPreviewFile)) {
           setFileCanvasSyncState("ready", "后台图谱已同步", `最近同步：${new Date().toLocaleString("zh-CN")}`);
         }
+      }
+
+      if (activeProject && activeProject.name === projectName) {
+        await loadFileBrowser(projectName, activeProject.workspacePath);
+        highlightCurrentFile();
       }
     } catch (e) {
       log("ERROR", `项目图谱自动同步失败: ${e}`);
@@ -2430,7 +2443,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // === 主管意图分析 ===
-    showLoading("主管正在规划专家调度...");
+    showLoading("主管正在安排合适的专家...");
     let dispatchPlan: DispatchPlan;
     try {
       await reportFrontendE2ECheckpoint("sendMessage:before-artifact-followup");
@@ -2509,7 +2522,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         finalReply = `抱歉，请求出错：${e}`;
       }
     } else {
-      // 流水线执行：专家团依次/并行工作
+      // 专家协作执行：按主管动态分配的专家逐步推进
       pipelineRunning = true;
       currentDispatchPlan = dispatchPlan;
       pendingFollowups = [];
@@ -2521,8 +2534,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         activeProjectForPipeline?.workspacePath,
         pendingFollowups,
       );
-      appendCleanSystemMessage(preparedLaunch.narrative);
-
+      if (preparedLaunch.narrative?.trim()) {
+        session.messages.push({ role: "assistant", content: preparedLaunch.narrative.trim() });
+        renderMessages();
+      }
       // 立即渲染所有专家的 pending 卡片，让用户看到专家团正在加入
       const joiningTasks: ExpertTask[] = preparedLaunch.joiningTasks;
       window.dispatchEvent(new CustomEvent("expert-tasks-update", { detail: { tasks: joiningTasks } }));
@@ -2731,7 +2746,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         await reportFrontendE2ECheckpoint("sendMessage:pipeline-error", {
           error: String(e),
         });
-        log("ERROR", `流水线执行失败: ${e}`);
+        log("ERROR", `专家协作执行失败: ${e}`);
         finalReply = `专家团执行出错：${e}`;
       } finally {
         pipelineRunning = false;
@@ -2759,9 +2774,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 主管最终回复极简化：剥离代码块与元数据，仅保留一句交付语
     const sanitizedReply = sanitizeSupervisorReply(finalReply);
 
-    // 将最终回复推入会话
+    // 将最终回复推入会话，确保主管汇报始终出现在协作记录之后
     session.messages.push({ role: "assistant", content: sanitizedReply });
-    emitAgentActionExecutionSummary(actionExecutionResult);
+    const actionExecutionSummary = buildAgentActionExecutionSummaryMessage(actionExecutionResult);
+    if (actionExecutionSummary) {
+      session.messages.push({ role: "assistant", content: actionExecutionSummary });
+    }
 
     // 保存到数据库
     await reportFrontendE2ECheckpoint("sendMessage:before-save-assistant");
@@ -2847,42 +2865,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   function updatePipelineProgress(progress: PipelineProgress): void {
-    let panel = document.getElementById('pipeline-progress-panel');
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = 'pipeline-progress-panel';
-      panel.className = 'pipeline-progress';
-      if (chatMessages) {
-        chatMessages.parentElement?.insertBefore(panel, chatMessages);
-      }
-    }
-
-    if (progress.status === 'completed') {
-      panel.remove();
-      return;
-    }
-
-    const percentage = Math.round((progress.currentStep / progress.totalSteps) * 100);
-    panel.innerHTML = `
-      <div class="progress-bar-container">
-        <div class="progress-bar-fill" style="width: ${percentage}%"></div>
-      </div>
-      <div class="progress-info">
-        <span class="progress-step">\u6B65\u9AA4 ${progress.currentStep}/${progress.totalSteps}</span>
-        <span class="progress-expert">${escapeHtml(progress.currentExpertName)}</span>
-        <span class="progress-status">${getProgressStatusText(progress.status, progress.currentToolRound)}</span>
-      </div>
-    `;
-  }
-
-  function getProgressStatusText(status: string, toolRound: number): string {
-    switch (status) {
-      case 'running': return '\u601D\u8003\u4E2D...';
-      case 'tool-calling': return `\u5DE5\u5177\u8C03\u7528 #${toolRound}`;
-      case 'waiting-approval': return '\u23F8\uFE0F \u7B49\u5F85\u786E\u8BA4';
-      case 'error': return '\u274C \u51FA\u9519';
-      default: return '';
-    }
+    document.getElementById('pipeline-progress-panel')?.remove();
+    void progress;
   }
 
   // ========== 工具调用实时展示 ==========
@@ -3035,6 +3019,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     return { searchText, replaceText };
   }
 
+  function parseTaggedEditPayload(payload: string): { searchText: string; replaceText: string } | null {
+    const normalized = payload.replace(/\r\n/g, "\n").trim();
+    const match = normalized.match(/^\s*<searchText>\s*([\s\S]*?)\s*<\/searchText>\s*<replaceText>\s*([\s\S]*?)\s*<\/replaceText>\s*$/i);
+    if (!match) return null;
+    const searchText = match[1].trimEnd();
+    const replaceText = match[2].trimEnd();
+    if (!searchText || !replaceText) return null;
+    return { searchText, replaceText };
+  }
+
+  function parseAnnotatedEditPayload(payload: string): { searchText: string; replaceText: string } | null {
+    const normalized = payload.replace(/\r\n/g, "\n").trim();
+    const match = normalized.match(
+      /^\s*(?:(?:\/\*|<!--)\s*[^\n]*(?:搜索块|当前|原始|旧|before|search)[^\n]*(?:\*\/|-->)\s*)([\s\S]*?)\s*(?:(?:\/\*|<!--)\s*[^\n]*(?:替换|改为|修改后|after|replace)[^\n]*(?:\*\/|-->)\s*)([\s\S]*)$/i
+    );
+    if (!match) return null;
+    const searchText = match[1].trimEnd();
+    const replaceText = match[2].trimEnd();
+    if (!searchText || !replaceText) return null;
+    return { searchText, replaceText };
+  }
+
   function decodeActionParamValue(value: string): string {
     return value
       .replace(/'\\''/g, "'")
@@ -3092,14 +3098,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderMessages();
   }
 
-  function emitAgentActionExecutionSummary(result: AgentActionExecutionResult): void {
+  function buildAgentActionExecutionSummaryMessage(result: AgentActionExecutionResult): string | null {
     if (result.failed > 0) {
       const topErrors = result.errors.slice(0, 5).map((item, index) => `${index + 1}. ${item}`).join("\n");
-      appendCleanSystemMessage(`部分文件变更未成功（成功 ${result.applied}，失败 ${result.failed}）：\n${topErrors}`);
-    } else if (result.fileMutationsApplied > 0) {
-      appendCleanSystemMessage(`已直接写入源码，共完成 ${result.fileMutationsApplied} 项文件变更。`);
-    } else if (result.folderOpsApplied > 0) {
-      appendCleanSystemMessage(`已完成 ${result.folderOpsApplied} 项目录准备动作，但尚未写入项目源码。`);
+      return `部分文件变更未成功（成功 ${result.applied}，失败 ${result.failed}）：\n${topErrors}`;
+    }
+    if (result.folderOpsApplied > 0) {
+      return `已完成 ${result.folderOpsApplied} 项目录准备动作，但尚未写入项目源码。`;
+    }
+    return null;
+  }
+
+  function emitAgentActionExecutionSummary(result: AgentActionExecutionResult): void {
+    const text = buildAgentActionExecutionSummaryMessage(result);
+    if (text) {
+      appendCleanSystemMessage(text);
     }
   }
 
@@ -3404,8 +3417,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     return {
       scene: "code-development",
-      taskDescription: `这是对现有产物的增量修改任务。必须直接修改已有文件或新增实现文件，不要只输出规范文档。\n已生成文件：${relevantArtifacts.join(", ")}\n用户的新要求：${text}${fileContext}\n补丁要求：优先使用 edit_file；searchText 必须直接来自上面的当前文件内容。如果目标文件内容不完整、未展示或仍不确定，必须先发起 [ACTION:READ_FILE:相对路径] 读取真实文件后再修改，禁止臆造页面文案、组件结构或 searchText。`,
-      expertIds: ["jiang-ruoxi", engineerId, "jiang-yingqiu"],
+      taskDescription: `这是对现有产物的增量修改任务。必须直接修改已有文件或新增实现文件，不要只输出规范文档。\n已生成文件：${relevantArtifacts.join(", ")}\n用户的新要求：${text}${fileContext}\n补丁要求：对短小、展示型、文本型文件（例如 index.html、styles.css、README.md）优先使用 WRITE_FILE，直接基于上面的真实文件内容给出完整最新文件；只有在文件较大、确实适合局部修改时才使用 EDIT_FILE。无论哪种方式，目标文件内容不完整、未展示或仍不确定时，都必须先发起 [ACTION:READ_FILE:相对路径] 读取真实文件后再修改，禁止臆造页面文案、组件结构或 searchText。若使用 EDIT_FILE，searchText 必须直接来自上面的当前文件内容，不要只在代码块里用“搜索块”“替换为”这类注释描述旧内容和新内容。同一个文件如果有多个改动，优先合并成一次可完整命中的 EDIT_FILE，不要对同一文件连续输出多条依赖旧内容的局部编辑。`,
+      expertIds: [engineerId],
       requiresDesign: false,
     };
   }
@@ -3645,11 +3658,25 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
-      const compactEditRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\]\s*```(?:\w+)?\r?\n([\s\S]*?)```/g;
+      const replaceMarkerEditRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?\s*```(?:\w*\r?\n)?([\s\S]*?)```\s*(?:替换为|替换成|replace(?:\s+with)?)[：: ]*\s*```(?:\w*\r?\n)?([\s\S]*?)```/gi;
+      while ((match = replaceMarkerEditRegex.exec(content)) !== null) {
+        const path = resolvePath(match[1], match[2]);
+        if (!path) continue;
+        pushAction({
+          type: "EDIT_FILE",
+          path,
+          searchText: match[3].trimEnd(),
+          replaceText: match[4].trimEnd(),
+        });
+      }
+
+      const compactEditRegex = /\[ACTION:EDIT_FILE(?::([^\]]+)|(\s+[^\]]+))\](?:\*\*)?\s*```(?:\w+)?\r?\n([\s\S]*?)```/g;
       while ((match = compactEditRegex.exec(content)) !== null) {
         const path = resolvePath(match[1], match[2]);
         if (!path) continue;
-        const payload = parseLabeledEditPayload(match[3]);
+        const payload = parseLabeledEditPayload(match[3])
+          || parseTaggedEditPayload(match[3])
+          || parseAnnotatedEditPayload(match[3]);
         if (!payload) continue;
         pushAction({
           type: "EDIT_FILE",
@@ -4198,6 +4225,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       await reloadCurrentPreviewFile();
     }
 
+    if (activeProject && changedFiles.size > 0) {
+      await loadFileBrowser(activeProject.name, activeProject.workspacePath);
+      highlightCurrentFile();
+    }
+
     // 文件操作完成后隐藏加载状态
     if (hasFileActions || hasCmdActions) {
       hideLoading();
@@ -4269,38 +4301,39 @@ document.addEventListener("DOMContentLoaded", async () => {
     authMode: "auto" | "restricted" | "admin" = "restricted",
     safetyReason?: string
   ): Promise<boolean> {
-    if (!currentProjectId || !currentSessionId) return Promise.resolve(false);
-    const sessions = projectSessions.get(currentProjectId);
-    const session = sessions?.find((s) => s.id === currentSessionId);
-    if (!session) return Promise.resolve(false);
-
-    const requestId = `cmd-auth-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const initiatorMatch = /^(.+?)（(.+?)）$/.exec(initiator || "");
     const expertName = initiatorMatch?.[1] || initiator || "未知专家";
     const expertTitle = initiatorMatch?.[2] || "未知角色";
-    const message: CommandAuthMessage = {
-      id: requestId,
-      createdAt: Date.now(),
-      initiator: {
-        expertName: expertName || "未知专家",
-        expertTitle: expertTitle || "未知角色",
-      },
-      command,
-      workingDir: dir || "当前项目",
-      reason,
-      authMode,
-      safetyReason,
-      status: "pending",
-    };
-    session.messages.push({
-      role: "command-auth",
-      content: JSON.stringify(message),
-    });
-    renderMessages();
-    saveSessionToDb(currentSessionId, currentProjectId).catch(console.error);
-
     return new Promise((resolve) => {
-      pendingCommandAuthResolvers.set(requestId, resolve);
+      const overlay = document.createElement("div");
+      overlay.className = "approval-overlay";
+      const modeLabel = authMode === "admin" ? "需要更高权限" : "命令超出当前工作区";
+      const safetyLine = safetyReason?.trim() || (authMode === "admin"
+        ? "该命令可能需要更高系统权限。"
+        : "该命令可能作用于当前项目工作区之外。");
+      overlay.innerHTML = `
+        <div class="approval-dialog compact-command-approval">
+          <h3>${escapeHtml(expertName)}（${escapeHtml(expertTitle)}）需要确认</h3>
+          <p class="approval-reason">${escapeHtml(reason || "该命令需要确认后执行。")}</p>
+          <div class="approval-command-meta">${escapeHtml(modeLabel)} · ${escapeHtml(dir || "当前项目")}</div>
+          <div class="approval-command"><code>${escapeHtml(command)}</code></div>
+          <div class="approval-command-note">${escapeHtml(safetyLine)}</div>
+          <div class="approval-actions">
+            <button class="btn-approve" data-action="allow">同意执行</button>
+            <button class="btn-deny" data-action="deny">取消</button>
+          </div>
+        </div>
+      `;
+
+      overlay.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const action = (btn as HTMLElement).dataset.action;
+          overlay.remove();
+          resolve(action === "allow");
+        });
+      });
+
+      document.body.appendChild(overlay);
     });
   }
 
@@ -4447,7 +4480,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function renderCommandAuthCard(message: CommandAuthMessage): string {
-    const title = message.authMode === "admin" ? "管理员命令待授权" : "命令待授权";
     const initiator = `${message.initiator.expertName}（${message.initiator.expertTitle}）`;
     const statusLabel = message.status === "approved"
       ? "已同意"
@@ -4469,14 +4501,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       : `<div class="command-auth-result ${statusClass}">${statusLabel}</div>`;
 
     return `
-      <div class="chat-log-block command-auth-log" data-status="${message.status}">
-        <div class="chat-log-kicker">
-          <span>${escapeHtml(title)}</span>
-          <span>${escapeHtml(statusLabel)}</span>
-        </div>
-        <div class="chat-log-line"><strong>${escapeHtml(initiator)}</strong> 申请执行本地操作。</div>
-        <div class="chat-log-line">原因：${escapeHtml(message.reason?.trim() || "未提供说明")}</div>
-        ${message.safetyReason ? `<div class="chat-log-line subtle">说明：${escapeHtml(message.safetyReason)}</div>` : ""}
+      <div class="chat-log-block command-auth-log compact-command-log" data-status="${message.status}">
+        <div class="chat-log-line compact-command-line"><strong>${escapeHtml(initiator)}</strong></div>
+        <div class="chat-log-line compact-command-line subtle">${escapeHtml(message.reason?.trim() || "未提供说明")}</div>
         ${actionButtons}
       </div>
     `;
@@ -4490,13 +4517,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         : event.status === "blocked"
           ? "受限放行"
           : "执行失败";
-    const authLabel = event.kind === "command"
-      ? event.authMode === "admin"
-        ? "管理员命令"
-      : event.authMode === "restricted"
-          ? "受限放行"
-          : "自动放行"
-      : "自动执行";
     const reason = event.reason?.trim() || "专家未提供明确理由";
     const initiator = `${event.initiator.expertName}（${event.initiator.expertTitle}）`;
 
@@ -4523,15 +4543,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     return `
-      <div class="chat-log-block tool-event-log" data-kind="command" data-status="${event.status}">
-        <div class="chat-log-kicker">
-          <span>${escapeHtml(authLabel)}</span>
-          <span>${escapeHtml(statusLabel)}</span>
-        </div>
-        <div class="chat-log-line"><strong>${escapeHtml(initiator)}</strong> 发起了本地执行。</div>
-        <div class="chat-log-line">原因：${escapeHtml(reason)}</div>
-        ${event.safetyReason ? `<div class="chat-log-line subtle">说明：${escapeHtml(event.safetyReason)}</div>` : ""}
-        ${event.error ? `<div class="chat-log-line is-error">结果：${escapeHtml(event.error)}</div>` : ""}
+      <div class="chat-log-block tool-event-log compact-command-log" data-kind="command" data-status="${event.status}">
+        <div class="chat-log-line compact-command-line"><strong>${escapeHtml(initiator)}</strong></div>
+        <div class="chat-log-line compact-command-line subtle">${escapeHtml(reason)}</div>
       </div>
     `;
   }
@@ -4762,10 +4776,10 @@ document.addEventListener("DOMContentLoaded", async () => {
    * 主管最终回复裁剪：
    * - executeAgentActions 基于原始 finalReply 执行结构化文件动作
    * - 对用户展示时彻底剥离 ACTION/ChangeSet 元数据和代码块
-   * - 保留 1~3 句面向用户的交付摘要，避免把内部协议和源码片段直接暴露出来
+   * - 保留 2~4 句面向用户的自然总结，避免把内部协议和源码片段直接暴露出来
    */
   function sanitizeSupervisorReply(reply: string): string {
-    if (!reply) return "工作已完成，相关结果已经整理好并写入当前项目。";
+    if (!reply) return "这轮已经处理完了，相关结果我整理好了，也已经更新到当前项目里。你现在可以直接继续看页面或文件内容。";
   
     // 1. 移除所有 ACTION 块和 markdown 代码块，得到纯文字部分
     const actionRegex = /\[ACTION:(?:CREATE_FILE|WRITE_FILE|EDIT_FILE|CREATE_FOLDER|DELETE|WRITE_DOCUMENT):[^\]]*\](?:\s*```[\s\S]*?```)?/g;
@@ -4787,21 +4801,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     const normalized = filtered
       .map((s) => s.replace(/\s+/g, " ").trim())
       .filter(Boolean);
-    if (normalized.length === 0) return "任务已完成，相关文件和结果已经更新到当前项目。";
+    if (normalized.length === 0) return "这轮已经处理完了，相关文件和结果已经更新到当前项目里。你可以直接继续检查页面效果，或者再告诉我下一步想怎么改。";
 
-    const highlightKeywords = /(完成|新增|修改|更新|修复|优化|支持|生成|创建|整理|写入|接入|联通)/;
-    const highlights = normalized.filter((s) => highlightKeywords.test(s));
-    const summaryLines = (highlights.length > 0 ? highlights : normalized)
-      .slice(-3)
+    const summaryLines = normalized
+      .slice(0, 4)
       .map((s) => s.replace(/[。！]+$/g, "").trim())
       .filter(Boolean);
+
+    if (summaryLines.length === 1) {
+      const core = summaryLines[0];
+      const blocked = /(未完成|失败|阻塞|请重试|未实际|尚未|未成功)/.test(core);
+      if (blocked) {
+        return `${core}。我已经把当前卡点保留下来了，你可以直接继续让我接着修，我会沿着这条结果继续往下处理。`;
+      }
+      return `${core}。相关改动已经写进当前项目里，你现在可以直接看页面或文件里的变化。要是还想继续细调，我可以接着处理。`;
+    }
 
     let deliveryText = summaryLines.join("。");
     if (!deliveryText.endsWith("。")) {
       deliveryText += "。";
     }
-    if (deliveryText.length > 120) {
-      deliveryText = `${deliveryText.substring(0, 117).trim()}...`;
+    if (deliveryText.length > 240) {
+      deliveryText = `${deliveryText.substring(0, 237).trim()}...`;
     }
 
     return deliveryText;
@@ -4863,57 +4884,60 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
     const sortedTasks = [...tasks].sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
     const groupEl = document.createElement("div");
-    groupEl.className = "expert-tasks-group";
+    groupEl.className = `expert-tasks-group${isLive ? " live" : " compact"}`;
     const doneCount = sortedTasks.filter((t) => t.status === "done").length;
     const failedCount = sortedTasks.filter((t) => t.status === "error").length;
     const runningCount = sortedTasks.filter((t) => t.status === "running" || t.status === "pending").length;
-    const headerTitle = isLive ? "专家协作进行中" : "专家协作记录";
+    const headerTitle = isLive ? "专家协作中" : "本轮协作记录";
+    const compactSummary = failedCount > 0
+      ? `${sortedTasks.length} 位专家参与，${failedCount} 个环节有异常`
+      : runningCount > 0
+        ? `${sortedTasks.length} 位专家处理中`
+        : `${sortedTasks.length} 位专家已处理完成`;
     groupEl.insertAdjacentHTML("beforeend", `
       <div class="expert-group-header">
-        <div class="expert-group-title">${headerTitle}</div>
-        <div class="expert-group-stats">
-          <span>完成 ${doneCount}</span>
-          <span>执行中 ${runningCount}</span>
-          <span>异常 ${failedCount}</span>
+        <div class="expert-group-header-main">
+          <div class="expert-group-title">${headerTitle}</div>
+          <div class="expert-group-summary">${escapeHtml(compactSummary)}</div>
+        </div>
+        <div class="expert-group-header-side">
+          <div class="expert-group-stats">
+            <span>完成 ${doneCount}</span>
+            <span>执行中 ${runningCount}</span>
+            <span>异常 ${failedCount}</span>
+          </div>
+          ${isLive ? "" : `<button class="expert-group-toggle" type="button" aria-expanded="false">展开</button>`}
         </div>
       </div>
     `);
+
+    const bodyEl = document.createElement("div");
+    bodyEl.className = `expert-group-body${isLive ? " expanded" : ""}`;
+    groupEl.appendChild(bodyEl);
 
     if (isLive) {
       const firstBlockingTask = sortedTasks.find((t) => t.status === "error");
       const leadTask = firstBlockingTask || sortedTasks.find((t) => t.status === "running") || sortedTasks[0];
       const leadPhase = leadTask ? getExpertPhaseText(leadTask, EXPERT_PHASE_LABELS) : "处理中";
       const leadLine = firstBlockingTask
-        ? `${leadTask.expertName} ${leadTask.expertTitle} 出现阻塞，正在重新分派。`
-        : `${leadTask?.expertName || "专家团"} ${leadPhase || "处理中"}。`;
-      const waveMap = new Map<number, ExpertTask[]>();
-      sortedTasks.forEach((task) => {
-        const wave = task.dispatchWave || 1;
-        if (!waveMap.has(wave)) waveMap.set(wave, []);
-        waveMap.get(wave)!.push(task);
-      });
-      const dispatchLine = `主管已派遣 ${sortedTasks.length} 位专家，分 ${waveMap.size} 轮执行。`;
-      const liveItems = [...waveMap.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([wave, waveTasks]) => {
-          return waveTasks.map((task) => {
-            const statusLabel = getExpertStatusText(task.status);
-            const phaseText = getExpertPhaseText(task, EXPERT_PHASE_LABELS);
-            return `
-              <li class="expert-log-item" data-status="${task.status}">
-                <span class="expert-log-marker"></span>
-                <div class="expert-log-content">
-                  <div class="expert-log-main">${escapeHtml(task.expertName)}（${escapeHtml(task.expertTitle)}）</div>
-                  <div class="expert-log-sub">第 ${wave} 轮 · ${escapeHtml(phaseText)} · ${statusLabel}</div>
-                </div>
-              </li>
-            `;
-          }).join("");
-        }).join("");
+        ? `${leadTask.expertName}（${leadTask.expertTitle}）出现阻塞，我正在重新调整协作。`
+        : `${leadTask?.expertName || "专家"}正在${leadPhase || "处理中"}。`;
+      const liveItems = sortedTasks.map((task) => {
+        const statusLabel = getExpertStatusText(task.status);
+        const phaseText = getExpertPhaseText(task, EXPERT_PHASE_LABELS);
+        return `
+          <li class="expert-log-item" data-status="${task.status}">
+            <span class="expert-log-marker"></span>
+            <div class="expert-log-content">
+              <div class="expert-log-main">${escapeHtml(task.expertName)}（${escapeHtml(task.expertTitle)}）</div>
+              <div class="expert-log-sub">${escapeHtml(phaseText)} · ${statusLabel}</div>
+            </div>
+          </li>
+        `;
+      }).join("");
 
-      groupEl.insertAdjacentHTML("beforeend", `
+      bodyEl.insertAdjacentHTML("beforeend", `
         <div class="expert-log-shell">
-          <div class="expert-log-line">${escapeHtml(dispatchLine)}</div>
           <div class="expert-log-line emphasis">${escapeHtml(leadLine)}</div>
           <ol class="expert-log-list">${liveItems}</ol>
         </div>
@@ -4951,10 +4975,18 @@ document.addEventListener("DOMContentLoaded", async () => {
             ` : ""}
         </div>
       `;
-      groupEl.insertAdjacentHTML("beforeend", recordHtml);
+      bodyEl.insertAdjacentHTML("beforeend", recordHtml);
     });
 
-    // 绑定折叠按钮
+    groupEl.querySelector(".expert-group-toggle")?.addEventListener("click", () => {
+      const toggle = groupEl.querySelector(".expert-group-toggle") as HTMLButtonElement | null;
+      const isExpanded = bodyEl.classList.toggle("expanded");
+      toggle?.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      if (toggle) {
+        toggle.textContent = isExpanded ? "收起" : "展开";
+      }
+    });
+
     groupEl.querySelectorAll(".expert-log-output-toggle").forEach((btn) => {
       btn.addEventListener("click", () => {
         const toggle = btn as HTMLElement;
@@ -5478,7 +5510,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
       canvas.setData(modeData.nodes, modeData.edges);
       log("INFO", `从缓存加载目录数据 (模式: ${directoryMode})`);
-      await checkDirectoryChanges(project.name, modeData);
+      await checkDirectoryChanges(project.name, modeData, project.workspacePath);
       return;
     }
 
@@ -5486,9 +5518,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     //    无论成功失败，画布上必须有内容（至少显示项目根节点）
     if (directoryMode === "structure") {
       updateDirectoryStatus("updating");
-      const result = await generateStructureCanvas(project.name);
+      const result = await generateStructureCanvas(project.name, project.workspacePath);
       canvas.setData(result.nodes, result.edges);
-      const snapshot = await collectDirectorySnapshot(project.name);
+      const snapshot = await collectDirectorySnapshot(project.name, project.workspacePath);
       const now = new Date().toISOString();
       try {
         await saveDirectoryModeData(
@@ -5508,7 +5540,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         await checkAndBuildIndex(project.name);
         const logicResult = await generateLogicCanvas(project.name);
         canvas.setData(logicResult.nodes, logicResult.edges);
-        const snapshot = await collectDirectorySnapshot(project.name);
+        const snapshot = await collectDirectorySnapshot(project.name, project.workspacePath);
         await saveDirectoryModeData(
           project.name,
           "logic",
@@ -5529,7 +5561,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 基于感知索引生成逻辑画布并持久化
   async function aiGenerateCanvas(
-    project: { id: number; name: string },
+    project: { id: number; name: string; workspacePath?: string },
     canvas: ReturnType<typeof getCanvas>,
   ) {
     if (!canvas) return;
@@ -5538,7 +5570,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const logicResult = await generateLogicCanvas(project.name);
       canvas.setData(logicResult.nodes, logicResult.edges);
 
-      const snapshot = await collectDirectorySnapshot(project.name);
+      const snapshot = await collectDirectorySnapshot(project.name, project.workspacePath);
       await saveDirectoryModeData(
         project.name,
         "logic",
@@ -5555,7 +5587,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const parsedAll = allCached && allCached !== "null" ? JSON.parse(allCached) : {};
         const hasStructure = parsedAll.structure && parsedAll.structure.nodes && parsedAll.structure.nodes.length > 0;
         if (!hasStructure) {
-          const structureResult = await generateStructureCanvas(project.name);
+          const structureResult = await generateStructureCanvas(project.name, project.workspacePath);
           await saveDirectoryModeData(
             project.name,
             "structure",
@@ -5593,7 +5625,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const paths: string[] = [];
       function collect(items: TreeEntry[]) {
         for (const item of items) {
-          paths.push(item.path);
+          const modified = item.modifiedAtMs ?? 0;
+          const size = item.size ?? 0;
+          paths.push(`${item.path}|${item.type}|${modified}|${size}`);
           if (item.children) collect(item.children);
         }
       }
@@ -5720,16 +5754,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         const modeData = normalizeCachedDirectory(parsed).structure;
         if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
           canvas.setData(modeData.nodes, modeData.edges);
-          await checkDirectoryChanges(activeProject.name, modeData);
+          await checkDirectoryChanges(activeProject.name, modeData, activeProject.workspacePath);
           return;
         }
       }
     } catch { /* ignore */ }
     // 无缓存：结构模式直接自动生成（纯机械操作，画布永不允许为空）
     updateDirectoryStatus("updating");
-    const result = await generateStructureCanvas(activeProject.name);
+    const result = await generateStructureCanvas(activeProject.name, activeProject.workspacePath);
     canvas.setData(result.nodes, result.edges);
-    const snapshot = await collectDirectorySnapshot(activeProject.name);
+    const snapshot = await collectDirectorySnapshot(activeProject.name, activeProject.workspacePath);
     const now = new Date().toISOString();
     try {
       await saveDirectoryModeData(
@@ -5761,7 +5795,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const modeData = normalizeCachedDirectory(parsed).logic;
         if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
           canvas.setData(modeData.nodes, modeData.edges);
-          await checkDirectoryChanges(activeProject.name, modeData);
+          await checkDirectoryChanges(activeProject.name, modeData, activeProject.workspacePath);
           return;
         }
       }
@@ -5771,7 +5805,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       await checkAndBuildIndex(activeProject.name);
       const logicResult = await generateLogicCanvas(activeProject.name);
       canvas.setData(logicResult.nodes, logicResult.edges);
-      const snapshot = await collectDirectorySnapshot(activeProject.name);
+      const snapshot = await collectDirectorySnapshot(activeProject.name, activeProject.workspacePath);
       await saveDirectoryModeData(
         activeProject.name,
         "logic",

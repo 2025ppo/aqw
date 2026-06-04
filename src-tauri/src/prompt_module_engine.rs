@@ -11,30 +11,144 @@ const PATCH_GUIDANCE: &str = "patch-guidance";
 const DELIVERABLE_GUIDANCE: &str = "deliverable-guidance";
 
 const WEB_SEARCH_TRIGGER_KEYWORDS: &[&str] = &[
-    "最新", "最近", "官网", "官方", "文档", "release", "changelog", "版本", "兼容", "api", "接口",
-    "框架", "库", "标准", "规范", "搜索", "联网", "外部", "资料", "新闻", "cve", "漏洞",
+    "最新",
+    "最近",
+    "官网",
+    "官方",
+    "文档",
+    "release",
+    "changelog",
+    "版本",
+    "兼容",
+    "api",
+    "接口",
+    "框架",
+    "库",
+    "标准",
+    "规范",
+    "搜索",
+    "联网",
+    "外部",
+    "资料",
+    "新闻",
+    "cve",
+    "漏洞",
 ];
 const COMMAND_TRIGGER_KEYWORDS: &[&str] = &[
-    "测试", "test", "build", "lint", "运行", "run", "启动", "日志", "环境", "依赖", "版本", "编译",
-    "打包", "安装", "npm", "pnpm", "yarn", "cargo", "python", "node", "git", "shell", "cmd",
-    "powershell", "bash", "终端", "命令", "控制台", "迁移", "server", "复现", "验证",
+    "测试",
+    "test",
+    "build",
+    "lint",
+    "运行",
+    "run",
+    "启动",
+    "日志",
+    "环境",
+    "依赖",
+    "版本",
+    "编译",
+    "打包",
+    "安装",
+    "npm",
+    "pnpm",
+    "yarn",
+    "cargo",
+    "python",
+    "node",
+    "git",
+    "shell",
+    "cmd",
+    "powershell",
+    "bash",
+    "终端",
+    "命令",
+    "控制台",
+    "迁移",
+    "server",
+    "复现",
+    "验证",
 ];
-const VIDEO_TRIGGER_KEYWORDS: &[&str] = &["视频", "分镜", "镜头", "片段", "segment", "timeline", "storyboard"];
+const VIDEO_TRIGGER_KEYWORDS: &[&str] = &[
+    "视频",
+    "分镜",
+    "镜头",
+    "片段",
+    "segment",
+    "timeline",
+    "storyboard",
+];
 const SEARCH_NEGATION_PATTERNS: &[&str] = &[
-    "不需要联网","不需要搜索","不需要外部资料","不需要官方文档","不需要最新资料",
-    "无需联网","无需搜索","无需外部资料","无需官方文档","无需最新资料",
-    "不用联网","不用搜索","不用外部资料","不用官方文档","不用最新资料",
-    "不必联网","不必搜索","不必外部资料","不必官方文档","不必最新资料",
-    "不要联网","不要搜索","不要外部资料","不要官方文档","不要最新资料",
+    "不需要联网",
+    "不需要搜索",
+    "不需要外部资料",
+    "不需要官方文档",
+    "不需要最新资料",
+    "无需联网",
+    "无需搜索",
+    "无需外部资料",
+    "无需官方文档",
+    "无需最新资料",
+    "不用联网",
+    "不用搜索",
+    "不用外部资料",
+    "不用官方文档",
+    "不用最新资料",
+    "不必联网",
+    "不必搜索",
+    "不必外部资料",
+    "不必官方文档",
+    "不必最新资料",
+    "不要联网",
+    "不要搜索",
+    "不要外部资料",
+    "不要官方文档",
+    "不要最新资料",
 ];
 const COMMAND_NEGATION_PATTERNS: &[&str] = &[
-    "不需要运行","不需要执行","不需要命令","不需要测试","不需要构建","不需要build","不需要lint",
-    "无需运行","无需执行","无需命令","无需测试","无需构建","无需build","无需lint",
-    "不用运行","不用执行","不用命令","不用测试","不用构建","不用build","不用lint",
-    "不必运行","不必执行","不必命令","不必测试","不必构建","不必build","不必lint",
-    "不要运行","不要执行","不要命令","不要测试","不要构建","不要build","不要lint",
+    "不需要运行",
+    "不需要执行",
+    "不需要命令",
+    "不需要测试",
+    "不需要构建",
+    "不需要build",
+    "不需要lint",
+    "无需运行",
+    "无需执行",
+    "无需命令",
+    "无需测试",
+    "无需构建",
+    "无需build",
+    "无需lint",
+    "不用运行",
+    "不用执行",
+    "不用命令",
+    "不用测试",
+    "不用构建",
+    "不用build",
+    "不用lint",
+    "不必运行",
+    "不必执行",
+    "不必命令",
+    "不必测试",
+    "不必构建",
+    "不必build",
+    "不必lint",
+    "不要运行",
+    "不要执行",
+    "不要命令",
+    "不要测试",
+    "不要构建",
+    "不要build",
+    "不要lint",
 ];
-const VIDEO_NEGATION_PATTERNS: &[&str] = &["不需要视频", "无需视频", "不要视频", "不需要分镜", "无需分镜", "不要分镜"];
+const VIDEO_NEGATION_PATTERNS: &[&str] = &[
+    "不需要视频",
+    "无需视频",
+    "不要视频",
+    "不需要分镜",
+    "无需分镜",
+    "不要分镜",
+];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -91,7 +205,10 @@ pub fn normalize_module_ids(values: &[String]) -> Vec<String> {
     normalized
 }
 
-pub fn build_prompt_plan(request: &PromptPlanRequest, traces: &[PromptModuleTrace]) -> PromptPlanResponse {
+pub fn build_prompt_plan(
+    request: &PromptPlanRequest,
+    traces: &[PromptModuleTrace],
+) -> PromptPlanResponse {
     let supported = supported_modules_for_expert(&request.expert_id);
     let history_hint_module_ids = suggest_history_hints(
         traces,
@@ -144,7 +261,9 @@ fn select_prompt_modules(expert_id: &str, scene: &str, task_description: &str) -
         .into_iter()
         .map(|value| value.to_string())
         .collect();
-    let has_code_tool_primer = modules.iter().any(|module_id| module_id == CODE_TOOL_PRIMER);
+    let has_code_tool_primer = modules
+        .iter()
+        .any(|module_id| module_id == CODE_TOOL_PRIMER);
 
     if has_code_tool_primer {
         let needs_search = scene == "research-with-search"
@@ -153,10 +272,18 @@ fn select_prompt_modules(expert_id: &str, scene: &str, task_description: &str) -
         let needs_command = scene == "code-review"
             || (includes_keyword(task_description, COMMAND_TRIGGER_KEYWORDS)
                 && !matches_phrase(task_description, COMMAND_NEGATION_PATTERNS));
-        if needs_search && !modules.iter().any(|module_id| module_id == WEB_SEARCH_GUIDANCE) {
+        if needs_search
+            && !modules
+                .iter()
+                .any(|module_id| module_id == WEB_SEARCH_GUIDANCE)
+        {
             modules.push(WEB_SEARCH_GUIDANCE.to_string());
         }
-        if needs_command && !modules.iter().any(|module_id| module_id == COMMAND_GUIDANCE) {
+        if needs_command
+            && !modules
+                .iter()
+                .any(|module_id| module_id == COMMAND_GUIDANCE)
+        {
             modules.push(COMMAND_GUIDANCE.to_string());
         }
     }
@@ -224,24 +351,86 @@ fn is_prompt_module_id(value: &str) -> bool {
 fn prompt_module_map(static_only: bool) -> HashMap<&'static str, Vec<&'static str>> {
     let mut map = HashMap::new();
     map.insert("jiang-ruoxi", vec![CODE_TOOL_PRIMER]);
-    map.insert("jiang-dingchu", vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE]);
-    map.insert("jiang-qinglan", vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-    map.insert("jiang-yumo", vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-    map.insert("jiang-subai", vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
+    map.insert(
+        "jiang-dingchu",
+        vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE],
+    );
+    map.insert(
+        "jiang-qinglan",
+        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
+    );
+    map.insert(
+        "jiang-yumo",
+        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
+    );
+    map.insert(
+        "jiang-subai",
+        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
+    );
     map.insert("jiang-yingqiu", vec![CODE_TOOL_PRIMER]);
-    map.insert("jiang-jianheng", vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE]);
+    map.insert(
+        "jiang-jianheng",
+        vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE],
+    );
     map.insert("jiang-cexun", vec![CODE_TOOL_PRIMER, COMMAND_GUIDANCE]);
     map.insert("jiang-zhilan", vec![DOCUMENT_TOOL_PRIMER]);
     map.insert("jiang-huaying", vec![MEDIA_TOOL_PRIMER]);
     if !static_only {
-        map.insert("jiang-ruoxi", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE]);
-        map.insert("jiang-dingchu", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-        map.insert("jiang-qinglan", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-        map.insert("jiang-yumo", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-        map.insert("jiang-subai", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]);
-        map.insert("jiang-yingqiu", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE]);
-        map.insert("jiang-jianheng", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE, DELIVERABLE_GUIDANCE]);
-        map.insert("jiang-cexun", vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE]);
+        map.insert(
+            "jiang-ruoxi",
+            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
+        );
+        map.insert(
+            "jiang-dingchu",
+            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, DELIVERABLE_GUIDANCE],
+        );
+        map.insert(
+            "jiang-qinglan",
+            vec![
+                CODE_TOOL_PRIMER,
+                WEB_SEARCH_GUIDANCE,
+                COMMAND_GUIDANCE,
+                PATCH_GUIDANCE,
+                DELIVERABLE_GUIDANCE,
+            ],
+        );
+        map.insert(
+            "jiang-yumo",
+            vec![
+                CODE_TOOL_PRIMER,
+                WEB_SEARCH_GUIDANCE,
+                COMMAND_GUIDANCE,
+                PATCH_GUIDANCE,
+                DELIVERABLE_GUIDANCE,
+            ],
+        );
+        map.insert(
+            "jiang-subai",
+            vec![
+                CODE_TOOL_PRIMER,
+                WEB_SEARCH_GUIDANCE,
+                COMMAND_GUIDANCE,
+                PATCH_GUIDANCE,
+                DELIVERABLE_GUIDANCE,
+            ],
+        );
+        map.insert(
+            "jiang-yingqiu",
+            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
+        );
+        map.insert(
+            "jiang-jianheng",
+            vec![
+                CODE_TOOL_PRIMER,
+                WEB_SEARCH_GUIDANCE,
+                COMMAND_GUIDANCE,
+                DELIVERABLE_GUIDANCE,
+            ],
+        );
+        map.insert(
+            "jiang-cexun",
+            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
+        );
         map.insert("jiang-zhilan", vec![DOCUMENT_TOOL_PRIMER]);
         map.insert("jiang-huaying", vec![MEDIA_TOOL_PRIMER, VIDEO_WORKFLOW]);
     }
@@ -250,12 +439,16 @@ fn prompt_module_map(static_only: bool) -> HashMap<&'static str, Vec<&'static st
 
 fn includes_keyword(text: &str, keywords: &[&str]) -> bool {
     let normalized = text.to_lowercase();
-    keywords.iter().any(|keyword| normalized.contains(&keyword.to_lowercase()))
+    keywords
+        .iter()
+        .any(|keyword| normalized.contains(&keyword.to_lowercase()))
 }
 
 fn matches_phrase(text: &str, phrases: &[&str]) -> bool {
     let normalized = text.to_lowercase();
-    phrases.iter().any(|phrase| normalized.contains(&phrase.to_lowercase()))
+    phrases
+        .iter()
+        .any(|phrase| normalized.contains(&phrase.to_lowercase()))
 }
 
 fn tokenize_prompt_text(text: &str) -> Vec<String> {
@@ -369,7 +562,11 @@ pub fn suggest_history_hints(
         let overlap_score = if overlap_count == 0 {
             0.0
         } else {
-            overlap_count as f64 / std::cmp::max(4, std::cmp::min(current_tokens.len() + trace_tokens.len(), 18)) as f64
+            overlap_count as f64
+                / std::cmp::max(
+                    4,
+                    std::cmp::min(current_tokens.len() + trace_tokens.len(), 18),
+                ) as f64
         };
         let total_score = scene_score + overlap_score * 4.0;
         if total_score < 0.9 {
@@ -381,7 +578,12 @@ pub fn suggest_history_hints(
     }
 
     let mut scored = module_scores.into_iter().collect::<Vec<(String, f64)>>();
-    scored.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored
         .into_iter()
         .filter(|(_, score)| *score >= 0.9)
@@ -413,7 +615,10 @@ mod tests {
             hint_module_ids: vec![],
         };
         let plan = build_prompt_plan(&request, &traces);
-        assert!(plan.module_ids.iter().any(|module_id| module_id == COMMAND_GUIDANCE));
+        assert!(plan
+            .module_ids
+            .iter()
+            .any(|module_id| module_id == COMMAND_GUIDANCE));
         assert!(plan.prompt.contains("BASE"));
     }
 

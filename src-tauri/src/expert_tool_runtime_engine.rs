@@ -149,17 +149,19 @@ pub fn build_web_search_success(
             request_query(&request.request),
             results_json
         )),
-        event: Some(ExpertToolEventPayload::WebSearch(ExpertToolWebSearchEvent {
-            kind: "web-search".to_string(),
-            expert_id: request.expert_id.clone(),
-            expert_name: request.expert_name.clone(),
-            expert_title: request.expert_title.clone(),
-            reason: request_reason(&request.request).to_string(),
-            query: request_query(&request.request).to_string(),
-            status: "success".to_string(),
-            results: Some(results),
-            error: None,
-        })),
+        event: Some(ExpertToolEventPayload::WebSearch(
+            ExpertToolWebSearchEvent {
+                kind: "web-search".to_string(),
+                expert_id: request.expert_id.clone(),
+                expert_name: request.expert_name.clone(),
+                expert_title: request.expert_title.clone(),
+                reason: request_reason(&request.request).to_string(),
+                query: request_query(&request.request).to_string(),
+                status: "success".to_string(),
+                results: Some(results),
+                error: None,
+            },
+        )),
         authorization: None,
     }
 }
@@ -176,17 +178,19 @@ pub fn build_web_search_error(
             request_query(&request.request),
             error
         )),
-        event: Some(ExpertToolEventPayload::WebSearch(ExpertToolWebSearchEvent {
-            kind: "web-search".to_string(),
-            expert_id: request.expert_id.clone(),
-            expert_name: request.expert_name.clone(),
-            expert_title: request.expert_title.clone(),
-            reason: request_reason(&request.request).to_string(),
-            query: request_query(&request.request).to_string(),
-            status: "error".to_string(),
-            results: None,
-            error: Some(error.to_string()),
-        })),
+        event: Some(ExpertToolEventPayload::WebSearch(
+            ExpertToolWebSearchEvent {
+                kind: "web-search".to_string(),
+                expert_id: request.expert_id.clone(),
+                expert_name: request.expert_name.clone(),
+                expert_title: request.expert_title.clone(),
+                reason: request_reason(&request.request).to_string(),
+                query: request_query(&request.request).to_string(),
+                status: "error".to_string(),
+                results: None,
+                error: Some(error.to_string()),
+            },
+        )),
         authorization: None,
     }
 }
@@ -195,7 +199,8 @@ pub fn build_file_read_result(
     request: &ExpertToolExecutionRequest,
     content: &str,
 ) -> ExpertToolExecutionResult {
-    let (path, start_line, end_line): (&str, Option<usize>, Option<usize>) = match &request.request {
+    let (path, start_line, end_line): (&str, Option<usize>, Option<usize>) = match &request.request
+    {
         ExpertToolRequest::FileRead {
             path,
             start_line,

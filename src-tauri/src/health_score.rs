@@ -200,7 +200,10 @@ fn evaluate_documentation(
         issues.push(HealthIssue {
             severity: "info".to_string(),
             category: "文档覆盖".to_string(),
-            message: format!("代码注释率较低（{:.1}%），建议增加关键逻辑注释", comment_ratio * 100.0),
+            message: format!(
+                "代码注释率较低（{:.1}%），建议增加关键逻辑注释",
+                comment_ratio * 100.0
+            ),
             file_path: None,
         });
     }
@@ -301,10 +304,7 @@ fn evaluate_activity(
         let head_path = git_dir.join("HEAD");
         if let Ok(meta) = fs::metadata(&head_path) {
             if let Ok(modified) = meta.modified() {
-                let days_since = modified
-                    .elapsed()
-                    .unwrap_or_default()
-                    .as_secs() / 86400;
+                let days_since = modified.elapsed().unwrap_or_default().as_secs() / 86400;
                 if days_since > 90 {
                     score = score.saturating_sub(30);
                     issues.push(HealthIssue {
@@ -344,7 +344,8 @@ fn find_max_depth(path: &Path, current: usize) -> usize {
             let entry_path = entry.path();
             let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
             // 跳过隐藏目录和常见非代码目录
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist"
+            {
                 continue;
             }
             if entry_path.is_dir() {
@@ -362,7 +363,8 @@ fn count_files(path: &Path) -> usize {
         for entry in entries.flatten() {
             let entry_path = entry.path();
             let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist"
+            {
                 continue;
             }
             if entry_path.is_file() {
@@ -381,7 +383,8 @@ fn find_large_files(path: &Path, threshold_kb: usize) -> Vec<(String, usize)> {
         for entry in entries.flatten() {
             let entry_path = entry.path();
             let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist"
+            {
                 continue;
             }
             if entry_path.is_file() {
@@ -409,7 +412,8 @@ fn estimate_comment_ratio(path: &Path) -> f64 {
         for entry in entries.flatten() {
             let entry_path = entry.path();
             let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist"
+            {
                 continue;
             }
             if entry_path.is_file() {
@@ -424,7 +428,13 @@ fn estimate_comment_ratio(path: &Path) -> f64 {
                             continue;
                         }
                         total_lines += 1;
-                        if trimmed.starts_with("//") || trimmed.starts_with("#") || trimmed.starts_with("/*") || trimmed.starts_with("*") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                        if trimmed.starts_with("//")
+                            || trimmed.starts_with("#")
+                            || trimmed.starts_with("/*")
+                            || trimmed.starts_with("*")
+                            || trimmed.starts_with("///")
+                            || trimmed.starts_with("//!")
+                        {
                             comment_lines += 1;
                         }
                     }
@@ -445,10 +455,20 @@ fn estimate_comment_ratio(path: &Path) -> f64 {
 fn detect_dependency_files(path: &Path) -> Vec<String> {
     let mut files = Vec::new();
     let dep_names = [
-        "package.json", "Cargo.toml", "requirements.txt", "Pipfile",
-        "go.mod", "pom.xml", "build.gradle", "Gemfile",
-        "composer.json", "mix.exs", "Cargo.lock", "package-lock.json",
-        "yarn.lock", "pnpm-lock.yaml",
+        "package.json",
+        "Cargo.toml",
+        "requirements.txt",
+        "Pipfile",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "Gemfile",
+        "composer.json",
+        "mix.exs",
+        "Cargo.lock",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
     ];
     for name in &dep_names {
         if path.join(name).exists() {
@@ -478,7 +498,11 @@ fn find_test_files(path: &Path) -> Vec<String> {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
             let entry_path = entry.path();
-            let name = entry_path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let name = entry_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
             if test_patterns.iter().any(|p| name.contains(p)) {
                 files.push(entry_path.to_string_lossy().to_string());
             }
@@ -495,7 +519,8 @@ fn find_todo_markers(path: &Path) -> Vec<(String, usize)> {
         for entry in entries.flatten() {
             let entry_path = entry.path();
             let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" {
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist"
+            {
                 continue;
             }
             if entry_path.is_file() {

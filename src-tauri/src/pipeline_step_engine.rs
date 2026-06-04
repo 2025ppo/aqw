@@ -1,5 +1,7 @@
 use crate::blackboard_engine::{advance_blackboard_progress, BlackboardTask};
-use crate::pipeline_engine::{build_remaining_step_descriptions, PipelineExpertInfo, PipelineLayout, PipelinePlanInput};
+use crate::pipeline_engine::{
+    build_remaining_step_descriptions, PipelineExpertInfo, PipelineLayout, PipelinePlanInput,
+};
 use crate::pipeline_runtime_engine::{
     apply_decision, PipelineRuntimeDecisionRequest, PipelineRuntimeState, PipelineRuntimeTransition,
 };
@@ -227,7 +229,8 @@ pub fn build_finalize_request(
         .unwrap_or_default();
     let remaining_step_descs =
         build_remaining_step_descriptions(&request.layout, step_index, &request.experts);
-    let followup_context = build_followup_context(&request.session_state.pending_followups, &request.experts);
+    let followup_context =
+        build_followup_context(&request.session_state.pending_followups, &request.experts);
     let current_step_tasks = request
         .session_state
         .task_history
@@ -302,17 +305,24 @@ fn build_followup_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_finalize_request, build_midcheck_request, finalize_step_without_supervisor, PipelineStepFinalizeRequest,
-        PipelineStepRuntimeFinalizeRequest, PipelineTaskSnapshot,
+        build_finalize_request, build_midcheck_request, finalize_step_without_supervisor,
+        PipelineStepFinalizeRequest, PipelineStepRuntimeFinalizeRequest, PipelineTaskSnapshot,
     };
     use crate::blackboard_engine::{new_blackboard, BlackboardTask};
     use crate::collaboration_engine::{CompletedExpertResult, PipelineFollowup};
-    use crate::pipeline_engine::{PipelineExpertInfo, PipelineLayout, PipelinePlanInput, PipelineStepLayout};
+    use crate::pipeline_engine::{
+        PipelineExpertInfo, PipelineLayout, PipelinePlanInput, PipelineStepLayout,
+    };
     use crate::pipeline_runtime_engine::PipelineRuntimeState;
     use crate::pipeline_session_engine::PipelineSessionState;
 
     fn sample_blackboard() -> BlackboardTask {
-        new_blackboard("修界面", vec!["src/app.js".to_string()], vec!["src".to_string()], 1)
+        new_blackboard(
+            "修界面",
+            vec!["src/app.js".to_string()],
+            vec!["src".to_string()],
+            1,
+        )
     }
 
     #[test]
@@ -363,7 +373,10 @@ mod tests {
                 expert_name: "江予墨".to_string(),
                 expert_title: "前端工程师".to_string(),
                 dispatch_wave: Some(1),
-                output: Some("[ACTION:EDIT_FILE path=\"app.js\" searchText=\"a\" replaceText=\"b\"]".to_string()),
+                output: Some(
+                    "[ACTION:EDIT_FILE path=\"app.js\" searchText=\"a\" replaceText=\"b\"]"
+                        .to_string(),
+                ),
                 error: None,
             }],
             runtime_state: PipelineRuntimeState {
@@ -459,7 +472,10 @@ mod tests {
         });
 
         assert_eq!(finalize_request.step_index, 0);
-        assert_eq!(finalize_request.step_expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(
+            finalize_request.step_expert_ids,
+            vec!["jiang-yumo".to_string()]
+        );
         assert_eq!(finalize_request.current_step_tasks.len(), 1);
         assert_eq!(finalize_request.completed_results.len(), 1);
         assert!(finalize_request

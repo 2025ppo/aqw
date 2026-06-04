@@ -437,10 +437,7 @@ fn infer_chunk_label(chunk: &CodeChunk) -> String {
         {
             continue;
         }
-        let normalized = trimmed
-            .trim_end_matches('{')
-            .trim_end_matches(';')
-            .trim();
+        let normalized = trimmed.trim_end_matches('{').trim_end_matches(';').trim();
         if normalized.is_empty() {
             continue;
         }
@@ -494,10 +491,22 @@ fn aggregate_file_edges(
             continue;
         }
 
-        file_stats.entry(from_chunk.file_path.clone()).or_default().outgoing += 1;
-        file_stats.entry(to_chunk.file_path.clone()).or_default().incoming += 1;
-        file_stats.entry(from_chunk.file_path.clone()).or_default().degree += 1;
-        file_stats.entry(to_chunk.file_path.clone()).or_default().degree += 1;
+        file_stats
+            .entry(from_chunk.file_path.clone())
+            .or_default()
+            .outgoing += 1;
+        file_stats
+            .entry(to_chunk.file_path.clone())
+            .or_default()
+            .incoming += 1;
+        file_stats
+            .entry(from_chunk.file_path.clone())
+            .or_default()
+            .degree += 1;
+        file_stats
+            .entry(to_chunk.file_path.clone())
+            .or_default()
+            .degree += 1;
 
         edge_stats
             .entry((from_chunk.file_path.clone(), to_chunk.file_path.clone()))
@@ -639,7 +648,12 @@ pub fn build_file_logic_canvas(
         id: root_id.clone(),
         label: compact_path_label(&normalized_path),
         kind: "file-root".to_string(),
-        detail: format!("{}\n{} · {} 个代码段", normalized_path, language, file_chunks.len()),
+        detail: format!(
+            "{}\n{} · {} 个代码段",
+            normalized_path,
+            language,
+            file_chunks.len()
+        ),
         file_path: Some(normalized_path.clone()),
         line_start: None,
         line_end: None,
@@ -708,10 +722,9 @@ pub fn build_file_logic_canvas(
         let to_inside = target_chunk_ids.contains(&to_chunk.id);
 
         if from_inside && to_inside {
-            if let (Some(from_id), Some(to_id)) = (
-                symbol_ids.get(&from_chunk.id),
-                symbol_ids.get(&to_chunk.id),
-            ) {
+            if let (Some(from_id), Some(to_id)) =
+                (symbol_ids.get(&from_chunk.id), symbol_ids.get(&to_chunk.id))
+            {
                 internal_symbol_links.push((
                     from_id.clone(),
                     to_id.clone(),
@@ -874,14 +887,21 @@ pub fn build_file_logic_canvas(
     })
 }
 
-fn build_logic_chain_report(results: &[SearchResult], chunks: &[CodeChunk], graph: &[GraphEdge]) -> String {
+fn build_logic_chain_report(
+    results: &[SearchResult],
+    chunks: &[CodeChunk],
+    graph: &[GraphEdge],
+) -> String {
     let chunk_map: HashMap<&str, &CodeChunk> = chunks.iter().map(|c| (c.id.as_str(), c)).collect();
     let mut file_hits: HashMap<String, usize> = HashMap::new();
     let mut focus_files = Vec::new();
 
     for result in results.iter().take(6) {
         *file_hits.entry(result.chunk.file_path.clone()).or_insert(0) += 1;
-        if !focus_files.iter().any(|p: &String| p == &result.chunk.file_path) {
+        if !focus_files
+            .iter()
+            .any(|p: &String| p == &result.chunk.file_path)
+        {
             focus_files.push(result.chunk.file_path.clone());
         }
     }
@@ -923,7 +943,13 @@ fn build_logic_chain_report(results: &[SearchResult], chunks: &[CodeChunk], grap
     let mut lines = vec!["[逻辑链路建议]".to_string()];
     let hit_summary = focus_files
         .iter()
-        .map(|path| format!("{} (命中 {} 段)", path, file_hits.get(path).copied().unwrap_or(0)))
+        .map(|path| {
+            format!(
+                "{} (命中 {} 段)",
+                path,
+                file_hits.get(path).copied().unwrap_or(0)
+            )
+        })
         .collect::<Vec<String>>()
         .join("；");
     lines.push(format!("- 直接命中文件: {}", hit_summary));
@@ -932,13 +958,21 @@ fn build_logic_chain_report(results: &[SearchResult], chunks: &[CodeChunk], grap
     for focus in focus_files.iter().take(3) {
         let mut neighbors: Vec<(String, RelationCounter)> = neighbors_by_file
             .get(focus)
-            .map(|items| items.iter().map(|(path, counts)| (path.clone(), counts.clone())).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|(path, counts)| (path.clone(), counts.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         neighbors.sort_by(|a, b| b.1.weight().cmp(&a.1.weight()).then_with(|| a.0.cmp(&b.0)));
         neighbors.truncate(4);
 
         if neighbors.is_empty() {
-            lines.push(format!("- 围绕 {}: 暂未发现跨文件链路，优先检查同文件上下文。", focus));
+            lines.push(format!(
+                "- 围绕 {}: 暂未发现跨文件链路，优先检查同文件上下文。",
+                focus
+            ));
             continue;
         }
 
@@ -959,7 +993,11 @@ fn build_logic_chain_report(results: &[SearchResult], chunks: &[CodeChunk], grap
     if !suggested_files.is_empty() {
         lines.push(format!(
             "- 建议补查文件: {}",
-            suggested_files.into_iter().take(8).collect::<Vec<String>>().join(", ")
+            suggested_files
+                .into_iter()
+                .take(8)
+                .collect::<Vec<String>>()
+                .join(", ")
         ));
     }
 
@@ -1260,8 +1298,7 @@ pub fn incremental_update(
 
     // 加载现有chunks
     let mut chunks: Vec<CodeChunk> = if chunks_path.exists() {
-        let json = fs::read_to_string(&chunks_path)
-            .map_err(|e| format!("读取索引失败: {}", e))?;
+        let json = fs::read_to_string(&chunks_path).map_err(|e| format!("读取索引失败: {}", e))?;
         serde_json::from_str(&json).unwrap_or_default()
     } else {
         return Err("索引未构建，请先构建索引".to_string());
@@ -1305,17 +1342,16 @@ pub fn incremental_update(
     fs::create_dir_all(&index_dir).map_err(|e| format!("创建索引目录失败: {}", e))?;
 
     {
-        let file = fs::File::create(&chunks_path)
-            .map_err(|e| format!("创建分段文件失败: {}", e))?;
+        let file =
+            fs::File::create(&chunks_path).map_err(|e| format!("创建分段文件失败: {}", e))?;
         let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, &chunks)
-            .map_err(|e| format!("序列化分段数据失败: {}", e))?;
+        serde_json::to_writer(writer, &chunks).map_err(|e| format!("序列化分段数据失败: {}", e))?;
     }
 
     {
         let tfidf_path = index_dir.join("tfidf.json");
-        let file = fs::File::create(&tfidf_path)
-            .map_err(|e| format!("创建TF-IDF文件失败: {}", e))?;
+        let file =
+            fs::File::create(&tfidf_path).map_err(|e| format!("创建TF-IDF文件失败: {}", e))?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, &tfidf_data)
             .map_err(|e| format!("序列化TF-IDF数据失败: {}", e))?;
@@ -1323,11 +1359,9 @@ pub fn incremental_update(
 
     {
         let graph_path = index_dir.join("graph.json");
-        let file = fs::File::create(&graph_path)
-            .map_err(|e| format!("创建图谱文件失败: {}", e))?;
+        let file = fs::File::create(&graph_path).map_err(|e| format!("创建图谱文件失败: {}", e))?;
         let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, &graph)
-            .map_err(|e| format!("序列化图谱数据失败: {}", e))?;
+        serde_json::to_writer(writer, &graph).map_err(|e| format!("序列化图谱数据失败: {}", e))?;
     }
 
     Ok(updated_count)
@@ -1385,8 +1419,13 @@ fn fuzzy_match_score(query: &[char], target: &str) -> Option<u32> {
             qi += 1;
             consecutive += 1;
             score += 1 + consecutive * 2; // 连续匹配加权
-            // 文件名开头或分隔符后匹配加权
-            if ti == 0 || matches!(target_chars.get(ti.wrapping_sub(1)), Some('/') | Some('\\') | Some('.') | Some('_') | Some('-')) {
+                                          // 文件名开头或分隔符后匹配加权
+            if ti == 0
+                || matches!(
+                    target_chars.get(ti.wrapping_sub(1)),
+                    Some('/') | Some('\\') | Some('.') | Some('_') | Some('-')
+                )
+            {
                 score += 5;
             }
         } else {
@@ -1394,7 +1433,11 @@ fn fuzzy_match_score(query: &[char], target: &str) -> Option<u32> {
         }
     }
 
-    if qi == query.len() { Some(score) } else { None }
+    if qi == query.len() {
+        Some(score)
+    } else {
+        None
+    }
 }
 
 /// 格式化搜索结果（代码片段+上下文行）
@@ -1407,8 +1450,19 @@ pub fn format_search_result_with_context(chunk: &CodeChunk, context_lines: usize
     } else {
         let head: String = lines[..context_lines.min(total)].join("\n");
         let tail: String = lines[total.saturating_sub(context_lines)..].join("\n");
-        format!("{}\n  [...{} more lines...]\n{}", head, total - context_lines * 2, tail)
+        format!(
+            "{}\n  [...{} more lines...]\n{}",
+            head,
+            total - context_lines * 2,
+            tail
+        )
     };
 
-    format!("{}:{}-{}\n{}", chunk.file_path, chunk.start_line + 1, chunk.end_line + 1, preview_lines)
+    format!(
+        "{}:{}-{}\n{}",
+        chunk.file_path,
+        chunk.start_line + 1,
+        chunk.end_line + 1,
+        preview_lines
+    )
 }

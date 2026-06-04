@@ -131,9 +131,7 @@ impl HookManager {
             handler: Arc::new(|ctx| {
                 if let Some(result) = &ctx.tool_result {
                     if result.contains("NO_PROGRESS_DETECTED") {
-                        return HookDecision::Retry(
-                            "检测到无进展，请尝试不同方法".to_string(),
-                        );
+                        return HookDecision::Retry("检测到无进展，请尝试不同方法".to_string());
                     }
                 }
                 HookDecision::Continue

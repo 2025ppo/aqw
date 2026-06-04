@@ -89,7 +89,12 @@ pub fn generate_deliverable(
     });
 
     // 生成摘要
-    let summary = generate_summary_text(task_description, &code_changes, &review_findings, &test_suggestions);
+    let summary = generate_summary_text(
+        task_description,
+        &code_changes,
+        &review_findings,
+        &test_suggestions,
+    );
 
     Deliverable {
         task_id: task_id.to_string(),
@@ -166,12 +171,21 @@ fn parse_review_findings(output: &str) -> Vec<ReviewFinding> {
 
         // 匹配格式：- [严重程度] [文件:行号] 问题描述 → 修改建议
         if trimmed.starts_with("-") || trimmed.starts_with("*") {
-            let content = trimmed.trim_start_matches("-").trim_start_matches("*").trim();
+            let content = trimmed
+                .trim_start_matches("-")
+                .trim_start_matches("*")
+                .trim();
 
             // 尝试提取严重程度
-            let severity = if content.contains("[严重]") || content.contains("critical") || content.contains("不通过") {
+            let severity = if content.contains("[严重]")
+                || content.contains("critical")
+                || content.contains("不通过")
+            {
                 "critical"
-            } else if content.contains("[警告]") || content.contains("warning") || content.contains("有条件通过") {
+            } else if content.contains("[警告]")
+                || content.contains("warning")
+                || content.contains("有条件通过")
+            {
                 "warning"
             } else {
                 "info"
@@ -185,9 +199,15 @@ fn parse_review_findings(output: &str) -> Vec<ReviewFinding> {
 
             // 提取问题和建议
             let (issue, suggestion) = if let Some(pos) = content.find("→") {
-                (content[..pos].trim().to_string(), content[pos + 3..].trim().to_string())
+                (
+                    content[..pos].trim().to_string(),
+                    content[pos + 3..].trim().to_string(),
+                )
             } else if let Some(pos) = content.find("->") {
-                (content[..pos].trim().to_string(), content[pos + 2..].trim().to_string())
+                (
+                    content[..pos].trim().to_string(),
+                    content[pos + 2..].trim().to_string(),
+                )
             } else {
                 (content.to_string(), String::new())
             };
@@ -231,11 +251,7 @@ fn extract_file_path(text: &str) -> Option<String> {
 
 fn extract_line_number(text: &str) -> Option<usize> {
     // 匹配 :123 或 L123 或 第123行
-    let patterns = [
-        (":", ":"),
-        ("L", "L"),
-        ("第", "行"),
-    ];
+    let patterns = [(":", ":"), ("L", "L"), ("第", "行")];
 
     for (start_pat, _end_pat) in &patterns {
         if let Some(start) = text.find(start_pat) {
@@ -265,8 +281,15 @@ fn parse_test_suggestions(output: &str) -> Vec<String> {
             || trimmed.to_lowercase().contains("assert")
             || trimmed.to_lowercase().contains("验证")
         {
-            if trimmed.starts_with("-") || trimmed.starts_with("*") || trimmed.starts_with("1.") || trimmed.starts_with("2.") {
-                let content = trimmed.trim_start_matches("-").trim_start_matches("*").trim();
+            if trimmed.starts_with("-")
+                || trimmed.starts_with("*")
+                || trimmed.starts_with("1.")
+                || trimmed.starts_with("2.")
+            {
+                let content = trimmed
+                    .trim_start_matches("-")
+                    .trim_start_matches("*")
+                    .trim();
                 if content.len() > 10 && content.len() < 300 {
                     suggestions.push(content.to_string());
                 }
@@ -295,9 +318,18 @@ fn generate_summary_text(
     parts.push(format!("任务：{}", task_description));
 
     if !code_changes.is_empty() {
-        let create_count = code_changes.iter().filter(|c| c.change_type == "create").count();
-        let modify_count = code_changes.iter().filter(|c| c.change_type == "modify").count();
-        let delete_count = code_changes.iter().filter(|c| c.change_type == "delete").count();
+        let create_count = code_changes
+            .iter()
+            .filter(|c| c.change_type == "create")
+            .count();
+        let modify_count = code_changes
+            .iter()
+            .filter(|c| c.change_type == "modify")
+            .count();
+        let delete_count = code_changes
+            .iter()
+            .filter(|c| c.change_type == "delete")
+            .count();
         parts.push(format!(
             "代码变更：创建 {} 个文件，修改 {} 个文件，删除 {} 个文件",
             create_count, modify_count, delete_count
@@ -305,9 +337,18 @@ fn generate_summary_text(
     }
 
     if !review_findings.is_empty() {
-        let critical = review_findings.iter().filter(|f| f.severity == "critical").count();
-        let warning = review_findings.iter().filter(|f| f.severity == "warning").count();
-        let info = review_findings.iter().filter(|f| f.severity == "info").count();
+        let critical = review_findings
+            .iter()
+            .filter(|f| f.severity == "critical")
+            .count();
+        let warning = review_findings
+            .iter()
+            .filter(|f| f.severity == "warning")
+            .count();
+        let info = review_findings
+            .iter()
+            .filter(|f| f.severity == "info")
+            .count();
         parts.push(format!(
             "审查意见：严重 {} 条，警告 {} 条，建议 {} 条",
             critical, warning, info
@@ -338,15 +379,17 @@ pub fn save_deliverable(project_dir: &Path, deliverable: &Deliverable) -> Result
 
 /// 加载交付清单
 pub fn load_deliverable(project_dir: &Path, task_id: &str) -> Result<Option<Deliverable>, String> {
-    let file_path = project_dir.join(".xt").join("deliverables").join(format!("{}.json", task_id));
+    let file_path = project_dir
+        .join(".xt")
+        .join("deliverables")
+        .join(format!("{}.json", task_id));
     if !file_path.exists() {
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&file_path)
-        .map_err(|e| format!("读取交付清单失败: {}", e))?;
-    let deliverable: Deliverable = serde_json::from_str(&content)
-        .map_err(|e| format!("解析交付清单失败: {}", e))?;
+    let content = fs::read_to_string(&file_path).map_err(|e| format!("读取交付清单失败: {}", e))?;
+    let deliverable: Deliverable =
+        serde_json::from_str(&content).map_err(|e| format!("解析交付清单失败: {}", e))?;
 
     Ok(Some(deliverable))
 }

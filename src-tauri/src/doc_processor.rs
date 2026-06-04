@@ -30,7 +30,8 @@ pub fn read_doc(file_path: &str) -> Result<DocumentContent, String> {
         .to_lowercase();
 
     match extension.as_str() {
-        "txt" | "md" | "log" | "json" | "toml" | "yaml" | "yml" | "xml" | "html" | "css" | "js" | "ts" | "rs" | "py" | "java" | "go" | "c" | "cpp" | "h" => {
+        "txt" | "md" | "log" | "json" | "toml" | "yaml" | "yml" | "xml" | "html" | "css" | "js"
+        | "ts" | "rs" | "py" | "java" | "go" | "c" | "cpp" | "h" => {
             read_text_file(file_path, &extension)
         }
         "pdf" => read_pdf_file(file_path),
@@ -46,8 +47,7 @@ pub fn write_doc(file_path: &str, content: &str, format: &str) -> Result<String,
     let fmt = format.to_lowercase();
     match fmt.as_str() {
         "txt" | "md" | "text" | "markdown" => {
-            std::fs::write(file_path, content)
-                .map_err(|e| format!("写入文件失败: {}", e))?;
+            std::fs::write(file_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
             Ok(format!("成功写入文件: {}", file_path))
         }
         "csv" => write_csv_file(file_path, content),
@@ -58,8 +58,7 @@ pub fn write_doc(file_path: &str, content: &str, format: &str) -> Result<String,
 
 /// 读取纯文本文件
 fn read_text_file(file_path: &str, extension: &str) -> Result<DocumentContent, String> {
-    let text = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
+    let text = std::fs::read_to_string(file_path).map_err(|e| format!("读取文件失败: {}", e))?;
 
     Ok(DocumentContent {
         format: extension.to_string(),
@@ -73,8 +72,7 @@ fn read_text_file(file_path: &str, extension: &str) -> Result<DocumentContent, S
 fn read_pdf_file(file_path: &str) -> Result<DocumentContent, String> {
     use lopdf::Document;
 
-    let doc = Document::load(file_path)
-        .map_err(|e| format!("打开PDF失败: {}", e))?;
+    let doc = Document::load(file_path).map_err(|e| format!("打开PDF失败: {}", e))?;
 
     let mut text = String::new();
     let pages = doc.get_pages();
@@ -106,11 +104,9 @@ fn read_pdf_file(file_path: &str) -> Result<DocumentContent, String> {
 fn read_docx_file(file_path: &str) -> Result<DocumentContent, String> {
     use docx_rs::*;
 
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("读取DOCX文件失败: {}", e))?;
+    let file_bytes = std::fs::read(file_path).map_err(|e| format!("读取DOCX文件失败: {}", e))?;
 
-    let doc = read_docx(&file_bytes)
-        .map_err(|e| format!("解析DOCX失败: {}", e))?;
+    let doc = read_docx(&file_bytes).map_err(|e| format!("解析DOCX失败: {}", e))?;
 
     let mut text = String::new();
 
@@ -148,7 +144,7 @@ fn read_docx_file(file_path: &str) -> Result<DocumentContent, String> {
 
 /// 读取 Excel 文件
 fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
-    use calamine::{open_workbook, Reader, Xlsx, Xls};
+    use calamine::{open_workbook, Reader, Xls, Xlsx};
 
     let path = Path::new(file_path);
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -157,8 +153,8 @@ fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
     let mut all_text = String::new();
 
     if extension == "xlsx" {
-        let mut workbook: Xlsx<_> = open_workbook(file_path)
-            .map_err(|e| format!("打开Excel文件失败: {}", e))?;
+        let mut workbook: Xlsx<_> =
+            open_workbook(file_path).map_err(|e| format!("打开Excel文件失败: {}", e))?;
 
         for sheet_name in workbook.sheet_names().to_vec() {
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
@@ -167,9 +163,8 @@ fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
                 let mut first_row = true;
 
                 for row in range.rows() {
-                    let row_data: Vec<String> = row.iter().map(|cell| {
-                        format!("{}", cell)
-                    }).collect();
+                    let row_data: Vec<String> =
+                        row.iter().map(|cell| format!("{}", cell)).collect();
 
                     if first_row {
                         headers = row_data;
@@ -196,8 +191,8 @@ fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
             }
         }
     } else {
-        let mut workbook: Xls<_> = open_workbook(file_path)
-            .map_err(|e| format!("打开Excel文件失败: {}", e))?;
+        let mut workbook: Xls<_> =
+            open_workbook(file_path).map_err(|e| format!("打开Excel文件失败: {}", e))?;
 
         for sheet_name in workbook.sheet_names().to_vec() {
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
@@ -206,9 +201,8 @@ fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
                 let mut first_row = true;
 
                 for row in range.rows() {
-                    let row_data: Vec<String> = row.iter().map(|cell| {
-                        format!("{}", cell)
-                    }).collect();
+                    let row_data: Vec<String> =
+                        row.iter().map(|cell| format!("{}", cell)).collect();
 
                     if first_row {
                         headers = row_data;
@@ -246,8 +240,8 @@ fn read_excel_file(file_path: &str) -> Result<DocumentContent, String> {
 
 /// 读取 CSV 文件
 fn read_csv_file(file_path: &str) -> Result<DocumentContent, String> {
-    let mut reader = csv::Reader::from_path(file_path)
-        .map_err(|e| format!("打开CSV文件失败: {}", e))?;
+    let mut reader =
+        csv::Reader::from_path(file_path).map_err(|e| format!("打开CSV文件失败: {}", e))?;
 
     let headers: Vec<String> = reader
         .headers()
@@ -284,8 +278,8 @@ fn read_csv_file(file_path: &str) -> Result<DocumentContent, String> {
 
 /// 写入 CSV 文件
 fn write_csv_file(file_path: &str, content: &str) -> Result<String, String> {
-    let mut writer = csv::Writer::from_path(file_path)
-        .map_err(|e| format!("创建CSV文件失败: {}", e))?;
+    let mut writer =
+        csv::Writer::from_path(file_path).map_err(|e| format!("创建CSV文件失败: {}", e))?;
 
     for line in content.lines() {
         let fields: Vec<&str> = line.split(',').collect();
@@ -309,8 +303,7 @@ fn write_docx_file(file_path: &str, content: &str) -> Result<String, String> {
         doc = doc.add_paragraph(para);
     }
 
-    let file = std::fs::File::create(file_path)
-        .map_err(|e| format!("创建DOCX文件失败: {}", e))?;
+    let file = std::fs::File::create(file_path).map_err(|e| format!("创建DOCX文件失败: {}", e))?;
 
     doc.build()
         .pack(file)

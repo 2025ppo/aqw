@@ -54,7 +54,13 @@ fn retention_dir(project_name: &str) -> std::path::PathBuf {
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -71,7 +77,15 @@ pub fn register_generated_code(
     let dir = retention_dir(project_name);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let snippet_id = format!("{}-{}", expert_id, uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or(""));
+    let snippet_id = format!(
+        "{}-{}",
+        expert_id,
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("")
+    );
     let content_hash = compute_hash(content);
 
     let snippet = CodeSnippet {
@@ -93,7 +107,10 @@ pub fn register_generated_code(
 }
 
 /// 评估代码保留率
-pub fn evaluate_retention(project_name: &str, project_path: &str) -> Result<RetentionReport, String> {
+pub fn evaluate_retention(
+    project_name: &str,
+    project_path: &str,
+) -> Result<RetentionReport, String> {
     let dir = retention_dir(project_name);
     if !dir.exists() {
         return Ok(RetentionReport {
@@ -127,7 +144,8 @@ pub fn evaluate_retention(project_name: &str, project_path: &str) -> Result<Rete
                     snippet.similarity_score = 1.0;
                 } else {
                     // 计算近似相似度（简化版：检查是否包含关键行）
-                    snippet.similarity_score = estimate_similarity(&current_content, &snippet.content_hash);
+                    snippet.similarity_score =
+                        estimate_similarity(&current_content, &snippet.content_hash);
                     snippet.still_present = snippet.similarity_score > 0.5;
                 }
             } else {
@@ -179,13 +197,19 @@ pub fn evaluate_retention(project_name: &str, project_path: &str) -> Result<Rete
 
     let by_expert: Vec<ExpertRetention> = by_expert_map
         .into_iter()
-        .map(|(expert_id, (expert_name, total, retained))| ExpertRetention {
-            expert_id,
-            expert_name,
-            snippets_generated: total,
-            snippets_retained: retained,
-            retention_rate: if total > 0 { retained as f32 / total as f32 } else { 0.0 },
-        })
+        .map(
+            |(expert_id, (expert_name, total, retained))| ExpertRetention {
+                expert_id,
+                expert_name,
+                snippets_generated: total,
+                snippets_retained: retained,
+                retention_rate: if total > 0 {
+                    retained as f32 / total as f32
+                } else {
+                    0.0
+                },
+            },
+        )
         .collect();
 
     Ok(RetentionReport {

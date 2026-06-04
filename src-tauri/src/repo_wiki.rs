@@ -3,9 +3,9 @@
 //   原始信号 → Knowledge Card (.xt/repo/cards/*.json) — Agent 直接消费
 //   Knowledge Card → RepoWiki (.xt/repo/wiki/*.md) — 人类可读连贯文章
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 use crate::{code_chunker, DeepSeekMessage, DeepSeekRequest, DeepSeekResponse};
 
@@ -19,7 +19,7 @@ pub struct KnowledgeCard {
     pub title: String,
     pub category: String, // overview/architecture/tech_stack/spec/config
     pub tags: Vec<String>,
-    pub content: String,  // Markdown 内容
+    pub content: String, // Markdown 内容
     pub sources: Vec<String>,
     pub updated_at: String,
 }
@@ -27,7 +27,7 @@ pub struct KnowledgeCard {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WikiArticle {
     pub title: String,
-    pub content: String,   // Markdown
+    pub content: String, // Markdown
     pub source_cards: Vec<String>,
     pub updated_at: String,
 }
@@ -74,7 +74,8 @@ pub fn list_repo_items(project_dir: &Path) -> Vec<RepoItem> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    let name = path.file_stem()
+                    let name = path
+                        .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
                         .to_string();
@@ -113,10 +114,10 @@ pub fn read_cards(project_dir: &Path) -> Result<Vec<KnowledgeCard>, String> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false) {
-                let content = fs::read_to_string(&path)
-                    .map_err(|e| format!("读取卡片文件失败: {}", e))?;
-                let card: KnowledgeCard = serde_json::from_str(&content)
-                    .map_err(|e| format!("解析卡片失败: {}", e))?;
+                let content =
+                    fs::read_to_string(&path).map_err(|e| format!("读取卡片文件失败: {}", e))?;
+                let card: KnowledgeCard =
+                    serde_json::from_str(&content).map_err(|e| format!("解析卡片失败: {}", e))?;
                 cards.push(card);
             }
         }
@@ -131,8 +132,7 @@ pub fn read_wiki(project_dir: &Path, name: &str) -> Result<String, String> {
     if !wiki_path.exists() {
         return Err(format!("Wiki 文章 {} 不存在", name));
     }
-    fs::read_to_string(&wiki_path)
-        .map_err(|e| format!("读取 Wiki 文件失败: {}", e))
+    fs::read_to_string(&wiki_path).map_err(|e| format!("读取 Wiki 文件失败: {}", e))
 }
 
 /// 确保 .xt/repo/cards/ 和 .xt/repo/wiki/ 存在
@@ -140,10 +140,8 @@ pub fn ensure_repo_dirs(project_dir: &Path) -> Result<(), String> {
     let cards_dir = project_dir.join(".xt/repo/cards");
     let wiki_dir = project_dir.join(".xt/repo/wiki");
 
-    fs::create_dir_all(&cards_dir)
-        .map_err(|e| format!("创建 cards 目录失败: {}", e))?;
-    fs::create_dir_all(&wiki_dir)
-        .map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
+    fs::create_dir_all(&cards_dir).map_err(|e| format!("创建 cards 目录失败: {}", e))?;
+    fs::create_dir_all(&wiki_dir).map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
 
     Ok(())
 }
@@ -166,12 +164,36 @@ pub fn collect_signals(project_dir: &Path) -> Result<SignalData, String> {
 
 /// Wiki 信号采集跳过目录集合
 const WIKI_SKIP_DIRS: &[&str] = &[
-    "node_modules", "target", "dist", "__pycache__", "venv", ".venv",
-    "build", ".next", "coverage", "vendor", ".gradle", "gradle",
-    "obj", "bin", "out", "packages", ".nuget", "Pods", "DerivedData",
-    ".dart_tool", ".pub-cache", "bower_components", "jspm_packages",
-    ".cache", ".parcel-cache", ".terraform", ".serverless",
-    "logs", "tmp", "temp",
+    "node_modules",
+    "target",
+    "dist",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "build",
+    ".next",
+    "coverage",
+    "vendor",
+    ".gradle",
+    "gradle",
+    "obj",
+    "bin",
+    "out",
+    "packages",
+    ".nuget",
+    "Pods",
+    "DerivedData",
+    ".dart_tool",
+    ".pub-cache",
+    "bower_components",
+    "jspm_packages",
+    ".cache",
+    ".parcel-cache",
+    ".terraform",
+    ".serverless",
+    "logs",
+    "tmp",
+    "temp",
 ];
 
 fn scan_files_recursive(
@@ -206,14 +228,14 @@ fn scan_files_recursive(
             }
 
             // 只采集代码/配置文件
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             let wiki_exts = [
-                "ts", "tsx", "js", "jsx", "rs", "py", "md", "json",
-                "html", "css", "go", "java", "kt", "swift", "c", "cpp",
-                "h", "hpp", "yaml", "yml", "toml", "xml", "sql",
-                "sh", "bash", "txt", "cfg", "ini",
+                "ts", "tsx", "js", "jsx", "rs", "py", "md", "json", "html", "css", "go", "java",
+                "kt", "swift", "c", "cpp", "h", "hpp", "yaml", "yml", "toml", "xml", "sql", "sh",
+                "bash", "txt", "cfg", "ini",
             ];
             if !wiki_exts.contains(&ext.as_str()) {
                 continue;
@@ -221,7 +243,8 @@ fn scan_files_recursive(
 
             // 读取文件内容的前 500 字符作为摘要
             if let Ok(content) = fs::read_to_string(&path) {
-                let relative = path.strip_prefix(base)
+                let relative = path
+                    .strip_prefix(base)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();
@@ -253,11 +276,11 @@ fn read_chat_summaries(project_dir: &Path) -> Result<Vec<ChatSummary>, String> {
         return Ok(vec![]);
     }
 
-    let content = fs::read_to_string(&sessions_file)
-        .map_err(|e| format!("读取会话文件失败: {}", e))?;
+    let content =
+        fs::read_to_string(&sessions_file).map_err(|e| format!("读取会话文件失败: {}", e))?;
 
-    let sessions: Vec<serde_json::Value> = serde_json::from_str(&content)
-        .map_err(|e| format!("解析会话文件失败: {}", e))?;
+    let sessions: Vec<serde_json::Value> =
+        serde_json::from_str(&content).map_err(|e| format!("解析会话文件失败: {}", e))?;
 
     let mut summaries = vec![];
     for session in sessions.iter().take(10) {
@@ -371,10 +394,9 @@ pub async fn generate_cards(
         c.updated_at = now.clone();
         let file_name = format!("{}.json", c.id);
         let file_path = cards_dir.join(&file_name);
-        let content = serde_json::to_string_pretty(&c)
-            .map_err(|e| format!("序列化卡片失败: {}", e))?;
-        fs::write(&file_path, content)
-            .map_err(|e| format!("写入卡片文件失败: {}", e))?;
+        let content =
+            serde_json::to_string_pretty(&c).map_err(|e| format!("序列化卡片失败: {}", e))?;
+        fs::write(&file_path, content).map_err(|e| format!("写入卡片文件失败: {}", e))?;
     }
 
     Ok(cards)
@@ -400,8 +422,7 @@ pub async fn synthesize_wiki(
         cards
     };
 
-    let cards_json = serde_json::to_string(&cards)
-        .map_err(|e| format!("序列化卡片失败: {}", e))?;
+    let cards_json = serde_json::to_string(&cards).map_err(|e| format!("序列化卡片失败: {}", e))?;
     let prompt = generate_wiki_prompt(&cards_json);
 
     let response_text = call_ai(api_key, model, &prompt).await?;
@@ -420,8 +441,7 @@ pub async fn synthesize_wiki(
     // 写入 Wiki 文件
     ensure_repo_dirs(project_dir)?;
     let wiki_path = project_dir.join(format!(".xt/repo/wiki/{}.md", name));
-    fs::write(&wiki_path, &markdown)
-        .map_err(|e| format!("写入 Wiki 文件失败: {}", e))?;
+    fs::write(&wiki_path, &markdown).map_err(|e| format!("写入 Wiki 文件失败: {}", e))?;
 
     Ok(article)
 }
@@ -469,8 +489,8 @@ pub async fn incremental_update(
 
     let response_text = call_ai(api_key, model, &prompt).await?;
     let json_text = extract_json_array(&response_text);
-    let updated_cards: Vec<KnowledgeCard> = serde_json::from_str(&json_text)
-        .map_err(|e| format!("解析增量更新结果失败: {}", e))?;
+    let updated_cards: Vec<KnowledgeCard> =
+        serde_json::from_str(&json_text).map_err(|e| format!("解析增量更新结果失败: {}", e))?;
 
     // 合并卡片
     let now = chrono_now();
@@ -491,10 +511,9 @@ pub async fn incremental_update(
     // 写回文件
     for (_, card) in &existing_map {
         let file_path = cards_dir.join(format!("{}.json", card.id));
-        let content = serde_json::to_string_pretty(card)
-            .map_err(|e| format!("序列化卡片失败: {}", e))?;
-        fs::write(&file_path, content)
-            .map_err(|e| format!("写入卡片文件失败: {}", e))?;
+        let content =
+            serde_json::to_string_pretty(card).map_err(|e| format!("序列化卡片失败: {}", e))?;
+        fs::write(&file_path, content).map_err(|e| format!("写入卡片文件失败: {}", e))?;
     }
 
     // 重新合成 Wiki
@@ -544,7 +563,8 @@ pub async fn call_ai(api_key: &str, model: &str, prompt: &str) -> Result<String,
         .await
         .map_err(|e| format!("解析 AI 响应失败: {}", e))?;
 
-    result.choices
+    result
+        .choices
         .first()
         .map(|c| c.message.content.clone())
         .ok_or_else(|| "AI 返回空内容".to_string())

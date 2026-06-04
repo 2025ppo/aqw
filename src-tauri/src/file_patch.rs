@@ -7,14 +7,9 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PatchHunk {
     /// 新建文件
-    AddFile {
-        path: String,
-        content: String,
-    },
+    AddFile { path: String, content: String },
     /// 删除文件
-    DeleteFile {
-        path: String,
-    },
+    DeleteFile { path: String },
     /// 更新文件（精准修改）
     UpdateFile {
         path: String,
@@ -31,10 +26,10 @@ pub enum PatchHunk {
 /// 单个文件内的变更块
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
-    pub context: Option<String>,    // @@ 定位上下文（函数名/类名/标记行）
-    pub old_lines: Vec<String>,     // 要删除的行（- 前缀）
-    pub new_lines: Vec<String>,     // 要新增的行（+ 前缀）
-    pub is_end_of_file: bool,       // 是否在文件末尾操作
+    pub context: Option<String>, // @@ 定位上下文（函数名/类名/标记行）
+    pub old_lines: Vec<String>,  // 要删除的行（- 前缀）
+    pub new_lines: Vec<String>,  // 要新增的行（+ 前缀）
+    pub is_end_of_file: bool,    // 是否在文件末尾操作
 }
 
 /// 完整的Patch结构
@@ -47,16 +42,16 @@ pub struct Patch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchResult {
     pub success: bool,
-    pub applied: Vec<AppliedChange>,  // 已成功应用的变更
-    pub errors: Vec<PatchError>,       // 失败的变更
-    pub summary: String,               // 给模型的摘要
-    pub delta: AppliedDelta,           // Delta跟踪
+    pub applied: Vec<AppliedChange>, // 已成功应用的变更
+    pub errors: Vec<PatchError>,     // 失败的变更
+    pub summary: String,             // 给模型的摘要
+    pub delta: AppliedDelta,         // Delta跟踪
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedChange {
     pub path: String,
-    pub operation: String,  // "A"(add), "M"(modify), "D"(delete), "R"(move/rename)
+    pub operation: String, // "A"(add), "M"(modify), "D"(delete), "R"(move/rename)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,12 +67,12 @@ pub struct PatchError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedDelta {
     pub applied_operations: Vec<DeltaEntry>,
-    pub exact: bool,  // 所有副作用是否可确认
+    pub exact: bool, // 所有副作用是否可确认
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaEntry {
-    pub operation: String,  // "add", "update", "delete", "move"
+    pub operation: String, // "add", "update", "delete", "move"
     pub path: String,
     pub success: bool,
     pub detail: Option<String>,
@@ -133,7 +128,10 @@ fn validate_path(file_path: &str, project_root: &Path) -> Result<PathBuf, String
     let canonical_root =
         dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     if !normalized_path.starts_with(&canonical_root) {
-        return Err(format!("Path traversal detected: {} escapes project root", file_path));
+        return Err(format!(
+            "Path traversal detected: {} escapes project root",
+            file_path
+        ));
     }
 
     // 5. 检测符号链接（如果路径存在）
@@ -200,7 +198,10 @@ pub fn parse_patch(input: &str) -> Result<Patch, String> {
 
             // 检查是否有 *** Move to: 标记
             let move_to = if i < lines.len() && lines[i].trim().starts_with("*** Move to: ") {
-                let dest = lines[i].trim().trim_start_matches("*** Move to: ").to_string();
+                let dest = lines[i]
+                    .trim()
+                    .trim_start_matches("*** Move to: ")
+                    .to_string();
                 i += 1;
                 Some(dest)
             } else {
@@ -520,7 +521,11 @@ pub fn verify_patch(patch: &Patch, project_dir: &str) -> Result<(), Vec<PatchErr
             PatchHunk::AddFile { path, .. } => {
                 // 路径安全检查
                 if let Err(e) = validate_path(path, project_root) {
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 let full_path = project_root.join(path);
@@ -534,7 +539,11 @@ pub fn verify_patch(patch: &Patch, project_dir: &str) -> Result<(), Vec<PatchErr
             }
             PatchHunk::DeleteFile { path } => {
                 if let Err(e) = validate_path(path, project_root) {
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 let full_path = project_root.join(path);
@@ -548,7 +557,11 @@ pub fn verify_patch(patch: &Patch, project_dir: &str) -> Result<(), Vec<PatchErr
             }
             PatchHunk::UpdateFile { path, changes } => {
                 if let Err(e) = validate_path(path, project_root) {
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 let full_path = project_root.join(path);
@@ -566,11 +579,19 @@ pub fn verify_patch(patch: &Patch, project_dir: &str) -> Result<(), Vec<PatchErr
             }
             PatchHunk::MoveFile { from, to, changes } => {
                 if let Err(e) = validate_path(from, project_root) {
-                    errors.push(PatchError { path: from.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: from.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 if let Err(e) = validate_path(to, project_root) {
-                    errors.push(PatchError { path: to.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: to.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 let full_from = project_root.join(from);
@@ -653,77 +674,125 @@ pub fn apply_patch(patch: &Patch, project_dir: &str) -> PatchResult {
                 // 路径安全检查
                 if let Err(e) = validate_path(path, project_root) {
                     delta.push("add", path, false, Some(e.clone()));
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 match apply_add_file(project_dir, path, content) {
                     Ok(()) => {
                         delta.push("add", path, true, None);
-                        applied.push(AppliedChange { path: path.clone(), operation: "A".into() });
+                        applied.push(AppliedChange {
+                            path: path.clone(),
+                            operation: "A".into(),
+                        });
                     }
                     Err(e) => {
                         delta.push("add", path, false, Some(e.clone()));
                         delta.exact = false;
-                        errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                        errors.push(PatchError {
+                            path: path.clone(),
+                            message: e,
+                            hunk_index: idx,
+                        });
                     }
                 }
             }
             PatchHunk::DeleteFile { path } => {
                 if let Err(e) = validate_path(path, project_root) {
                     delta.push("delete", path, false, Some(e.clone()));
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 match apply_delete_file(project_dir, path) {
                     Ok(()) => {
                         delta.push("delete", path, true, None);
-                        applied.push(AppliedChange { path: path.clone(), operation: "D".into() });
+                        applied.push(AppliedChange {
+                            path: path.clone(),
+                            operation: "D".into(),
+                        });
                     }
                     Err(e) => {
                         delta.push("delete", path, false, Some(e.clone()));
                         delta.exact = false;
-                        errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                        errors.push(PatchError {
+                            path: path.clone(),
+                            message: e,
+                            hunk_index: idx,
+                        });
                     }
                 }
             }
             PatchHunk::UpdateFile { path, changes } => {
                 if let Err(e) = validate_path(path, project_root) {
                     delta.push("update", path, false, Some(e.clone()));
-                    errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: path.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 match apply_update_file(project_dir, path, changes) {
                     Ok(()) => {
                         delta.push("update", path, true, None);
-                        applied.push(AppliedChange { path: path.clone(), operation: "M".into() });
+                        applied.push(AppliedChange {
+                            path: path.clone(),
+                            operation: "M".into(),
+                        });
                     }
                     Err(e) => {
                         delta.push("update", path, false, Some(e.clone()));
                         delta.exact = false;
-                        errors.push(PatchError { path: path.clone(), message: e, hunk_index: idx });
+                        errors.push(PatchError {
+                            path: path.clone(),
+                            message: e,
+                            hunk_index: idx,
+                        });
                     }
                 }
             }
             PatchHunk::MoveFile { from, to, changes } => {
                 if let Err(e) = validate_path(from, project_root) {
                     delta.push("move", from, false, Some(e.clone()));
-                    errors.push(PatchError { path: from.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: from.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 if let Err(e) = validate_path(to, project_root) {
                     delta.push("move", to, false, Some(e.clone()));
-                    errors.push(PatchError { path: to.clone(), message: e, hunk_index: idx });
+                    errors.push(PatchError {
+                        path: to.clone(),
+                        message: e,
+                        hunk_index: idx,
+                    });
                     continue;
                 }
                 match apply_move_file(project_dir, from, to, changes) {
                     Ok(()) => {
                         delta.push("move", &format!("{} -> {}", from, to), true, None);
-                        applied.push(AppliedChange { path: to.clone(), operation: "R".into() });
+                        applied.push(AppliedChange {
+                            path: to.clone(),
+                            operation: "R".into(),
+                        });
                     }
                     Err(e) => {
                         delta.push("move", from, false, Some(e.clone()));
                         delta.exact = false;
-                        errors.push(PatchError { path: from.clone(), message: e, hunk_index: idx });
+                        errors.push(PatchError {
+                            path: from.clone(),
+                            message: e,
+                            hunk_index: idx,
+                        });
                     }
                 }
             }
@@ -907,8 +976,7 @@ fn apply_move_file(
         Ok(()) => Ok(()),
         Err(e) => {
             // rename 可能跨文件系统失败，降级为 copy + delete
-            let data = std::fs::read(&from_path)
-                .map_err(|_| format!("移动文件失败: {}", e))?;
+            let data = std::fs::read(&from_path).map_err(|_| format!("移动文件失败: {}", e))?;
             std::fs::write(&to_path, &data)
                 .map_err(|write_err| format!("移动文件失败(写入目标): {}", write_err))?;
             std::fs::remove_file(&from_path)
@@ -929,10 +997,7 @@ pub fn parse_and_apply_patch(patch_text: &str, project_dir: &str) -> Result<Patc
     if let Err(errors) = verify_patch(&patch, project_dir) {
         // 验证失败但不完全阻止——只报告warning，仍然尝试应用
         // 因为验证是保守的，有些情况实际能成功
-        eprintln!(
-            "Patch验证发现问题 (仍将尝试应用): {:?}",
-            errors
-        );
+        eprintln!("Patch验证发现问题 (仍将尝试应用): {:?}", errors);
     }
 
     // 3. 应用
