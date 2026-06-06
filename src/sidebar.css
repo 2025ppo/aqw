@@ -327,3 +327,68 @@
 .sidebar-chat-list::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ========== 2026-06 sidebar refresh ========== */
+#sidebar {
+  background: color-mix(in srgb, var(--surface-sidebar) 92%, transparent);
+  border-right: 1px solid var(--border-color);
+  box-shadow: 10px 0 30px rgba(24, 32, 51, 0.05);
+  backdrop-filter: blur(18px);
+}
+
+.sidebar-create-btn,
+.sidebar-toggle-btn,
+.chat-icon,
+.chat-actions-btn {
+  color: var(--text-secondary);
+}
+
+.sidebar-create-btn:hover,
+.sidebar-toggle-btn:hover,
+.chat-item:hover,
+.chat-actions-btn:hover,
+.chat-item-actions.open .chat-actions-btn {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.sidebar-divider,
+.sidebar-bottom {
+  border-color: var(--border-color);
+  background: transparent;
+}
+
+.chat-item.active {
+  background: var(--accent-soft);
+}
+
+.chat-name,
+#sidebar.expanded .sidebar-btn-text,
+.chat-item.active .chat-icon {
+  color: var(--text-primary);
+}
+
+.chat-actions-menu {
+  background: color-mix(in srgb, var(--surface-panel-strong) 96%, transparent);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-actions-menu-item {
+  color: var(--text-secondary);
+}
+
+.chat-actions-menu-item:hover {
+  background: var(--surface-panel-muted);
+  color: var(--text-primary);
+}
+
+.chat-rename-input {
+  background: color-mix(in srgb, var(--surface-panel-strong) 92%, transparent);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.sidebar-chat-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 72%, transparent);
+}

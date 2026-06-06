@@ -167,7 +167,7 @@ mod tests {
         let retried_once = apply_decision(&PipelineRuntimeDecisionRequest {
             state,
             action: "retry".to_string(),
-            current_step_expert_ids: vec!["jiang-qinglan".to_string()],
+            current_step_expert_ids: vec!["discipline-520".to_string()],
         });
         assert!(retried_once.repeated_step);
         assert_eq!(retried_once.state.current_step_index, 0);
@@ -183,12 +183,12 @@ mod tests {
         let retried_once = apply_decision(&PipelineRuntimeDecisionRequest {
             state,
             action: "retry".to_string(),
-            current_step_expert_ids: vec!["jiang-qinglan".to_string()],
+            current_step_expert_ids: vec!["discipline-520".to_string()],
         });
         let retried_twice = apply_decision(&PipelineRuntimeDecisionRequest {
             state: retried_once.state,
             action: "retry".to_string(),
-            current_step_expert_ids: vec!["jiang-qinglan".to_string()],
+            current_step_expert_ids: vec!["discipline-520".to_string()],
         });
         assert!(!retried_twice.repeated_step);
         assert_eq!(retried_twice.state.current_step_index, 1);
@@ -204,7 +204,7 @@ mod tests {
         let transition = apply_decision(&PipelineRuntimeDecisionRequest {
             state,
             action: "artifact-missing".to_string(),
-            current_step_expert_ids: vec!["jiang-yumo".to_string()],
+            current_step_expert_ids: vec!["discipline-520".to_string()],
         });
         assert!(transition.should_stop);
         assert!(transition.state.finished);

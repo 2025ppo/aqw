@@ -1,4 +1,5 @@
 // ========== 交付清单生成系统 ==========
+use crate::expert_identity::is_review_expert;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -62,7 +63,7 @@ pub fn generate_deliverable(
         code_changes.extend(changes);
 
         // 2. 解析审查意见
-        if expert_id.contains("yingqiu") || expert_name.contains("审查") {
+        if is_review_expert(expert_id) || expert_name.contains("审查") {
             let findings = parse_review_findings(output);
             review_findings.extend(findings);
         }

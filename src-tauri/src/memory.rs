@@ -738,7 +738,7 @@ mod tests {
         MemoryEntry {
             id: id.to_string(),
             project_id: 1,
-            expert_id: "jiang-qinglan".to_string(),
+            expert_id: "discipline-520".to_string(),
             memory_type: memory_type.to_string(),
             content: content.to_string(),
             keywords: extract_keywords(content),

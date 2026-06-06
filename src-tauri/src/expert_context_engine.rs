@@ -198,9 +198,9 @@ mod tests {
     fn builds_messages_with_previous_results_and_context() {
         let messages = build_initial_messages(
             &[PreviousExpertResult {
-                expert_id: Some("jiang-ruoxi".to_string()),
-                name: "江若溪".to_string(),
-                title: "调研员".to_string(),
+                expert_id: Some("discipline-120".to_string()),
+                name: "120 信息科学与系统科学".to_string(),
+                title: "一级学科专家".to_string(),
                 output: "这里是上一步摘要".to_string(),
             }],
             "修复项目",
@@ -229,7 +229,7 @@ mod tests {
             entry: memory::MemoryEntry {
                 id: "m1".to_string(),
                 project_id: 1,
-                expert_id: "jiang-yumo".to_string(),
+                expert_id: "discipline-520".to_string(),
                 memory_type: "working".to_string(),
                 content: "之前修过 app.js".to_string(),
                 keywords: vec![],

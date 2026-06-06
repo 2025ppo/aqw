@@ -1,3 +1,8 @@
+use crate::expert_identity::{
+    is_implementation_expert as is_catalog_implementation_expert,
+    is_review_expert as is_catalog_review_expert,
+    normalize_expert_id,
+};
 use dunce;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -106,6 +111,7 @@ pub struct ExpertReplyGuardRequest {
     pub expert_id: String,
     pub has_workspace_context: bool,
     pub workspace_looks_empty: bool,
+    pub task_description: String,
     pub reply: String,
 }
 
@@ -117,6 +123,145 @@ pub struct ExpertReplyGuardDecision {
     pub phase_detail: Option<String>,
     pub reminder_prompt: Option<String>,
     pub final_failure_message: Option<String>,
+}
+
+fn is_design_expert(expert_id: &str) -> bool {
+    normalize_expert_id(expert_id) == "discipline-760"
+}
+
+fn is_implementation_expert(expert_id: &str) -> bool {
+    is_catalog_implementation_expert(expert_id)
+}
+
+fn is_review_expert(expert_id: &str) -> bool {
+    is_catalog_review_expert(expert_id)
+}
+
+fn includes_any_keyword(text: &str, keywords: &[&str]) -> bool {
+    let normalized = text.to_lowercase();
+    keywords
+        .iter()
+        .any(|keyword| normalized.contains(&keyword.to_lowercase()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsibilityActivation {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponsibilitySignal {
+    score: i32,
+    probability: f64,
+    level: ResponsibilityActivation,
+}
+
+fn responsibility_probability_from_score(score: i32) -> f64 {
+    if score >= 14 {
+        0.92
+    } else if score >= 10 {
+        0.82
+    } else if score >= 7 {
+        0.66
+    } else if score >= 4 {
+        0.48
+    } else if score >= 1 {
+        0.24
+    } else {
+        0.08
+    }
+}
+
+fn evaluate_responsibility_activation(
+    expert_id: &str,
+    task_description: &str,
+) -> ResponsibilitySignal {
+    let text = task_description.trim();
+    if text.is_empty() {
+        return ResponsibilitySignal {
+            score: 0,
+            probability: responsibility_probability_from_score(0),
+            level: ResponsibilityActivation::Low,
+        };
+    }
+
+    let normalized_expert_id = normalize_expert_id(expert_id);
+    let mut score = 0;
+
+    if is_implementation_expert(normalized_expert_id.as_ref()) {
+        if includes_any_keyword(
+            text,
+            &["代码", "开发", "重构", "实现", "修复", "前端", "后端", "工程", "系统", "引擎"],
+        ) {
+            score += 10;
+        } else {
+            score += 5;
+        }
+    }
+    if is_design_expert(normalized_expert_id.as_ref())
+        && includes_any_keyword(text, &["设计", "视觉", "交互", "界面", "体验", "风格"])
+    {
+        score += 10;
+    }
+    if is_review_expert(normalized_expert_id.as_ref()) {
+        if includes_any_keyword(text, &["审查", "验收", "合规", "风险", "安全", "review"]) {
+            score += 10;
+        } else {
+            score += 5;
+        }
+    }
+
+    match normalized_expert_id.as_ref() {
+        "discipline-120" => {
+            if includes_any_keyword(text, &["系统", "架构", "调度", "工作流", "信息", "复杂系统"])
+            {
+                score += 10;
+            } else {
+                score += 5;
+            }
+        }
+        "discipline-910" => {
+            if includes_any_keyword(text, &["统计", "数据", "指标", "实验", "回归", "分析"]) {
+                score += 10;
+            } else {
+                score += 5;
+            }
+        }
+        "discipline-630" => {
+            if includes_any_keyword(text, &["管理", "流程", "组织", "治理", "协作", "调度"]) {
+                score += 10;
+            } else {
+                score += 5;
+            }
+        }
+        "discipline-740" | "discipline-870" => {
+            if includes_any_keyword(text, &["翻译", "文档", "资料", "整理", "术语", "编目"]) {
+                score += 10;
+            }
+        }
+        "discipline-750" | "discipline-760" => {
+            if includes_any_keyword(text, &["写作", "文案", "设计", "视觉", "海报", "视频"]) {
+                score += 10;
+            }
+        }
+        _ => {}
+    }
+
+    let level = if score >= 10 {
+        ResponsibilityActivation::High
+    } else if score >= 4 {
+        ResponsibilityActivation::Medium
+    } else {
+        ResponsibilityActivation::Low
+    };
+
+    ResponsibilitySignal {
+        score,
+        probability: responsibility_probability_from_score(score),
+        level,
+    }
 }
 
 fn read_workspace_relative_file(
@@ -306,11 +451,11 @@ pub fn evaluate_step_deliverable_guard(
     let designer_step = request
         .step_expert_ids
         .iter()
-        .any(|id| id == "jiang-dingchu");
+        .any(|id| is_design_expert(id));
     let implementation_step = request
         .step_expert_ids
         .iter()
-        .any(|id| ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&id.as_str()));
+        .any(|id| is_implementation_expert(id));
     let requires_real_artifact =
         request.has_workspace_context && (designer_step || implementation_step);
     if !requires_real_artifact {
@@ -349,11 +494,20 @@ pub fn evaluate_step_deliverable_guard(
 }
 
 pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertReplyGuardDecision {
-    let implementation_expert =
-        ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&request.expert_id.as_str());
-    let requires_real_artifact = request.has_workspace_context
-        && (implementation_expert || request.expert_id == "jiang-dingchu");
-    if !requires_real_artifact {
+    let implementation_expert = is_implementation_expert(&request.expert_id);
+    let reply = request.reply.as_str();
+    let has_file_mutation = has_file_mutation_deliverable_text(reply);
+    let has_source_mutation = has_source_file_mutation_deliverable_text(reply);
+    let design_expert = is_design_expert(&request.expert_id);
+    let activation =
+        evaluate_responsibility_activation(&request.expert_id, &request.task_description);
+    let requires_real_artifact = request.has_workspace_context && (implementation_expert || design_expert);
+    let cross_duty_source_mutation = request.has_workspace_context
+        && has_source_mutation
+        && !implementation_expert
+        && !design_expert
+        && activation.level != ResponsibilityActivation::High;
+    if !requires_real_artifact && !cross_duty_source_mutation {
         return ExpertReplyGuardDecision {
             should_enforce: false,
             requires_retry: false,
@@ -363,14 +517,12 @@ pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertR
         };
     }
 
-    let reply = request.reply.as_str();
-    let has_file_mutation = has_file_mutation_deliverable_text(reply);
-    let has_source_mutation = has_source_file_mutation_deliverable_text(reply);
     let has_approximate = has_approximate_file_mutation_payload(reply);
     let has_diff_payload = has_unstructured_diff_edit_payload(reply);
     let has_unexecutable_declaration = has_unexecutable_file_mutation_declaration(reply);
     let mentions_saved = mentions_saved_artifact_without_action(reply);
-    let requires_retry = !has_file_mutation
+    let requires_retry = cross_duty_source_mutation
+        || !has_file_mutation
         || (implementation_expert && !has_source_mutation)
         || mentions_saved
         || has_approximate
@@ -386,7 +538,13 @@ pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertR
         };
     }
 
-    let reminder_prompt = if request.expert_id == "jiang-dingchu" {
+    let reminder_prompt = if cross_duty_source_mutation {
+        format!(
+            "你当前不是这类源码改动的高匹配主责专家。当前职责触发分为 {}，触发概率约 {:.0}%，因此虽然你具备同等工具能力，但在本任务里不应直接主导源码落盘。请改为以下两种输出之一：1. 仅补充你的学科分析、风险判断或约束说明；2. 明确建议转交更匹配的专家（通常是工程实现类学科）继续落盘。除非你的学科与当前任务高度匹配，否则不要继续直接输出 app.js / index.html / styles.css / src/* 的源码修改动作。",
+            activation.score,
+            activation.probability * 100.0
+        )
+    } else if design_expert {
         "你当前声称已经输出/保存了设计文件，但回复里没有任何真实落盘动作，这在 code-development 场景里等同于未完成。请立刻通过 [ACTION:CREATE_FILE] / [ACTION:WRITE_FILE] 真正写出设计文档；如果你并没有保存成功，就必须明确撤回“已保存/已输出文档”的说法，禁止继续空口声称文件已存在。".to_string()
     } else if request.workspace_looks_empty && !has_file_mutation {
         "当前工作区几乎是空目录（例如只有 .xt 或没有现成业务源码），这类场景不需要继续探测旧文件，也不要继续讨论技术选型/框架选择。请直接交付最小可运行文件集合，并优先拆成较短的小文件动作：至少创建 [ACTION:CREATE_FILE:index.html]、[ACTION:CREATE_FILE:styles.css]、[ACTION:CREATE_FILE:app.js]，必要时再补 [ACTION:CREATE_FILE:README.md]。创建新文件时优先用代码块格式（例如 [ACTION:CREATE_FILE:styles.css] 后跟 ```css 代码块），不要把大段源码塞进单行 content=\"...\" 内联字符串。只有在内容很短时才允许单文件 index.html 方案。禁止继续只做目录探测、只写分析、只说“需要先读取文件”。".to_string()
@@ -402,7 +560,13 @@ pub fn evaluate_expert_reply_guard(request: &ExpertReplyGuardRequest) -> ExpertR
         "你当前还没有交付任何真实文件变更，这在 code-development 场景里等同于未完成。请立刻基于已有证据输出至少一个可执行文件动作（[ACTION:EDIT_FILE] / [ACTION:WRITE_FILE] / [ACTION:CREATE_FILE] / 结构化 changes）来真正修改代码；如果仍然缺少具体文件内容，你的回复里必须直接包含 [ACTION:READ_FILE:相对路径]。已知目标源码文件（如 app.js / index.html / styles.css）时，禁止用 [ACTION:EXECUTE_CMD] 的 grep/rg/Select-String/Get-Content 代替源码读取。对于 index.html / styles.css / README.md 这类短小静态文件，优先直接交付 WRITE_FILE 完整内容。禁止继续重复目录探测、只给设计文档，或只输出命令列表。".to_string()
     };
 
-    let final_failure_message = if request.expert_id == "jiang-dingchu" {
+    let final_failure_message = if cross_duty_source_mutation {
+        format!(
+            "当前专家与这类源码落盘任务匹配度不足（职责触发分 {}，概率约 {:.0}%），已阻止越责修改，需要转交更匹配的专家继续。",
+            activation.score,
+            activation.probability * 100.0
+        )
+    } else if design_expert {
         "未实际创建或写入设计文档，当前设计交付失败，需要重试。".to_string()
     } else {
         "未交付任何可执行文件变更，当前实现失败，需要重试。".to_string()
@@ -1389,7 +1553,7 @@ h1 {
     #[test]
     fn guards_implementation_steps_without_real_source_mutations() {
         let decision = evaluate_step_deliverable_guard(&StepDeliverableGuardRequest {
-            step_expert_ids: vec!["jiang-yumo".to_string()],
+            step_expert_ids: vec!["discipline-520".to_string()],
             has_workspace_context: true,
             tasks: vec![StepDeliverableTask {
                 output: Some(r#"[ACTION:CREATE_FILE path="notes.md"]"#.to_string()),
@@ -1403,7 +1567,7 @@ h1 {
     #[test]
     fn accepts_precise_source_mutations_for_implementation_steps() {
         let decision = evaluate_step_deliverable_guard(&StepDeliverableGuardRequest {
-            step_expert_ids: vec!["jiang-yumo".to_string()],
+            step_expert_ids: vec!["discipline-520".to_string()],
             has_workspace_context: true,
             tasks: vec![StepDeliverableTask {
                 output: Some(
@@ -1419,9 +1583,10 @@ h1 {
     #[test]
     fn expert_reply_guard_requests_retry_for_approximate_patch() {
         let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: false,
+            task_description: "修复前端页面".to_string(),
             reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old..." replaceText="new"]"#
                 .to_string(),
         });
@@ -1437,9 +1602,10 @@ h1 {
     #[test]
     fn expert_reply_guard_retries_on_unexecutable_edit_declaration() {
         let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: false,
+            task_description: "修复页面".to_string(),
             reply: r#"[ACTION:EDIT_FILE:index.html]
 ```html
 <h1>我的待办</h1>
@@ -1459,9 +1625,10 @@ h1 {
     #[test]
     fn expert_reply_guard_accepts_precise_source_patch() {
         let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: false,
+            task_description: "修复页面".to_string(),
             reply: r#"[ACTION:EDIT_FILE path="app.js" searchText="old" replaceText="new"]"#
                 .to_string(),
         });
@@ -1472,9 +1639,10 @@ h1 {
     #[test]
     fn expert_reply_guard_pushes_empty_workspace_to_create_files() {
         let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             has_workspace_context: true,
             workspace_looks_empty: true,
+            task_description: "创建最小前端项目".to_string(),
             reply: "我建议先做一个轻量单页便签板，再细化实现。".to_string(),
         });
         assert!(decision.should_enforce);
@@ -1484,5 +1652,24 @@ h1 {
             .as_deref()
             .unwrap_or("")
             .contains("CREATE_FILE:index.html"));
+    }
+
+    #[test]
+    fn low_activation_non_engineering_expert_cannot_directly_land_source_code() {
+        let decision = super::evaluate_expert_reply_guard(&super::ExpertReplyGuardRequest {
+            expert_id: "discipline-840".to_string(),
+            has_workspace_context: true,
+            workspace_looks_empty: false,
+            task_description: "修复前端按钮状态逻辑".to_string(),
+            reply: r#"[ACTION:EDIT_FILE path="src/app.ts" searchText="old" replaceText="new"]"#
+                .to_string(),
+        });
+        assert!(decision.should_enforce);
+        assert!(decision.requires_retry);
+        assert!(decision
+            .reminder_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("不应直接主导源码落盘"));
     }
 }

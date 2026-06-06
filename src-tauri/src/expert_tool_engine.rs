@@ -1,3 +1,4 @@
+use crate::expert_identity::supports_source_reading_rewrite;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -404,12 +405,16 @@ pub fn extract_tool_requests(text: &str, workspace_root: Option<&Path>) -> Vec<E
 
 pub fn rewrite_command_requests_for_source_reading(
     requests: &[ExpertToolRequest],
+    expert_id: Option<&str>,
     expert_title: &str,
     workspace_root: Option<&Path>,
 ) -> Vec<ExpertToolRequest> {
-    if !Regex::new(r"(工程师|调研员)")
+    let title_supports_rewrite = Regex::new(r"(工程师|调研员|审查|审核|文档|统计)")
         .expect("expert title regex")
-        .is_match(expert_title)
+        .is_match(expert_title);
+    if !expert_id
+        .map(supports_source_reading_rewrite)
+        .unwrap_or(title_supports_rewrite)
     {
         return requests.to_vec();
     }
@@ -452,9 +457,22 @@ pub fn build_tool_request_plan(
     expert_title: &str,
     workspace_root: Option<&Path>,
 ) -> ToolRequestPlan {
+    build_tool_request_plan_for_expert(text, None, expert_title, workspace_root)
+}
+
+pub fn build_tool_request_plan_for_expert(
+    text: &str,
+    expert_id: Option<&str>,
+    expert_title: &str,
+    workspace_root: Option<&Path>,
+) -> ToolRequestPlan {
     let extracted = extract_tool_requests(text, workspace_root);
-    let rewritten =
-        rewrite_command_requests_for_source_reading(&extracted, expert_title, workspace_root);
+    let rewritten = rewrite_command_requests_for_source_reading(
+        &extracted,
+        expert_id,
+        expert_title,
+        workspace_root,
+    );
     ToolRequestPlan {
         requests: rewritten,
         stripped_reply: strip_inline_tool_actions(text),
@@ -487,6 +505,24 @@ mod tests {
         let plan = build_tool_request_plan(
             r#"[ACTION:EXECUTE_CMD command="Select-String -Path app.js -Pattern 'renderCalculator' -Context 0,2" reason="定位实现"]"#,
             "前端工程师",
+            Some(&temp_dir),
+        );
+        match &plan.requests[0] {
+            ExpertToolRequest::FileRead { path, .. } => assert_eq!(path, "app.js"),
+            _ => panic!("expected file-read request"),
+        }
+    }
+
+    #[test]
+    fn review_discipline_can_also_rewrite_source_probe_command() {
+        let temp_dir = std::env::temp_dir().join("ai-experts-review-tool-engine");
+        let _ = fs::create_dir_all(&temp_dir);
+        let file_path = temp_dir.join("app.js");
+        let _ = fs::write(&file_path, "line1\nconst risk = true;\nline3\n");
+        let plan = super::build_tool_request_plan_for_expert(
+            r#"[ACTION:EXECUTE_CMD command="Get-Content app.js | Select-Object -First 5" reason="审查真实源码"]"#,
+            Some("discipline-620"),
+            "安全审查专家",
             Some(&temp_dir),
         );
         match &plan.requests[0] {

@@ -484,6 +484,10 @@ class Sidebar {
     return this.chats.find((c) => c.id === this.activeChatId) ?? null;
   }
 
+  getFirstChat(): ChatItem | null {
+    return this.chats[0] ?? null;
+  }
+
   /** 获取所有对话 */
   getChats(): ChatItem[] {
     return this.chats;

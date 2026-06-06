@@ -1,6 +1,10 @@
 // ========== RBAC 权限控制系统 ==========
 // 基于专家角色的权限模型
 
+use crate::expert_identity::{
+    is_creative_expert, is_documentation_expert, is_implementation_expert, is_review_expert,
+    is_supervisor_expert, normalize_expert_id,
+};
 use serde::{Deserialize, Serialize};
 
 // ---- 数据结构 ----
@@ -32,6 +36,14 @@ pub enum Role {
 impl Role {
     /// 获取角色对应的权限列表
     pub fn permissions(&self) -> Vec<Permission> {
+        let shared_expert_permissions = vec![
+            Permission::ReadFiles,
+            Permission::WriteFiles,
+            Permission::ExecuteCode,
+            Permission::CallExternalApi,
+            Permission::AccessMemory,
+            Permission::ModifyMemory,
+        ];
         match self {
             Role::Supervisor => vec![
                 Permission::ReadFiles,
@@ -44,31 +56,12 @@ impl Role {
                 Permission::AccessTokenData,
                 Permission::SupervisorOverride,
             ],
-            Role::LeadEngineer => vec![
-                Permission::ReadFiles,
-                Permission::WriteFiles,
-                Permission::ExecuteCode,
-                Permission::AccessMemory,
-                Permission::ModifyMemory,
-                Permission::CallExternalApi,
-            ],
-            Role::Engineer => vec![
-                Permission::ReadFiles,
-                Permission::WriteFiles,
-                Permission::AccessMemory,
-            ],
-            Role::Reviewer => vec![Permission::ReadFiles, Permission::AccessMemory],
-            Role::Researcher => vec![
-                Permission::ReadFiles,
-                Permission::AccessMemory,
-                Permission::CallExternalApi,
-            ],
-            Role::Designer => vec![
-                Permission::ReadFiles,
-                Permission::WriteFiles,
-                Permission::AccessMemory,
-            ],
-            Role::Assistant => vec![Permission::ReadFiles, Permission::AccessMemory],
+            Role::LeadEngineer
+            | Role::Engineer
+            | Role::Reviewer
+            | Role::Researcher
+            | Role::Designer
+            | Role::Assistant => shared_expert_permissions,
         }
     }
 }
@@ -84,17 +77,27 @@ pub struct AccessDecision {
 
 /// 根据专家 ID 获取默认角色
 pub fn get_default_role(expert_id: &str) -> Role {
+    let expert_id = normalize_expert_id(expert_id);
+    let expert_id = expert_id.as_ref();
+    if is_implementation_expert(expert_id) || expert_id == "discipline-910" {
+        return Role::Engineer;
+    }
+    if is_review_expert(expert_id) {
+        return Role::Reviewer;
+    }
+    if is_creative_expert(expert_id) {
+        return Role::Designer;
+    }
+    if is_documentation_expert(expert_id) || expert_id == "jiang-xinghe" {
+        return Role::Assistant;
+    }
+    if expert_id.starts_with("discipline-") {
+        return Role::Researcher;
+    }
     match expert_id {
         "jiang-xingtu" => Role::Supervisor,
-        "jiang-xinghe" => Role::LeadEngineer,
-        "jiang-qinglan" => Role::Engineer,
-        "jiang-yumo" => Role::Engineer,
-        "jiang-subai" => Role::Engineer,
-        "jiang-ruoxi" => Role::Researcher,
-        "jiang-mingxuan" => Role::Reviewer,
-        "jiang-zihan" => Role::Designer,
-        "jiang-yanran" => Role::Assistant,
-        _ => Role::Engineer,
+        "jiang-xinghe" => Role::Assistant,
+        _ => Role::Researcher,
     }
 }
 
@@ -144,24 +147,20 @@ pub fn check_path_access(expert_id: &str, path: &str) -> AccessDecision {
     let lower_path = path.to_lowercase();
     for sensitive in &sensitive_paths {
         if lower_path.contains(sensitive) {
-            // 只有主管和主工程师可以访问敏感路径
+            // 敏感路径只允许主管访问
             let role = get_default_role(expert_id);
-            match role {
-                Role::Supervisor | Role::LeadEngineer => {
-                    return AccessDecision {
-                        allowed: true,
-                        reason: Some(format!("敏感路径访问已授权（{:?}角色）", role)),
-                        required_permissions: vec![Permission::ReadFiles],
-                    };
-                }
-                _ => {
-                    return AccessDecision {
-                        allowed: false,
-                        reason: Some(format!("专家 {} 无权访问敏感路径 {}", expert_id, path)),
-                        required_permissions: vec![Permission::ReadFiles],
-                    };
-                }
+            if is_supervisor_expert(expert_id) {
+                return AccessDecision {
+                    allowed: true,
+                    reason: Some(format!("敏感路径访问已授权（{:?}角色）", role)),
+                    required_permissions: vec![Permission::ReadFiles],
+                };
             }
+            return AccessDecision {
+                allowed: false,
+                reason: Some(format!("专家 {} 无权访问敏感路径 {}", expert_id, path)),
+                required_permissions: vec![Permission::ReadFiles],
+            };
         }
     }
 
@@ -196,5 +195,40 @@ pub fn check_permissions(expert_id: &str, permissions: &[Permission]) -> AccessD
             reason: Some(format!("专家 {} 缺少以下权限: {:?}", expert_id, missing)),
             required_permissions: permissions.to_vec(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_default_role, Permission, Role};
+
+    #[test]
+    fn non_supervisor_roles_share_same_permission_set() {
+        let engineer = Role::Engineer.permissions();
+        let reviewer = Role::Reviewer.permissions();
+        let researcher = Role::Researcher.permissions();
+        let designer = Role::Designer.permissions();
+        let assistant = Role::Assistant.permissions();
+
+        assert_eq!(engineer, reviewer);
+        assert_eq!(engineer, researcher);
+        assert_eq!(engineer, designer);
+        assert_eq!(engineer, assistant);
+        assert!(engineer.contains(&Permission::CallExternalApi));
+        assert!(engineer.contains(&Permission::ExecuteCode));
+        assert!(engineer.contains(&Permission::ModifyMemory));
+    }
+
+    #[test]
+    fn legacy_ids_follow_discipline_role_mapping() {
+        assert!(matches!(get_default_role("jiang-yumo"), Role::Engineer));
+        assert!(matches!(get_default_role("jiang-yingqiu"), Role::Reviewer));
+        assert!(matches!(get_default_role("jiang-ruoxi"), Role::Researcher));
+        assert!(matches!(get_default_role("jiang-xinghe"), Role::Assistant));
+    }
+
+    #[test]
+    fn environment_engineering_discipline_maps_to_engineer_role() {
+        assert!(matches!(get_default_role("discipline-610"), Role::Engineer));
     }
 }

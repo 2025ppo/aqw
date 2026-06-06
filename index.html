@@ -99,24 +99,6 @@
             <span>更新</span>
           </button>
         </div>
-        <!-- 可视化目录卡片 -->
-        <div id="canvas-directory-card">
-          <!-- 模式页签 -->
-          <div class="canvas-directory-tabs">
-            <button class="canvas-directory-tab active" data-mode="structure" id="dir-tab-structure" type="button">根据结构</button>
-            <button class="canvas-directory-tab" data-mode="logic" id="dir-tab-logic" type="button">根据逻辑</button>
-          </div>
-          <div class="canvas-directory-header">
-            <span class="canvas-directory-title">可视化目录</span>
-            <button class="canvas-directory-status-btn" id="canvas-directory-status-btn" type="button" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="23 4 23 10 17 10"/>
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-              </svg>
-              <span id="canvas-directory-status-text">待同步</span>
-            </button>
-          </div>
-        </div>
 
       <!-- 图像创作：中央面板（类似视频式卡片网格） -->
       <div id="image-panel" style="display:none;">
@@ -149,6 +131,48 @@
           <g id="canvas-viewport"></g>
         </svg>
 
+      </div>
+      <div id="canvas-directory-stack">
+        <div id="canvas-directory-card">
+          <div class="canvas-directory-topbar">
+            <div class="canvas-directory-title-group">
+              <span class="canvas-directory-kicker">Workspace Atlas</span>
+              <span class="canvas-directory-title" id="canvas-directory-title">可视化目录</span>
+            </div>
+            <div class="canvas-view-switch" role="tablist" aria-label="目录视图切换">
+              <button class="canvas-view-switch-btn active" id="dir-view-directory" type="button">目录</button>
+              <button class="canvas-view-switch-btn" id="dir-view-draft" type="button">草稿</button>
+            </div>
+          </div>
+          <div class="canvas-directory-tabs">
+            <button class="canvas-directory-tab active" data-mode="structure" id="dir-tab-structure" type="button">根据结构</button>
+            <button class="canvas-directory-tab" data-mode="logic" id="dir-tab-logic" type="button">根据逻辑</button>
+          </div>
+          <div class="canvas-directory-header">
+            <span class="canvas-directory-subtitle" id="canvas-directory-subtitle">当前为结构目录视图</span>
+            <button class="canvas-directory-status-btn" id="canvas-directory-status-btn" type="button" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span id="canvas-directory-status-text">待同步</span>
+            </button>
+          </div>
+        </div>
+        <div id="canvas-controls">
+          <button id="canvas-reset" title="一键回正" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="6" x2="12" y2="18"/>
+              <line x1="6" y1="12" x2="18" y2="12"/>
+            </svg>
+          </button>
+          <div id="canvas-scale">100%</div>
+          <div id="canvas-legend">
+            <div class="legend-item"><span class="legend-dot" style="background:#FF8C42"></span>文件夹</div>
+            <div class="legend-item"><span class="legend-dot" style="background:#4CAF50"></span>文件</div>
+          </div>
+        </div>
       </div>
       <!-- 草稿画布（叠加在无限画布上方） -->
       <canvas id="draft-canvas"></canvas>
@@ -258,23 +282,6 @@
           </div>
         </div>
       </div>
-      <!-- 左下角缩放比例、回正和图例 -->
-      <div id="canvas-controls">
-          <button id="canvas-reset" title="一键回正" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="6" x2="12" y2="18"/>
-              <line x1="6" y1="12" x2="18" y2="12"/>
-            </svg>
-          </button>
-          <div id="canvas-scale">100%</div>
-          <div id="canvas-legend">
-            <div class="legend-item"><span class="legend-dot" style="background:#FF8C42"></span>文件夹</div>
-            <div class="legend-item"><span class="legend-dot" style="background:#4CAF50"></span>文件</div>
-          </div>
-        </div>
-      </div>
-
       <!-- 视频模式：中央面板（镜头卡片网格） -->
       <div id="video-panel" style="display:none;">
         <div class="wiki-header">
@@ -295,22 +302,22 @@
         </div>
       </div>
 
-      <!-- 视图页签栏（中央卡片正上方，8 视图一键切换） -->
+      <!-- 视图页签栏（中央卡片正上方，主视图一键切换） -->
       <div id="floating-actions" class="view-tabs">
-        <button class="view-tab active" id="btn-directory" title="目录" type="button">
+        <button class="view-tab active" id="btn-directory" data-view="directory" title="目录" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
           <span>目录</span>
         </button>
-        <button class="view-tab" id="btn-file" title="文件" type="button">
+        <button class="view-tab" id="btn-file" data-view="file" title="文件" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
             <polyline points="14 2 14 8 20 8"/>
           </svg>
           <span>文件</span>
         </button>
-        <button class="view-tab" id="btn-repo" title="仓库" type="button">
+        <button class="view-tab" id="btn-repo" data-view="repo" title="仓库" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"/>
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
@@ -318,7 +325,7 @@
           </svg>
           <span>仓库</span>
         </button>
-        <button class="view-tab" id="btn-git" title="Git" type="button">
+        <button class="view-tab" id="btn-git" data-view="git" title="Git" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="6" cy="6" r="3"/>
             <circle cx="6" cy="18" r="3"/>
@@ -328,7 +335,7 @@
           </svg>
           <span>Git</span>
         </button>
-        <button class="view-tab" id="btn-token" title="词元" type="button">
+        <button class="view-tab" id="btn-token" data-view="token" title="词元" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9"/>
             <path d="M12 7v10"/>
@@ -337,12 +344,12 @@
           </svg>
           <span>词元</span>
         </button>
-        <button class="view-tab" id="btn-draft" title="草稿" type="button">
+        <button class="view-tab" id="btn-workspace-settings" data-view="workspace-settings" title="设置" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 20h9"/>
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h.01A1.65 1.65 0 0 0 10.91 3H11a2 2 0 0 1 4 0h.09a1.65 1.65 0 0 0 1.51 1 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01A1.65 1.65 0 0 0 21 10.91V11a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
-          <span>草稿</span>
+          <span>设置</span>
         </button>
       </div>
       <!-- AI 对话卡片 -->
@@ -581,20 +588,6 @@
               </svg>
               <span>风格设置</span>
             </div>
-            <div class="settings-nav-item" data-section="keys">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-              </svg>
-              <span>密钥池配置</span>
-            </div>
-            <div class="settings-nav-item" data-section="experts">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
-              <span>专家团配置</span>
-            </div>
             <div class="settings-nav-item" data-section="about">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"/>
@@ -620,7 +613,175 @@
               </label>
             </div>
           </section>
-          <!-- 密钥池配置 -->
+          <!-- 关于软件 -->
+          <section class="settings-section" id="settings-about">
+            <h2 class="settings-section-title">关于软件</h2>
+            <div class="settings-about-info">
+              <div class="settings-about-row">
+                <span class="settings-about-label">开发者</span>
+                <span class="settings-about-value">江仕玺</span>
+              </div>
+              <div class="settings-about-row">
+                <span class="settings-about-label">版本</span>
+                <span class="settings-about-value">0.1.1</span>
+              </div>
+              <div class="settings-about-row">
+                <span class="settings-about-label">官网</span>
+                <span class="settings-about-value"><a href="http://38.175.195.228:5000/" target="_blank" style="color: var(--accent-primary, #3b82f6); text-decoration: none;">http://38.175.195.228:5000/</a></span>
+              </div>
+            </div>
+            <div class="settings-contact-info" style="margin-top: 24px; padding: 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
+              <h3 style="margin: 0 0 12px 0; font-size: 16px; color: var(--text-primary, #333);">加入交流群</h3>
+              <p style="margin: 0 0 12px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary, #666);">
+                欢迎加入星图专家团交流群，获取技术支持、分享使用心得：
+              </p>
+              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid var(--accent-primary, #3b82f6);">
+                <strong style="font-size: 13px; color: var(--text-primary, #333);">专家团技术交流群</strong>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">QQ 群号：454431953</p>
+              </div>
+              <div style="padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid var(--accent-secondary, #60a5fa);">
+                <strong style="font-size: 13px; color: var(--text-primary, #333);">专家团用户交流群</strong>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">QQ 群号：453515362</p>
+              </div>
+            </div>
+            <div class="settings-license-info" style="margin-top: 24px; padding: 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
+              <h3 style="margin: 0 0 12px 0; font-size: 16px; color: var(--text-primary, #333);">开源协议</h3>
+              <p style="margin: 0 0 12px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary, #666);">
+                本软件采用双许可证模式，开源仅针对于个人用户：
+              </p>
+              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid var(--accent-primary, #3b82f6);">
+                <strong style="font-size: 13px; color: var(--text-primary, #333);">MIT 许可证</strong>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">适用于个人非商用非营利目的</p>
+              </div>
+              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid var(--accent-secondary, #60a5fa);">
+                <strong style="font-size: 13px; color: var(--text-primary, #333);">GPL-3.0 许可证</strong>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">适用于个人商用、盈利目的</p>
+              </div>
+              <div style="padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid var(--text-muted, #98a2b3);">
+                <strong style="font-size: 13px; color: var(--text-primary, #333);">企业版声明</strong>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">开源仅针对于个人，企业版部署需购买授权</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div id="workspace-settings-panel">
+        <div class="settings-sidebar">
+          <button class="settings-back-btn" id="workspace-settings-back-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            <span>返回目录</span>
+          </button>
+          <div class="workspace-settings-summary">
+            <div class="workspace-settings-kicker">Project Controls</div>
+            <div class="workspace-settings-title">项目设置</div>
+            <p class="workspace-settings-desc">和当前项目协作相关的配置集中放这里，例如专家团、密钥池和后续工作流能力。</p>
+          </div>
+          <nav class="settings-nav">
+            <div class="settings-nav-item active" data-workspace-section="experts">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              <span>专家团</span>
+            </div>
+            <div class="settings-nav-item" data-workspace-section="keys">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+              </svg>
+              <span>密钥配置</span>
+            </div>
+          </nav>
+        </div>
+        <div class="settings-content">
+          <section class="settings-section active" id="settings-experts">
+            <div class="expert-studio">
+              <div class="expert-studio-hero">
+                <div class="expert-studio-copy">
+                  <div class="expert-kicker">Expert Console</div>
+                  <h2 class="settings-section-title expert-studio-title">专家团配置台</h2>
+                  <p class="expert-studio-desc">这里专门处理当前项目的协作角色。每位专家会同时展示姓名、对应学科、职责方向、绑定状态与配额入口。</p>
+                </div>
+                <div class="expert-studio-side">
+                  <div class="expert-bulk-card">
+                    <div class="expert-panel-kicker expert-panel-kicker-light">统一密钥配置</div>
+                    <div class="expert-bulk-title">选择一个密钥后，一键配置全部专家团</div>
+                    <div class="expert-model-config expert-model-config-top">
+                      <div class="model-config-row">
+                        <select id="expert-global-key" class="model-config-select">
+                          <option value="">选择密钥...</option>
+                        </select>
+                        <label class="model-config-apply-all">
+                          <input type="checkbox" id="apply-key-to-all" />
+                          <span>确认覆盖全部专家团</span>
+                        </label>
+                        <button id="apply-model-btn" class="model-config-btn" type="button">一键配置</button>
+                      </div>
+                    </div>
+                    <div class="expert-panel-meta expert-panel-meta-light" id="expert-config-note">选择密钥并勾选确认后，可直接写入全部专家角色。</div>
+                  </div>
+                  <div class="expert-studio-stats">
+                    <div class="expert-stat-card">
+                      <span class="expert-stat-label">角色总数</span>
+                      <strong class="expert-stat-value" id="expert-stat-total">0</strong>
+                    </div>
+                    <div class="expert-stat-card">
+                      <span class="expert-stat-label">当前可见</span>
+                      <strong class="expert-stat-value" id="expert-stat-active">0</strong>
+                    </div>
+                    <div class="expert-stat-card">
+                      <span class="expert-stat-label">系统角色</span>
+                      <strong class="expert-stat-value" id="expert-stat-system">0</strong>
+                    </div>
+                    <div class="expert-stat-card">
+                      <span class="expert-stat-label">未绑定</span>
+                      <strong class="expert-stat-value" id="expert-stat-unbound">0</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="expert-toolbar">
+                <div class="expert-search-shell">
+                  <label class="expert-search-box" for="expert-search-input">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="11" cy="11" r="7"></circle>
+                      <path d="m20 20-3.5-3.5"></path>
+                    </svg>
+                    <input id="expert-search-input" type="search" placeholder="搜索姓名、学科、职责；支持 -关键词 排除" />
+                  </label>
+                  <label class="expert-inline-flag">
+                    <input type="checkbox" id="expert-filter-unbound" />
+                    <span>只看未绑定</span>
+                  </label>
+                </div>
+                <div class="expert-filter-row">
+                  <div class="expert-filter-pills" id="expert-filter-pills"></div>
+                  <div class="expert-filter-actions">
+                    <button id="expert-expand-all" class="expert-ghost-btn" type="button">展开全部</button>
+                    <button id="expert-collapse-all" class="expert-ghost-btn" type="button">收起全部</button>
+                  </div>
+                </div>
+                <div class="expert-result-copy" id="expert-result-copy">正在载入专家结构...</div>
+              </div>
+
+              <div class="expert-command-deck" id="expert-command-deck">
+                <div class="expert-panel-head">
+                  <div>
+                    <div class="expert-panel-kicker">系统角色</div>
+                    <div class="expert-panel-title">中枢角色配置</div>
+                  </div>
+                  <div class="expert-panel-meta">主管与助手默认展示在独立区，避免和学科专家混成一团。</div>
+                </div>
+                <div class="expert-grid expert-grid-special" id="expert-grid-special"></div>
+              </div>
+
+              <div class="expert-grid expert-grid-regular" id="expert-grid-regular"></div>
+              <div class="expert-empty" id="expert-empty" hidden>没有匹配到可展示的角色，建议放宽搜索条件或取消“只看未绑定”。</div>
+            </div>
+          </section>
           <section class="settings-section" id="settings-keys">
             <h2 class="settings-section-title">密钥池配置</h2>
             <div class="keypool-tabs">
@@ -628,7 +789,6 @@
               <button class="keypool-tab" data-keypool-tab="relay" type="button">中转服务</button>
               <button class="keypool-tab" data-keypool-tab="custom" type="button">自定义代码</button>
             </div>
-            <!-- 预设厂商 -->
             <div class="keypool-panel active" data-keypool-panel="preset">
               <div class="keypool-form">
                 <div class="keypool-field">
@@ -669,7 +829,6 @@
               </div>
               <div class="keypool-list" id="keypool-preset-list"></div>
             </div>
-            <!-- 中转服务 -->
             <div class="keypool-panel" data-keypool-panel="relay">
               <div class="keypool-form">
                 <div class="keypool-field">
@@ -708,7 +867,6 @@
               </div>
               <div class="keypool-list" id="keypool-relay-list"></div>
             </div>
-            <!-- 自定义代码 -->
             <div class="keypool-panel" data-keypool-panel="custom">
               <div class="keypool-form">
                 <div class="keypool-field">
@@ -731,7 +889,6 @@
               </div>
               <div class="keypool-list" id="keypool-custom-list"></div>
             </div>
-            <!-- 模态能力编辑弹窗 -->
             <div class="modality-editor-overlay" id="modality-editor-modal">
               <div class="modality-editor-card">
                 <div class="modality-editor-title">编辑模态能力</div>
@@ -755,76 +912,6 @@
                   <button class="keypool-add-btn" id="modality-editor-save" type="button">保存</button>
                   <button class="keypool-add-btn keypool-add-btn-secondary" id="modality-editor-cancel" type="button">取消</button>
                 </div>
-              </div>
-            </div>
-          </section>
-          <!-- 专家团配置 -->
-          <section class="settings-section" id="settings-experts">
-            <h2 class="settings-section-title">专家团配置</h2>
-            <div class="expert-model-config">
-              <h3 class="expert-model-config-title">模型配置</h3>
-              <div class="model-config-row">
-                <select id="expert-global-key" class="model-config-select">
-                  <option value="">选择密钥...</option>
-                </select>
-                <label class="model-config-apply-all">
-                  <input type="checkbox" id="apply-key-to-all" />
-                  <span>为所有专家配置该模型</span>
-                </label>
-                <button id="apply-model-btn" class="model-config-btn" type="button">应用</button>
-              </div>
-            </div>
-            <div class="expert-grid expert-grid-special" id="expert-grid-special"></div>
-            <hr class="expert-divider" />
-            <div class="expert-grid expert-grid-regular" id="expert-grid-regular"></div>
-          </section>
-          <!-- 关于软件 -->
-          <section class="settings-section" id="settings-about">
-            <h2 class="settings-section-title">关于软件</h2>
-            <div class="settings-about-info">
-              <div class="settings-about-row">
-                <span class="settings-about-label">开发者</span>
-                <span class="settings-about-value">江仕玺</span>
-              </div>
-              <div class="settings-about-row">
-                <span class="settings-about-label">版本</span>
-                <span class="settings-about-value">0.1.0</span>
-              </div>
-              <div class="settings-about-row">
-                <span class="settings-about-label">官网</span>
-                <span class="settings-about-value"><a href="http://38.175.195.228:5000/" target="_blank" style="color: #4f7df5; text-decoration: none;">http://38.175.195.228:5000/</a></span>
-              </div>
-            </div>
-            <div class="settings-contact-info" style="margin-top: 24px; padding: 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
-              <h3 style="margin: 0 0 12px 0; font-size: 16px; color: var(--text-primary, #333);">加入交流群</h3>
-              <p style="margin: 0 0 12px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary, #666);">
-                欢迎加入星图专家团交流群，获取技术支持、分享使用心得：
-              </p>
-              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid #4f7df5;">
-                <strong style="font-size: 13px; color: var(--text-primary, #333);">专家团技术交流群</strong>
-                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">QQ 群号：454431953</p>
-              </div>
-              <div style="padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid #2ecc8b;">
-                <strong style="font-size: 13px; color: var(--text-primary, #333);">专家团用户交流群</strong>
-                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">QQ 群号：453515362</p>
-              </div>
-            </div>
-            <div class="settings-license-info" style="margin-top: 24px; padding: 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
-              <h3 style="margin: 0 0 12px 0; font-size: 16px; color: var(--text-primary, #333);">开源协议</h3>
-              <p style="margin: 0 0 12px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary, #666);">
-                本软件采用双许可证模式，开源仅针对于个人用户：
-              </p>
-              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid #4CAF50;">
-                <strong style="font-size: 13px; color: var(--text-primary, #333);">MIT 许可证</strong>
-                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">适用于个人非商用非营利目的</p>
-              </div>
-              <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid #2196F3;">
-                <strong style="font-size: 13px; color: var(--text-primary, #333);">GPL-3.0 许可证</strong>
-                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">适用于个人商用、盈利目的</p>
-              </div>
-              <div style="padding: 12px; background: var(--bg-primary, #fff); border-radius: 6px; border-left: 3px solid #FF9800;">
-                <strong style="font-size: 13px; color: var(--text-primary, #333);">企业版声明</strong>
-                <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary, #666);">开源仅针对于个人，企业版部署需购买授权</p>
               </div>
             </div>
           </section>

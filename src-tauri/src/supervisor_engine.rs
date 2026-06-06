@@ -1,3 +1,6 @@
+use crate::expert_identity::{
+    is_implementation_expert, is_review_expert, normalize_expert_id, normalize_expert_ids,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,6 +15,18 @@ const SUPPORTED_PROMPT_MODULES: &[&str] = &[
     "video-workflow",
 ];
 
+const INFORMATION_SCIENCE_EXPERT: &str = "discipline-120";
+const ARCHITECTURE_ENGINEERING_EXPERT: &str = "discipline-413";
+const GENERAL_ENGINEERING_EXPERT: &str = "discipline-520";
+const QUALITY_REVIEW_EXPERT: &str = "discipline-620";
+const MANAGEMENT_EXPERT: &str = "discipline-630";
+const TRANSLATION_EXPERT: &str = "discipline-740";
+const WRITING_EXPERT: &str = "discipline-750";
+const DESIGN_EXPERT: &str = "discipline-760";
+const COMPLIANCE_REVIEW_EXPERT: &str = "discipline-820";
+const DOCUMENTATION_EXPERT: &str = "discipline-870";
+const DATA_ANALYSIS_EXPERT: &str = "discipline-910";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorExpertInfo {
@@ -19,6 +34,14 @@ pub struct SupervisorExpertInfo {
     pub name: String,
     pub title: String,
     pub description: String,
+    pub code: Option<String>,
+    pub category_id: Option<String>,
+    pub category_label: Option<String>,
+    pub tool_profile: Option<String>,
+    pub system_role: Option<bool>,
+    pub activation_score: Option<i32>,
+    pub activation_level: Option<String>,
+    pub activation_probability: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -96,16 +119,57 @@ pub fn build_supervisor_prompt(available_experts: &[SupervisorExpertInfo]) -> St
     let expert_list = available_experts
         .iter()
         .map(|expert| {
+            let mut tags = Vec::new();
+            if let Some(code) = expert.code.as_deref().filter(|value| !value.trim().is_empty()) {
+                tags.push(format!("代码 {}", code));
+            }
+            if let Some(category) = expert
+                .category_label
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                tags.push(category.to_string());
+            }
+            if let Some(profile) = expert
+                .tool_profile
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                tags.push(format!("能力画像 {}", profile));
+            }
+            if expert.system_role.unwrap_or(false) {
+                tags.push("系统角色".to_string());
+            }
+            if let Some(level) = expert
+                .activation_level
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                let probability = expert
+                    .activation_probability
+                    .map(|value| format!("{:.0}%", value * 100.0))
+                    .unwrap_or_else(|| "未知".to_string());
+                let score = expert
+                    .activation_score
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                tags.push(format!("职责触发 {} / {} / {}", level, probability, score));
+            }
+            let tag_text = if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", tags.join(" / "))
+            };
             format!(
-                "- {}（{}）：{}",
-                expert.name, expert.title, expert.description
+                "- {}（{}）{}：{}",
+                expert.name, expert.title, tag_text, expert.description
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
     format!(
-        "你是「江星图」，项目主管兼资质调研员。你的职责是分析用户需求，制定任务计划并分配最合适、最少但足够的专家处理。\n\n【核心原则】\n1. 你绝对不直接编写代码、审查代码、进行技术调研或设计\n2. 你的工作是：理解需求 → 判断是否需要专家 → 动态选择最合适的专家 → 审核结果\n3. 所有实际工作必须交由专家完成\n4. 用自然、亲切的语言与用户交流，这款软件面向各类用户，并非只有专业程序员\n5. 专家分配必须最小化，避免为了一个很小的改动机械地派出一整串固定角色\n6. 不要为了“更稳妥”而默认补测试、审查或设计；只有在用户明确要求，或风险明显升高时才加人\n\n【可用专家】\n{}\n\n【场景与动态分配规则】\n\n1. code-development（代码开发 / 直接改产物）\n   - 工程师从 江青澜（通用）/ 江予墨（前端）/ 江素白（后端）中选择最贴合的一位\n   - 默认先考虑“单专家可完成”\n   - 小型前端/文案/样式/按钮/标题/间距/圆角类增量修改，通常只派 1 位最贴合的工程师\n   - 只有在以下情况才额外加人：\n     - 需要先摸清陌生代码或环境时，再加调研员\n     - 用户明确要设计方案、视觉规范或交互说明时，再加设计师\n     - 用户明确要求测试/回归/验证时，再加测试专家\n     - 改动高风险、涉及安全/性能/架构/大范围回归时，再加质量审核专家\n     - 只有当用户明确要求审查/验收/合规把关时，才加审查员\n   - 如果用户是在已有网站、网页、代码产物基础上提出修改要求，一律视为增量开发任务，必须选择 code-development，不能只分配 design\n\n2. code-review（代码审查）\n   - 只在用户明确要求 review / 审核 / 测试 / 复查时使用\n   - 按需从 质量审核专家 / 测试专家 / 审查员 中选择，不要默认三人全上\n\n3. technical-research（技术调研）\n   - 只需调研员：expertIds: [\"jiang-ruoxi\"]\n\n4. design（设计方案）\n   - 仅当用户明确要求“方案/规范/文档”，且不要求直接修改现有产物时，才使用该场景\n   - expertIds 通常为 [\"jiang-dingchu\"] 或 [\"jiang-ruoxi\", \"jiang-dingchu\"]\n\n5. quick-answer（简单问题/闲聊）\n   - 无需专家：expertIds: []\n\n6. translation（翻译任务）\n   - expertIds: [\"jiang-lingyu\"]\n\n7. writing（写作任务）\n   - 按需从 [\"jiang-ruoxi\", \"jiang-moxian\"] 中选择 1-2 人，不要机械全派\n\n8. office（办公事务）\n   - expertIds: [\"jiang-wenshu\"]\n\n9. data-analysis（数据分析）\n   - 通常 [\"jiang-shuyan\"] 即可；需要先理解业务上下文再加 [\"jiang-ruoxi\"]\n\n10. document-processing（文档处理）\n    - expertIds: [\"jiang-zhilan\"]\n\n11. media-creation（媒体创作）\n    - expertIds: [\"jiang-huaying\"]\n\n12. video-production（视频创作）\n    - 需要分镜/调研时再加 [\"jiang-ruoxi\"]，否则以 [\"jiang-huaying\"] 为主\n\n13. research-with-search（需要网络搜索的调研）\n    - expertIds: [\"jiang-ruoxi\"]\n\n【按需能力模块提示】\n你可以额外输出 promptModuleHints，告诉系统某位专家应优先加载哪些能力模块。\n- 只在你有较高把握该专家大概率会用到时才填写；不确定就留空。\n- 只能给与该专家职责相符的模块，不要把视频工作流塞给前端工程师，也不要把文档模块塞给审查员。\n- 可选模块 ID 仅限：\n  - code-tool-primer\n  - web-search-guidance\n  - command-guidance\n  - document-tool-primer\n  - media-tool-primer\n  - video-workflow\n- 示例：\n  \"promptModuleHints\": {{\n    \"jiang-ruoxi\": [\"web-search-guidance\"],\n    \"jiang-yumo\": [\"command-guidance\"]\n  }}\n\n【输出格式】（必须是合法 JSON，不要输出其他内容）\n{{\"scene\":\"场景名\",\"taskDescription\":\"具体任务描述\",\"expertIds\":[\"专家ID1\",\"专家ID2\"],\"requiresDesign\":false,\"promptModuleHints\":{{\"专家ID\":[\"模块ID\"]}}}}",
+        "你是「江星图」，主项目的专家团主管。你的职责是理解用户需求，压缩上下文，并从候选学科专家中挑出最少但足够的一组。\n\n【核心原则】\n1. 你自己不直接做专业执行，所有专业工作都交给专家。\n2. 专家派发必须克制，通常 1 到 3 位足够；只有高风险或明显跨学科时才继续加人。\n3. 当前给你的只是已经过预筛的候选专家，请优先在这些候选里选，不要发散想象不存在的角色。\n4. 所有专家工具权限平等，但职责触发概率不同；优先选择高触发概率的主责专家，把中低触发专家放在辅助或补充位置。\n5. 如果用户要直接改项目、重构代码、改引擎、补实现，一律优先使用 code-development，而不是只给方案。\n6. 如果用户主要是在要解释、比较、研究、综述、论证，优先用 disciplinary-analysis 或 technical-research。\n7. quick-answer 只用于无需派专家也能直接回答的闲聊或非常短的问题。\n8. 若任务明显带有翻译、写作、文档整理、数据分析、视觉创意、合规审查特征，可分别使用 translation、writing、document-processing、data-analysis、design/media-creation、code-review 等更贴切场景。\n\n【候选专家】\n{}\n\n【场景说明】\n- code-development：需要直接修改主项目或产物。\n- code-review：需要审查、验收、风险检查、合规判断。\n- technical-research：需要技术调研、资料收集、现状摸底。\n- disciplinary-analysis：需要某个或多个学科专家做分析、论证、建模、方案判断。\n- design：需要视觉、交互、创意方案，但不直接改现有产物。\n- quick-answer：无需派专家。\n- translation：翻译任务。\n- writing：写作或润色任务。\n- office：流程、管理、事务性整理。\n- data-analysis：统计、指标、实验、量化分析。\n- document-processing：文档提取、整理、重组、编目。\n- media-creation：图像、海报、创意媒体内容。\n- video-production：视频脚本、镜头、视频流程。\n- research-with-search：明确需要联网搜索的调研。\n\n【派发要求】\n- expertIds 只保留最关键的专家，默认不超过 3 位。\n- 如果任务是代码/系统重构，优先考虑 520、413、120、620 这类候选中的最小组合。\n- 如果任务是跨学科分析，先给出主要学科，再视需要补 1 位辅助学科，不要把整组候选全派出去。\n- 若多个候选权限相同但职责触发概率不同，优先把高概率者放在前面，避免让低概率专家越责主导。\n- 如果用户明确说“只改主项目，不同步官网”，taskDescription 里要保留这个约束。\n\n【按需能力模块提示】\n你可以额外输出 promptModuleHints，告诉系统某位专家应优先加载哪些能力模块。\n- 不确定就留空；只给真正大概率会用到的模块。\n- 可选模块 ID 仅限：code-tool-primer、web-search-guidance、command-guidance、document-tool-primer、media-tool-primer、video-workflow。\n\n【输出格式】\n必须输出合法 JSON，不要输出其他内容：\n{{\"scene\":\"场景名\",\"taskDescription\":\"具体任务描述\",\"expertIds\":[\"专家ID1\",\"专家ID2\"],\"requiresDesign\":false,\"promptModuleHints\":{{\"专家ID\":[\"模块ID\"]}}}}",
         expert_list
     )
 }
@@ -205,7 +269,7 @@ pub fn enforce_review_fact(reply: &str, expert_results: &[SupervisorExpertResult
 
 pub fn parse_followup_intent(raw: &str, request: &FollowupIntentRequest) -> FollowupIntentDecision {
     let parsed = extract_json(raw);
-    let allowed_expert_ids = &request.allowed_expert_ids;
+    let allowed_expert_ids = normalize_expert_ids(&request.allowed_expert_ids);
     let target_expert_ids = parsed
         .as_ref()
         .and_then(|value| {
@@ -215,12 +279,18 @@ pub fn parse_followup_intent(raw: &str, request: &FollowupIntentRequest) -> Foll
         })
         .and_then(Value::as_array)
         .map(|items| {
+            let mut normalized = Vec::new();
             items
                 .iter()
                 .filter_map(Value::as_str)
+                .map(|item| normalize_expert_id(item).into_owned())
                 .filter(|item| allowed_expert_ids.iter().any(|allowed| allowed == item))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
+                .for_each(|item| {
+                    if !normalized.iter().any(|existing| existing == &item) {
+                        normalized.push(item);
+                    }
+                });
+            normalized
         })
         .unwrap_or_default();
     let delivery_mode = parsed
@@ -304,6 +374,7 @@ pub fn parse_dispatch_plan(raw: &str, user_message: &str) -> SupervisorDispatchP
         "code-development",
         "code-review",
         "technical-research",
+        "disciplinary-analysis",
         "design",
         "quick-answer",
         "translation",
@@ -382,64 +453,27 @@ fn normalize_dynamic_expert_ids(
     user_message: &str,
     task_description: &str,
     requested_expert_ids: Vec<String>,
-    requires_design: Option<bool>,
+    _requires_design: Option<bool>,
 ) -> Vec<String> {
-    let requested = dedupe_expert_ids(requested_expert_ids);
+    let requested = dedupe_expert_ids(
+        requested_expert_ids
+            .into_iter()
+            .map(|id| normalize_expert_id(&id).into_owned())
+            .collect(),
+    );
     let joined = format!("{}\n{}", user_message, task_description).to_lowercase();
     match scene {
         "quick-answer" => vec![],
-        "technical-research" | "research-with-search" => vec!["jiang-ruoxi".to_string()],
-        "translation" => vec!["jiang-lingyu".to_string()],
-        "office" => vec!["jiang-wenshu".to_string()],
-        "document-processing" => vec!["jiang-zhilan".to_string()],
-        "media-creation" => vec!["jiang-huaying".to_string()],
-        "video-production" => {
-            let mut experts = vec!["jiang-huaying".to_string()];
-            if requested.iter().any(|id| id == "jiang-ruoxi")
-                || joined.contains("分镜")
-                || joined.contains("脚本")
-                || joined.contains("调研")
-            {
-                experts.insert(0, "jiang-ruoxi".to_string());
-            }
-            experts
-        }
-        "data-analysis" => {
-            let mut experts = vec!["jiang-shuyan".to_string()];
-            if requested.iter().any(|id| id == "jiang-ruoxi")
-                || joined.contains("先分析需求")
-                || joined.contains("业务背景")
-                || joined.contains("上下文")
-            {
-                experts.insert(0, "jiang-ruoxi".to_string());
-            }
-            experts
-        }
-        "writing" => {
-            let mut experts = Vec::new();
-            if requested.iter().any(|id| id == "jiang-ruoxi")
-                || joined.contains("调研")
-                || joined.contains("背景资料")
-            {
-                experts.push("jiang-ruoxi".to_string());
-            }
-            experts.push("jiang-moxian".to_string());
-            dedupe_expert_ids(experts)
-        }
-        "design" => {
-            let mut experts = Vec::new();
-            if requested.iter().any(|id| id == "jiang-ruoxi")
-                || joined.contains("调研")
-                || joined.contains("先看现状")
-            {
-                experts.push("jiang-ruoxi".to_string());
-            }
-            experts.push("jiang-dingchu".to_string());
-            dedupe_expert_ids(experts)
+        "translation" | "writing" | "office" | "document-processing" | "media-creation"
+        | "video-production" | "data-analysis" | "design" => {
+            requested_or_default(&requested, scene_default_expert_ids(scene))
         }
         "code-review" => build_dynamic_review_team(&requested, &joined),
-        "code-development" => build_dynamic_development_team(&requested, &joined, requires_design),
-        _ => requested,
+        "code-development" => build_dynamic_development_team(&requested, &joined),
+        "technical-research" | "research-with-search" | "disciplinary-analysis" => {
+            build_dynamic_research_team(scene, &requested, &joined)
+        }
+        _ => clamp_expert_ids(requested),
     }
 }
 
@@ -456,187 +490,296 @@ fn dedupe_expert_ids(ids: Vec<String>) -> Vec<String> {
     deduped
 }
 
-fn choose_engineer_id(requested: &[String], joined: &str) -> String {
-    if let Some(existing) = requested
-        .iter()
-        .find(|id| ["jiang-qinglan", "jiang-yumo", "jiang-subai"].contains(&id.as_str()))
-    {
-        return existing.clone();
-    }
-    if looks_frontend_task(joined) {
-        "jiang-yumo".to_string()
-    } else if looks_backend_task(joined) {
-        "jiang-subai".to_string()
+fn contains_any_keyword(joined: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| joined.contains(keyword))
+}
+
+fn requested_or_default(requested: &[String], defaults: Vec<&str>) -> Vec<String> {
+    if requested.is_empty() {
+        defaults.into_iter().map(str::to_string).collect()
     } else {
-        "jiang-qinglan".to_string()
+        clamp_expert_ids(requested.to_vec())
     }
 }
 
-fn looks_frontend_task(joined: &str) -> bool {
-    [
-        "前端", "页面", "网页", "ui", "ux", "样式", "css", "html", "组件", "按钮", "交互", "文案",
-    ]
-    .iter()
-    .any(|keyword| joined.contains(keyword))
+fn clamp_expert_ids(ids: Vec<String>) -> Vec<String> {
+    dedupe_expert_ids(ids).into_iter().take(3).collect()
 }
 
-fn looks_backend_task(joined: &str) -> bool {
-    [
-        "后端",
-        "接口",
-        "api",
-        "数据库",
-        "sql",
-        "服务端",
-        "路由",
-        "鉴权",
-        "缓存",
-        "中间件",
-    ]
-    .iter()
-    .any(|keyword| joined.contains(keyword))
+fn is_engineering_expert_id(expert_id: &str) -> bool {
+    is_implementation_expert(expert_id)
 }
 
-fn build_dynamic_development_team(
-    requested: &[String],
-    joined: &str,
-    requires_design: Option<bool>,
-) -> Vec<String> {
-    let mut experts = Vec::new();
-    let engineer_id = choose_engineer_id(requested, joined);
-    let small_incremental = [
-        "顺手",
-        "小改",
-        "小功能",
-        "小需求",
-        "简单",
-        "轻量",
-        "顺便",
-        "润一下",
-        "润一润",
-        "改一下",
-        "调整一下",
-        "按钮",
-        "标题",
-        "文案",
-        "样式",
-        "边角",
-        "圆角",
-        "颜色",
-        "间距",
-    ]
-    .iter()
-    .any(|keyword| joined.contains(keyword));
-    let needs_research = requested.iter().any(|id| id == "jiang-ruoxi")
-        || joined.contains("先调研")
-        || joined.contains("先分析")
-        || joined.contains("先看下")
-        || joined.contains("看看现状")
-        || (!small_incremental
-            && ["陌生项目", "技术栈", "目录结构", "运行环境", "代码结构"]
-                .iter()
-                .any(|keyword| joined.contains(keyword)));
-    let needs_design = requested.iter().any(|id| id == "jiang-dingchu")
-        || requires_design.unwrap_or(false)
-        || [
-            "设计稿",
-            "视觉方案",
-            "交互规范",
-            "品牌感",
-            "风格探索",
-            "布局方案",
-        ]
+fn is_design_expert_id(expert_id: &str) -> bool {
+    normalize_expert_id(expert_id).as_ref() == DESIGN_EXPERT
+}
+
+fn is_quality_review_expert_id(expert_id: &str) -> bool {
+    normalize_expert_id(expert_id).as_ref() == QUALITY_REVIEW_EXPERT
+}
+
+fn is_compliance_review_expert_id(expert_id: &str) -> bool {
+    normalize_expert_id(expert_id).as_ref() == COMPLIANCE_REVIEW_EXPERT
+}
+
+fn scene_default_expert_ids(scene: &str) -> Vec<&'static str> {
+    match scene {
+        "translation" => vec![TRANSLATION_EXPERT],
+        "writing" => vec![WRITING_EXPERT],
+        "office" => vec![MANAGEMENT_EXPERT, DOCUMENTATION_EXPERT],
+        "document-processing" => vec![DOCUMENTATION_EXPERT],
+        "media-creation" | "video-production" => vec![DESIGN_EXPERT],
+        "data-analysis" => vec![DATA_ANALYSIS_EXPERT],
+        "design" => vec![DESIGN_EXPERT, "discipline-190"],
+        _ => vec![],
+    }
+}
+
+fn default_development_team(joined: &str) -> Vec<String> {
+    let mut experts = vec![GENERAL_ENGINEERING_EXPERT.to_string()];
+    if ["调度", "工作流", "系统", "架构", "引擎", "路由"]
         .iter()
-        .any(|keyword| joined.contains(keyword));
-    let user_explicit_test = ["测试", "验证", "回归", "冒烟", "单测", "e2e", "自动化测试"]
-        .iter()
-        .any(|keyword| joined.contains(keyword));
-    let explicit_test = requested.iter().any(|id| id == "jiang-cexun")
-        || user_explicit_test;
-    let user_explicit_review = ["审核", "审查", "review", "复查", "验收", "合规"]
-        .iter()
-        .any(|keyword| joined.contains(keyword));
-    let explicit_review = requested
-        .iter()
-        .any(|id| id == "jiang-jianheng" || id == "jiang-yingqiu")
-        || user_explicit_review;
-    let high_risk = [
-        "安全",
-        "性能",
-        "重构",
-        "架构",
-        "数据库",
-        "迁移",
-        "部署",
-        "鉴权",
-        "支付",
-        "权限",
-        "大范围",
-        "全局",
-    ]
-    .iter()
-    .any(|keyword| joined.contains(keyword));
-    if small_incremental
-        && !needs_research
-        && !needs_design
-        && !user_explicit_test
-        && !user_explicit_review
-        && !high_risk
+        .any(|keyword| joined.contains(keyword))
     {
-        return vec![engineer_id];
+        experts.push(ARCHITECTURE_ENGINEERING_EXPERT.to_string());
+    }
+    if ["信息科学", "系统科学", "模型", "抽象", "方法论"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        experts.push(INFORMATION_SCIENCE_EXPERT.to_string());
+    }
+    if ["安全", "风险", "权限", "合规", "审查"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        experts.push(QUALITY_REVIEW_EXPERT.to_string());
+    }
+    clamp_expert_ids(experts)
+}
+
+fn build_dynamic_development_team(requested: &[String], joined: &str) -> Vec<String> {
+    let small_incremental = contains_any_keyword(
+        joined,
+        &[
+            "顺手", "小改", "小功能", "小需求", "简单", "轻量", "顺便", "润一下", "润一润",
+            "改一下", "调整一下", "按钮", "标题", "文案", "样式", "边角", "圆角", "颜色", "间距",
+        ],
+    );
+    let needs_research = requested
+        .iter()
+        .any(|id| normalize_expert_id(id).as_ref() == INFORMATION_SCIENCE_EXPERT)
+        || contains_any_keyword(
+            joined,
+            &["先调研", "先分析", "先看下", "看看现状", "陌生项目", "技术栈", "目录结构", "运行环境", "代码结构"],
+        );
+    let needs_design = requested.iter().any(|id| is_design_expert_id(id))
+        || contains_any_keyword(joined, &["设计稿", "视觉方案", "交互规范", "品牌感", "风格探索", "布局方案"]);
+    let explicit_review = contains_any_keyword(joined, &["审核", "审查", "review", "复查", "验收", "合规"]);
+    let high_risk = contains_any_keyword(
+        joined,
+        &["安全", "性能", "重构", "架构", "数据库", "迁移", "部署", "鉴权", "支付", "权限", "大范围", "全局"],
+    );
+
+    if small_incremental && !needs_research && !needs_design && !explicit_review && !high_risk {
+        return vec![GENERAL_ENGINEERING_EXPERT.to_string()];
     }
 
+    let mut experts = Vec::new();
     if needs_research {
-        experts.push("jiang-ruoxi".to_string());
+        experts.push(INFORMATION_SCIENCE_EXPERT.to_string());
     }
     if needs_design {
-        experts.push("jiang-dingchu".to_string());
+        experts.push(DESIGN_EXPERT.to_string());
     }
-    experts.push(engineer_id);
+    let primary_engineer = requested
+        .iter()
+        .find(|id| {
+            is_engineering_expert_id(id)
+                && normalize_expert_id(id).as_ref() != ARCHITECTURE_ENGINEERING_EXPERT
+        })
+        .cloned()
+        .unwrap_or_else(|| GENERAL_ENGINEERING_EXPERT.to_string());
+    experts.push(primary_engineer.clone());
 
-    if explicit_review || high_risk {
-        experts.push("jiang-jianheng".to_string());
+    let needs_architecture = requested
+        .iter()
+        .any(|id| normalize_expert_id(id).as_ref() == ARCHITECTURE_ENGINEERING_EXPERT)
+        || contains_any_keyword(joined, &["调度", "工作流", "系统", "引擎", "路由", "架构"])
+        || primary_engineer == ARCHITECTURE_ENGINEERING_EXPERT;
+    if needs_architecture {
+        experts.push(ARCHITECTURE_ENGINEERING_EXPERT.to_string());
     }
-    if explicit_test {
-        experts.push("jiang-cexun".to_string());
+
+    let should_add_general_engineer = primary_engineer != GENERAL_ENGINEERING_EXPERT
+        && (contains_any_keyword(joined, &["代码", "前端", "后端", "实现", "重构", "主项目"])
+            || requested
+                .iter()
+                .any(|id| normalize_expert_id(id).as_ref() == GENERAL_ENGINEERING_EXPERT));
+    if should_add_general_engineer {
+        experts.push(GENERAL_ENGINEERING_EXPERT.to_string());
     }
-    if requested.iter().any(|id| id == "jiang-yingqiu")
-        || ["合规", "审计", "验收", "把关"]
-            .iter()
-            .any(|keyword| joined.contains(keyword))
+
+    if (explicit_review || high_risk)
+        && !experts.iter().any(|id| is_quality_review_expert_id(id) || is_review_expert(id))
     {
-        experts.push("jiang-yingqiu".to_string());
+        experts.push(QUALITY_REVIEW_EXPERT.to_string());
     }
+    clamp_expert_ids(experts)
+}
 
-    dedupe_expert_ids(experts)
+fn default_review_team(joined: &str) -> Vec<String> {
+    let mut experts = vec![QUALITY_REVIEW_EXPERT.to_string()];
+    if ["法律", "合规", "条款", "责任", "审计"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        experts.push(COMPLIANCE_REVIEW_EXPERT.to_string());
+    }
+    if ["代码", "系统", "实现", "架构", "引擎", "前端", "后端"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        experts.push(GENERAL_ENGINEERING_EXPERT.to_string());
+    }
+    clamp_expert_ids(experts)
 }
 
 fn build_dynamic_review_team(requested: &[String], joined: &str) -> Vec<String> {
     let mut experts = Vec::new();
-    let explicit_quality = requested.iter().any(|id| id == "jiang-jianheng")
-        || ["质量", "正确性", "稳定性", "风险", "review"]
-            .iter()
-            .any(|keyword| joined.contains(keyword));
-    let explicit_test = requested.iter().any(|id| id == "jiang-cexun")
-        || ["测试", "回归", "验证", "冒烟"]
-            .iter()
-            .any(|keyword| joined.contains(keyword));
-    let explicit_review = requested.iter().any(|id| id == "jiang-yingqiu")
-        || ["审查", "验收", "合规"]
-            .iter()
-            .any(|keyword| joined.contains(keyword));
+    let explicit_quality = requested.iter().any(|id| is_quality_review_expert_id(id))
+        || contains_any_keyword(joined, &["质量", "正确性", "稳定性", "风险", "review"]);
+    let explicit_compliance = requested.iter().any(|id| is_compliance_review_expert_id(id))
+        || contains_any_keyword(joined, &["法律", "合规", "条款", "责任", "审计"]);
+    let explicit_code = requested
+        .iter()
+        .any(|id| normalize_expert_id(id).as_ref() == GENERAL_ENGINEERING_EXPERT)
+        || contains_any_keyword(joined, &["代码", "系统", "实现", "架构", "引擎", "前端", "后端"]);
 
-    if explicit_quality || (!explicit_test && !explicit_review) {
-        experts.push("jiang-jianheng".to_string());
+    if explicit_quality || (!explicit_compliance && !explicit_code) {
+        experts.push(QUALITY_REVIEW_EXPERT.to_string());
     }
-    if explicit_test {
-        experts.push("jiang-cexun".to_string());
+    if explicit_compliance {
+        experts.push(COMPLIANCE_REVIEW_EXPERT.to_string());
     }
-    if explicit_review {
-        experts.push("jiang-yingqiu".to_string());
+    if explicit_code {
+        experts.push(GENERAL_ENGINEERING_EXPERT.to_string());
+    }
+    clamp_expert_ids(experts)
+}
+
+fn default_research_team(joined: &str) -> Vec<String> {
+    if ["代码", "前端", "后端", "架构", "引擎", "系统重构", "工作流"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        return clamp_expert_ids(vec![
+            GENERAL_ENGINEERING_EXPERT.to_string(),
+            ARCHITECTURE_ENGINEERING_EXPERT.to_string(),
+            INFORMATION_SCIENCE_EXPERT.to_string(),
+        ]);
+    }
+    if ["数据", "统计", "实验", "样本", "指标"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        return clamp_expert_ids(vec![
+            DATA_ANALYSIS_EXPERT.to_string(),
+            INFORMATION_SCIENCE_EXPERT.to_string(),
+        ]);
+    }
+    if ["法律", "合规", "条款", "政策"]
+        .iter()
+        .any(|keyword| joined.contains(keyword))
+    {
+        return clamp_expert_ids(vec![
+            COMPLIANCE_REVIEW_EXPERT.to_string(),
+            MANAGEMENT_EXPERT.to_string(),
+        ]);
+    }
+    clamp_expert_ids(vec![
+        INFORMATION_SCIENCE_EXPERT.to_string(),
+        MANAGEMENT_EXPERT.to_string(),
+    ])
+}
+
+fn build_dynamic_research_team(scene: &str, requested: &[String], joined: &str) -> Vec<String> {
+    if requested.is_empty() {
+        return clamp_expert_ids(default_research_team(joined));
     }
 
-    dedupe_expert_ids(experts)
+    let mut experts = Vec::new();
+    let mut remaining = requested.to_vec();
+
+    let is_analysis_heavy = contains_any_keyword(
+        joined,
+        &[
+            "分析", "论证", "评估", "建模", "比较", "框架", "机制", "解释", "推演", "判断",
+        ],
+    ) || scene == "disciplinary-analysis";
+    let is_search_heavy = contains_any_keyword(
+        joined,
+        &["搜索", "联网", "最新", "资料", "调研", "现状", "文献", "搜集"],
+    ) || scene == "research-with-search";
+    let is_data_heavy =
+        contains_any_keyword(joined, &["统计", "数据", "指标", "实验", "样本", "回归"]);
+    let is_compliance_heavy =
+        contains_any_keyword(joined, &["法律", "合规", "条款", "政策", "责任", "审查"]);
+
+    if let Some(index) = remaining.iter().position(|id| {
+        (normalize_expert_id(id).as_ref() == DATA_ANALYSIS_EXPERT && is_data_heavy)
+            || (is_compliance_review_expert_id(id) && is_compliance_heavy)
+            || (normalize_expert_id(id).as_ref() == INFORMATION_SCIENCE_EXPERT
+                && (is_analysis_heavy || is_search_heavy))
+    }) {
+        experts.push(remaining.remove(index));
+    } else {
+        experts.push(remaining.remove(0));
+    }
+
+    if is_search_heavy
+        && !experts
+            .iter()
+            .any(|id| normalize_expert_id(id).as_ref() == INFORMATION_SCIENCE_EXPERT)
+    {
+        if let Some(index) = remaining
+            .iter()
+            .position(|id| normalize_expert_id(id).as_ref() == INFORMATION_SCIENCE_EXPERT)
+        {
+            experts.push(remaining.remove(index));
+        }
+    }
+
+    if is_data_heavy
+        && !experts
+            .iter()
+            .any(|id| normalize_expert_id(id).as_ref() == DATA_ANALYSIS_EXPERT)
+    {
+        if let Some(index) = remaining
+            .iter()
+            .position(|id| normalize_expert_id(id).as_ref() == DATA_ANALYSIS_EXPERT)
+        {
+            experts.push(remaining.remove(index));
+        }
+    }
+
+    if is_compliance_heavy && !experts.iter().any(|id| is_compliance_review_expert_id(id)) {
+        if let Some(index) = remaining
+            .iter()
+            .position(|id| is_compliance_review_expert_id(id))
+        {
+            experts.push(remaining.remove(index));
+        }
+    }
+
+    for id in remaining {
+        if experts.len() >= 3 {
+            break;
+        }
+        experts.push(id);
+    }
+
+    clamp_expert_ids(experts)
 }
 
 fn parse_prompt_module_hints(value: &Value) -> Option<HashMap<String, Vec<String>>> {
@@ -654,7 +797,7 @@ fn parse_prompt_module_hints(value: &Value) -> Option<HashMap<String, Vec<String
             .map(str::to_string)
             .collect::<Vec<_>>();
         if !filtered.is_empty() {
-            hints.insert(expert_id.clone(), filtered);
+            hints.insert(normalize_expert_id(expert_id).into_owned(), filtered);
         }
     }
     if hints.is_empty() {
@@ -699,11 +842,11 @@ mod tests {
         assert_eq!(plan.task_description, "修复前端");
         assert_eq!(
             plan.expert_ids,
-            vec!["jiang-ruoxi".to_string(), "jiang-yumo".to_string()]
+            vec!["discipline-120".to_string(), "discipline-520".to_string()]
         );
         assert_eq!(
             plan.prompt_module_hints
-                .and_then(|hints| hints.get("jiang-yumo").cloned())
+                .and_then(|hints| hints.get("discipline-520").cloned())
                 .unwrap_or_default(),
             vec!["command-guidance".to_string()]
         );
@@ -721,14 +864,14 @@ mod tests {
     fn small_incremental_frontend_change_prefers_single_engineer() {
         let raw = r#"{"scene":"code-development","taskDescription":"把按钮圆一点","expertIds":["jiang-yumo"]}"#;
         let plan = parse_dispatch_plan(raw, "这个按钮顺手圆一点");
-        assert_eq!(plan.expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(plan.expert_ids, vec!["discipline-520".to_string()]);
     }
 
     #[test]
     fn small_incremental_change_ignores_model_overdispatch() {
         let raw = r#"{"scene":"code-development","taskDescription":"把标题和按钮顺手润一下","expertIds":["jiang-yumo","jiang-cexun","jiang-yingqiu"]}"#;
         let plan = parse_dispatch_plan(raw, "这个小页子再顺手润一下吧，标题温和一点，按钮圆一点。");
-        assert_eq!(plan.expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(plan.expert_ids, vec!["discipline-520".to_string()]);
     }
 
     #[test]
@@ -736,7 +879,45 @@ mod tests {
         let raw = r#"{"scene":"code-development","taskDescription":"把标题和按钮顺手润一下","expertIds":["jiang-yumo","jiang-cexun"]}"#;
         let enriched_user_message = "[当前项目]\n项目名称：前端重测项目-0604L\n\n[工作区预检]\n测试记录：暂无\n\n[项目相关代码]\n命令测试与回归说明\n\n[用户需求]\n这个小页子再顺手润一下吧，标题温和一点，按钮圆一点，说明别那么长。";
         let plan = parse_dispatch_plan(raw, enriched_user_message);
-        assert_eq!(plan.expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(plan.expert_ids, vec!["discipline-520".to_string()]);
+    }
+
+    #[test]
+    fn disciplinary_analysis_keeps_requested_primary_expert_order() {
+        let raw = r#"{"scene":"disciplinary-analysis","taskDescription":"分析多专家调度的量化瓶颈","expertIds":["discipline-910","discipline-120","discipline-630"]}"#;
+        let plan = parse_dispatch_plan(raw, "请从统计和系统科学角度分析多专家调度的量化瓶颈");
+        assert_eq!(
+            plan.expert_ids,
+            vec![
+                "discipline-910".to_string(),
+                "discipline-120".to_string(),
+                "discipline-630".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn research_with_search_promotes_information_science_when_requested() {
+        let raw = r#"{"scene":"research-with-search","taskDescription":"联网调研这个系统架构的最新方案","expertIds":["discipline-630","discipline-120","discipline-910"]}"#;
+        let plan = parse_dispatch_plan(raw, "联网调研这个系统架构的最新方案，并分析现状");
+        assert_eq!(
+            plan.expert_ids,
+            vec![
+                "discipline-120".to_string(),
+                "discipline-630".to_string(),
+                "discipline-910".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn code_development_preserves_requested_engineering_specialist() {
+        let raw = r#"{"scene":"code-development","taskDescription":"把主项目应用层做产品化改造","expertIds":["discipline-535","discipline-520"]}"#;
+        let plan = parse_dispatch_plan(raw, "把主项目应用层做产品化改造，并补实际代码实现");
+        assert_eq!(
+            plan.expert_ids,
+            vec!["discipline-535".to_string(), "discipline-520".to_string()]
+        );
     }
 
     #[test]
@@ -776,7 +957,7 @@ mod tests {
         assert_eq!(decision.action, "respond-and-append");
         assert_eq!(decision.reply.as_deref(), Some("我来继续处理。"));
         assert_eq!(decision.task_description.as_deref(), Some("补充修改文案"));
-        assert_eq!(decision.target_expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(decision.target_expert_ids, vec!["discipline-520".to_string()]);
         assert_eq!(decision.delivery_mode, "current-step");
     }
 

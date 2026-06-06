@@ -1,3 +1,5 @@
+import { buildExpertToolMap } from './expert-catalog';
+
 /**
  * 前端工具注册表 - 定义每个工具的Schema(供注入LLM请求)和元信息
  */
@@ -13,33 +15,7 @@ export interface ToolDefinition {
 }
 
 // 专家角色与工具权限映射
-const EXPERT_TOOL_MAP: Record<string, string[]> = {
-  // 所有专家都可用
-  '_common': ['file_read', 'file_list', 'index_search', 'memory_query'],
-  // 工程师类
-  'jiang-qinglan': ['shell_exec', 'file_write', 'file_patch', 'web_search'],
-  'jiang-yumo': ['shell_exec', 'file_write', 'file_patch', 'web_search'],
-  'jiang-subai': ['shell_exec', 'file_write', 'file_patch', 'web_search'],
-  // 调研员
-  'jiang-ruoxi': ['web_search', 'shell_exec'],
-  // 测试专家
-  'jiang-cexun': ['shell_exec', 'file_read'],
-  // 审查员
-  'jiang-yingqiu': ['shell_exec', 'file_read'],
-  'jiang-jianheng': ['shell_exec', 'file_read'],
-  // 设计师
-  'jiang-dingchu': ['web_search'],
-  // 写作/翻译/办公
-  'jiang-moxian': ['web_search', 'file_write'],
-  'jiang-lingyu': ['web_search'],
-  'jiang-wenshu': ['file_write', 'file_read'],
-  // 数据分析
-  'jiang-shuyan': ['shell_exec', 'file_read', 'web_search'],
-  // 文档
-  'jiang-zhilan': ['file_read', 'file_write'],
-  // 媒体
-  'jiang-huaying': ['web_search'],
-};
+const EXPERT_TOOL_MAP: Record<string, string[]> = buildExpertToolMap();
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();

@@ -689,19 +689,19 @@ mod tests {
     #[test]
     fn blocks_when_daily_limit_reached() {
         let decision = check_quota(&QuotaCheckRequest {
-            expert_id: "jiang-yumo".to_string(),
-            expert_name: "江予墨".to_string(),
+            expert_id: "discipline-520".to_string(),
+            expert_name: "520 计算机科学技术".to_string(),
             allocations: vec![TokenAllocation {
-                expert_id: "jiang-yumo".to_string(),
+                expert_id: "discipline-520".to_string(),
                 daily_limit: Some(100),
                 monthly_limit: None,
                 yearly_limit: None,
             }],
             records: vec![TokenUsageRecord {
                 id: "r1".to_string(),
-                expert_id: "jiang-yumo".to_string(),
-                expert_name: "江予墨".to_string(),
-                expert_title: Some("前端工程师".to_string()),
+                expert_id: "discipline-520".to_string(),
+                expert_name: "520 计算机科学技术".to_string(),
+                expert_title: Some("一级学科专家".to_string()),
                 model: "deepseek-chat".to_string(),
                 key_id: "key-1".to_string(),
                 timestamp: 1_780_531_200_000,
@@ -724,9 +724,9 @@ mod tests {
         let response = append_token_usage(&AppendTokenUsageRequest {
             project_data: empty_token_data(),
             user_data: empty_token_data(),
-            expert_id: "jiang-yumo".to_string(),
-            expert_name: "江予墨".to_string(),
-            expert_title: Some("前端工程师".to_string()),
+            expert_id: "discipline-520".to_string(),
+            expert_name: "520 计算机科学技术".to_string(),
+            expert_title: Some("一级学科专家".to_string()),
             model: "deepseek-chat".to_string(),
             key_id: "key-1".to_string(),
             usage: UsageSummary {

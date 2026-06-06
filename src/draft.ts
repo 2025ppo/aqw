@@ -466,23 +466,29 @@ export class DraftCanvas {
   // ========== 尺寸与视口 ==========
 
   private resize() {
-    const rect = this.canvas.parentElement!.getBoundingClientRect();
+    const rect = this.notesContainer.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
     const dpr = window.devicePixelRatio || 1;
 
-    this.canvasSize.width = rect.width;
-    this.canvasSize.height = rect.height;
+    this.canvasSize.width = width;
+    this.canvasSize.height = height;
 
-    // 设置主Canvas尺寸（考虑DPR）
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
-    this.canvas.style.width = rect.width + "px";
-    this.canvas.style.height = rect.height + "px";
-    this.ctx.scale(dpr, dpr);
+    // 重置变换后再按 DPR 缩放，避免多次 resize 后缩放叠加
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.offscreenCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // 设置主 Canvas 尺寸（考虑 DPR）
+    this.canvas.width = width * dpr;
+    this.canvas.height = height * dpr;
+    this.canvas.style.width = width + "px";
+    this.canvas.style.height = height + "px";
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 同步离屏Canvas
-    this.offscreenCanvas.width = rect.width * dpr;
-    this.offscreenCanvas.height = rect.height * dpr;
-    this.offscreenCtx.scale(dpr, dpr);
+    this.offscreenCanvas.width = width * dpr;
+    this.offscreenCanvas.height = height * dpr;
+    this.offscreenCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.offscreenDirty = true;
     this.scheduleRender();
@@ -2425,6 +2431,7 @@ export class DraftCanvas {
   activate() {
     this.isActive = true;
     this.canvas.classList.add("active");
+    this.resize();
     // 显示所有草稿 DOM 元素
     this.notesContainer.querySelectorAll<HTMLElement>(".draft-note, .draft-screenshot, .draft-mini-canvas")
       .forEach((el) => { el.style.display = ""; });

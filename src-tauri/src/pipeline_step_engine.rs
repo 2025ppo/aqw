@@ -332,7 +332,7 @@ mod tests {
             task_description: "修界面".to_string(),
             step_index: 0,
             total_steps: 2,
-            step_expert_ids: vec!["jiang-yumo".to_string()],
+            step_expert_ids: vec!["discipline-520".to_string()],
             has_workspace_context: true,
             current_step_tasks: vec![],
             runtime_state: PipelineRuntimeState {
@@ -344,18 +344,18 @@ mod tests {
             },
             blackboard: sample_blackboard(),
             completed_results: vec![super::SupervisorStepResult {
-                expert_id: "jiang-ruoxi".to_string(),
-                name: "江若溪".to_string(),
-                title: "调研员".to_string(),
+                expert_id: "discipline-120".to_string(),
+                name: "120 信息科学与系统科学".to_string(),
+                title: "一级学科专家".to_string(),
                 output: "已调研".to_string(),
             }],
-            remaining_step_descs: vec!["2. 江映秋（审查员）".to_string()],
+            remaining_step_descs: vec!["2. 620 安全科学技术（一级学科专家）".to_string()],
             followup_context: Some("\n\n【用户中途补充要求】\n补一个按钮".to_string()),
         };
 
         let midcheck = build_midcheck_request(&request, "\n\n【共享黑板】...");
         assert!(midcheck.followup_context.contains("补一个按钮"));
-        assert!(midcheck.remaining_desc.contains("江映秋"));
+        assert!(midcheck.remaining_desc.contains("620 安全科学技术"));
         assert!(midcheck.task_description.contains("共享黑板"));
     }
 
@@ -366,12 +366,12 @@ mod tests {
             task_description: "修界面".to_string(),
             step_index: 0,
             total_steps: 1,
-            step_expert_ids: vec!["jiang-yumo".to_string()],
+            step_expert_ids: vec!["discipline-520".to_string()],
             has_workspace_context: true,
             current_step_tasks: vec![PipelineTaskSnapshot {
-                expert_id: "jiang-yumo".to_string(),
-                expert_name: "江予墨".to_string(),
-                expert_title: "前端工程师".to_string(),
+                expert_id: "discipline-520".to_string(),
+                expert_name: "520 计算机科学技术".to_string(),
+                expert_title: "一级学科专家".to_string(),
                 dispatch_wave: Some(1),
                 output: Some(
                     "[ACTION:EDIT_FILE path=\"app.js\" searchText=\"a\" replaceText=\"b\"]"
@@ -402,7 +402,7 @@ mod tests {
             plan: PipelinePlanInput {
                 scene: "code-development".to_string(),
                 task_description: "修界面".to_string(),
-                expert_ids: vec!["jiang-yumo".to_string(), "jiang-yingqiu".to_string()],
+                expert_ids: vec!["discipline-520".to_string(), "discipline-620".to_string()],
                 requires_design: Some(false),
             },
             layout: PipelineLayout {
@@ -410,11 +410,11 @@ mod tests {
                 description: "测试".to_string(),
                 steps: vec![
                     PipelineStepLayout {
-                        expert_ids: vec!["jiang-yumo".to_string()],
+                        expert_ids: vec!["discipline-520".to_string()],
                         optional: Some(false),
                     },
                     PipelineStepLayout {
-                        expert_ids: vec!["jiang-yingqiu".to_string()],
+                        expert_ids: vec!["discipline-620".to_string()],
                         optional: Some(false),
                     },
                 ],
@@ -434,23 +434,23 @@ mod tests {
                 },
                 blackboard: sample_blackboard(),
                 completed_results: vec![CompletedExpertResult {
-                    expert_id: "jiang-ruoxi".to_string(),
-                    name: "江若溪".to_string(),
-                    title: "调研员".to_string(),
+                    expert_id: "discipline-120".to_string(),
+                    name: "120 信息科学与系统科学".to_string(),
+                    title: "一级学科专家".to_string(),
                     output: "已调研".to_string(),
                 }],
                 pending_followups: vec![PipelineFollowup {
                     id: "f1".to_string(),
                     message: "补一个按钮".to_string(),
-                    target_expert_ids: vec!["jiang-yumo".to_string()],
+                    target_expert_ids: vec!["discipline-520".to_string()],
                     delivery_mode: "current-step".to_string(),
                     consumed_by: vec![],
                     created_at: 1,
                 }],
                 task_history: vec![PipelineTaskSnapshot {
-                    expert_id: "jiang-yumo".to_string(),
-                    expert_name: "江予墨".to_string(),
-                    expert_title: "前端工程师".to_string(),
+                    expert_id: "discipline-520".to_string(),
+                    expert_name: "520 计算机科学技术".to_string(),
+                    expert_title: "一级学科专家".to_string(),
                     dispatch_wave: Some(1),
                     output: Some("已修改".to_string()),
                     error: None,
@@ -459,14 +459,14 @@ mod tests {
             has_workspace_context: true,
             experts: vec![
                 PipelineExpertInfo {
-                    id: "jiang-yumo".to_string(),
-                    name: "江予墨".to_string(),
-                    title: "前端工程师".to_string(),
+                    id: "discipline-520".to_string(),
+                    name: "520 计算机科学技术".to_string(),
+                    title: "一级学科专家".to_string(),
                 },
                 PipelineExpertInfo {
-                    id: "jiang-yingqiu".to_string(),
-                    name: "江映秋".to_string(),
-                    title: "审查员".to_string(),
+                    id: "discipline-620".to_string(),
+                    name: "620 安全科学技术".to_string(),
+                    title: "一级学科专家".to_string(),
                 },
             ],
         });
@@ -474,14 +474,14 @@ mod tests {
         assert_eq!(finalize_request.step_index, 0);
         assert_eq!(
             finalize_request.step_expert_ids,
-            vec!["jiang-yumo".to_string()]
+            vec!["discipline-520".to_string()]
         );
         assert_eq!(finalize_request.current_step_tasks.len(), 1);
         assert_eq!(finalize_request.completed_results.len(), 1);
         assert!(finalize_request
             .followup_context
             .unwrap_or_default()
-            .contains("江予墨（前端工程师）"));
+            .contains("520 计算机科学技术（一级学科专家）"));
         assert_eq!(finalize_request.remaining_step_descs.len(), 1);
     }
 }

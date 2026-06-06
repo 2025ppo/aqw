@@ -94,7 +94,7 @@ function ensureXtLayout(projectDir, projectName) {
   if (!fs.existsSync(configFile)) {
     writeJson(configFile, {
       project: projectName,
-      version: "0.1.0",
+      version: "0.1.1",
       files: [],
       canvasDirectory: {
         nodes: [],

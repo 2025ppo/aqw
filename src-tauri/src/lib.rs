@@ -22,6 +22,7 @@ mod deliverables;
 mod doc_processor;
 mod experience;
 mod expert_context_engine;
+mod expert_identity;
 mod expert_postprocess_engine;
 mod expert_runtime_engine;
 mod expert_session_engine;
@@ -326,7 +327,6 @@ fn supervisor_quota_guard(context: &SupervisorTokenRuntimeContext) -> Option<Str
         exempt_expert_ids: vec![
             "jiang-xingtu".to_string(),
             "jiang-xinghe".to_string(),
-            "jiang-qinglan".to_string(),
         ],
         now_ms: None,
     });
@@ -1676,11 +1676,7 @@ fn build_expert_tool_plan(
         None
     };
     let response = ExpertToolPlanEnvelope {
-        plan: expert_tool_engine::build_tool_request_plan(
-            &text,
-            &expert_title,
-            workspace_root.as_deref(),
-        ),
+        plan: expert_tool_engine::build_tool_request_plan(&text, &expert_title, workspace_root.as_deref()),
     };
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
@@ -1946,8 +1942,9 @@ async fn advance_expert_postprocess_internal(
         }
 
         if state.current_tool_requests.is_empty() {
-            let tool_plan = expert_tool_engine::build_tool_request_plan(
+            let tool_plan = expert_tool_engine::build_tool_request_plan_for_expert(
                 &state.reply,
+                Some(&state.expert_id),
                 &state.expert_title,
                 state.project_path.as_ref().map(Path::new),
             );
@@ -1960,6 +1957,12 @@ async fn advance_expert_postprocess_internal(
                         workspace_looks_empty: workspace_looks_empty_for_direct_creation(
                             state.project_path.as_deref(),
                         ),
+                        task_description: state
+                            .messages
+                            .iter()
+                            .find(|message| message.role == "user")
+                            .map(|message| message.content.clone())
+                            .unwrap_or_default(),
                         reply: state.reply.clone(),
                     },
                 );
@@ -2067,8 +2070,9 @@ async fn advance_expert_postprocess_internal(
         }
 
         if state.current_tool_contexts.is_empty() {
-            state.reply = expert_tool_engine::build_tool_request_plan(
+            state.reply = expert_tool_engine::build_tool_request_plan_for_expert(
                 &state.reply,
+                Some(&state.expert_id),
                 &state.expert_title,
                 state.project_path.as_ref().map(Path::new),
             )
@@ -2125,8 +2129,9 @@ async fn initialize_expert_postprocess_internal(
     app_handle: &tauri::AppHandle,
 ) -> Result<expert_postprocess_engine::ExpertPostprocessState, String> {
     let mut state = request.state;
-    let current_tool_plan = expert_tool_engine::build_tool_request_plan(
+    let current_tool_plan = expert_tool_engine::build_tool_request_plan_for_expert(
         &state.reply,
+        Some(&state.expert_id),
         &state.expert_title,
         state.project_path.as_ref().map(Path::new),
     );
@@ -3082,8 +3087,10 @@ async fn call_llm(
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let implementation_session = joined_prompt.contains("前端工程师")
-        || joined_prompt.contains("后端工程师")
+    let implementation_session = joined_prompt.contains("code-development")
+        || joined_prompt.contains("discipline-4")
+        || joined_prompt.contains("discipline-5")
+        || joined_prompt.contains("discipline-610")
         || joined_prompt.contains("实现步骤")
         || joined_prompt.contains("补交真实文件变更中")
         || joined_prompt.contains("CREATE_FILE:index.html")
@@ -3244,7 +3251,7 @@ fn create_workspace(project_name: String, app_handle: tauri::AppHandle) -> Resul
         let config_file = xt_dir.join("config.json");
         let default_config = r#"{
   "project": "",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "files": [],
   "canvasDirectory": {
     "nodes": [],
@@ -3297,7 +3304,7 @@ fn open_project_from_path(
         let config_file = xt_dir.join("config.json");
         let default_config = r#"{
   "project": "",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "files": [],
   "canvasDirectory": {
     "nodes": [],
@@ -3376,7 +3383,7 @@ fn ensure_xt_config(project_name: String, app_handle: tauri::AppHandle) -> Resul
         let config_file = xt_dir.join("config.json");
         let default_config = r#"{
   "project": "",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "files": [],
   "canvasDirectory": {
     "nodes": [],

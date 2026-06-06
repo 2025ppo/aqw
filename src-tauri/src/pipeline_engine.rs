@@ -1,3 +1,4 @@
+use crate::expert_identity::normalize_expert_id;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -40,21 +41,57 @@ pub struct PipelineExpertInfo {
     pub title: String,
 }
 
-const RESEARCHER_ID: &str = "jiang-ruoxi";
-const DESIGNER_ID: &str = "jiang-dingchu";
-const ENGINEER_IDS: &[&str] = &["jiang-qinglan", "jiang-yumo", "jiang-subai"];
-const REVIEW_IDS: &[&str] = &["jiang-jianheng", "jiang-cexun", "jiang-yingqiu"];
+const RESEARCH_IDS: &[&str] = &[
+    "discipline-110", "discipline-120", "discipline-130", "discipline-140", "discipline-150",
+    "discipline-160", "discipline-170", "discipline-180", "discipline-190", "discipline-210",
+    "discipline-220", "discipline-230", "discipline-240", "discipline-310", "discipline-320",
+    "discipline-330", "discipline-340", "discipline-350", "discipline-360", "discipline-630",
+    "discipline-710", "discipline-720", "discipline-730", "discipline-740", "discipline-750",
+    "discipline-770", "discipline-780", "discipline-790", "discipline-810", "discipline-830",
+    "discipline-840", "discipline-850", "discipline-860", "discipline-870", "discipline-880",
+    "discipline-890", "discipline-910",
+];
+const DESIGN_IDS: &[&str] = &["discipline-760"];
+const ENGINEER_IDS: &[&str] = &[
+    "discipline-410", "discipline-413", "discipline-416", "discipline-420", "discipline-430",
+    "discipline-440", "discipline-450", "discipline-460", "discipline-470", "discipline-480",
+    "discipline-490", "discipline-510", "discipline-520", "discipline-530", "discipline-535",
+    "discipline-540", "discipline-550", "discipline-560", "discipline-570", "discipline-580",
+    "discipline-590", "discipline-610",
+];
+const REVIEW_IDS: &[&str] = &["discipline-620", "discipline-820"];
+
+fn is_research_expert(expert_id: &str) -> bool {
+    let expert_id = normalize_expert_id(expert_id);
+    RESEARCH_IDS.contains(&expert_id.as_ref())
+}
+
+fn is_design_expert(expert_id: &str) -> bool {
+    let expert_id = normalize_expert_id(expert_id);
+    DESIGN_IDS.contains(&expert_id.as_ref())
+}
+
+fn is_engineering_expert(expert_id: &str) -> bool {
+    let expert_id = normalize_expert_id(expert_id);
+    ENGINEER_IDS.contains(&expert_id.as_ref())
+}
+
+fn is_review_expert(expert_id: &str) -> bool {
+    let expert_id = normalize_expert_id(expert_id);
+    REVIEW_IDS.contains(&expert_id.as_ref())
+}
 
 fn dedupe(ids: Vec<String>) -> Vec<String> {
     let mut seen = Vec::new();
     let mut deduped = Vec::new();
     for id in ids {
         let trimmed = id.trim();
-        if trimmed.is_empty() || seen.iter().any(|item| item == trimmed) {
+        let normalized = normalize_expert_id(trimmed);
+        if normalized.is_empty() || seen.iter().any(|item| item == normalized.as_ref()) {
             continue;
         }
-        seen.push(trimmed.to_string());
-        deduped.push(trimmed.to_string());
+        seen.push(normalized.to_string());
+        deduped.push(normalized.to_string());
     }
     deduped
 }
@@ -77,36 +114,46 @@ fn build_code_development_steps(
     }
 
     let mut steps = Vec::new();
-    let has_research = expert_ids.iter().any(|id| id == RESEARCHER_ID);
-    let has_design = expert_ids.iter().any(|id| id == DESIGNER_ID) && requires_design.unwrap_or(true);
+    let research_ids = expert_ids
+        .iter()
+        .filter(|id| is_research_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let design_ids = expert_ids
+        .iter()
+        .filter(|id| is_design_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_research = !research_ids.is_empty();
+    let has_design = !design_ids.is_empty() && requires_design.unwrap_or(true);
 
     if has_research {
         steps.push(PipelineStepLayout {
-            expert_ids: vec![RESEARCHER_ID.to_string()],
+            expert_ids: research_ids,
             optional: None,
         });
     }
 
     if has_design {
         steps.push(PipelineStepLayout {
-            expert_ids: vec![DESIGNER_ID.to_string()],
+            expert_ids: design_ids,
             optional: None,
         });
     }
 
     let implementation_ids = expert_ids
         .iter()
-        .filter(|id| ENGINEER_IDS.contains(&id.as_str()))
+        .filter(|id| is_engineering_expert(id))
         .cloned()
         .collect::<Vec<_>>();
     let miscellaneous_ids = expert_ids
         .iter()
         .filter(|id| {
             let value = id.as_str();
-            value != RESEARCHER_ID
-                && value != DESIGNER_ID
-                && !ENGINEER_IDS.contains(&value)
-                && !REVIEW_IDS.contains(&value)
+            !is_research_expert(value)
+                && !is_design_expert(value)
+                && !is_engineering_expert(value)
+                && !is_review_expert(value)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -120,7 +167,7 @@ fn build_code_development_steps(
 
     let review_step = expert_ids
         .iter()
-        .filter(|id| REVIEW_IDS.contains(&id.as_str()))
+        .filter(|id| is_review_expert(id))
         .cloned()
         .collect::<Vec<_>>();
     if !review_step.is_empty() {
@@ -138,6 +185,96 @@ fn build_code_development_steps(
     } else {
         steps
     }
+}
+
+fn build_disciplinary_analysis_steps(expert_ids: &[String]) -> Vec<PipelineStepLayout> {
+    let expert_ids = dedupe(expert_ids.to_vec());
+    if expert_ids.is_empty() {
+        return vec![];
+    }
+    if expert_ids.len() == 1 {
+        return vec![PipelineStepLayout {
+            expert_ids,
+            optional: None,
+        }];
+    }
+
+    let lead = expert_ids[0].clone();
+    let support_ids = expert_ids
+        .iter()
+        .skip(1)
+        .filter(|id| !is_review_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let review_ids = expert_ids
+        .iter()
+        .skip(1)
+        .filter(|id| is_review_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut steps = vec![PipelineStepLayout {
+        expert_ids: vec![lead],
+        optional: None,
+    }];
+    if !support_ids.is_empty() {
+        steps.push(PipelineStepLayout {
+            expert_ids: support_ids,
+            optional: None,
+        });
+    }
+    if !review_ids.is_empty() {
+        steps.push(PipelineStepLayout {
+            expert_ids: review_ids,
+            optional: None,
+        });
+    }
+    steps
+}
+
+fn build_research_steps(expert_ids: &[String], search_heavy: bool) -> Vec<PipelineStepLayout> {
+    let expert_ids = dedupe(expert_ids.to_vec());
+    if expert_ids.is_empty() {
+        return vec![];
+    }
+    if expert_ids.len() == 1 {
+        return vec![PipelineStepLayout {
+            expert_ids,
+            optional: None,
+        }];
+    }
+
+    let lead = expert_ids[0].clone();
+    let support_ids = expert_ids
+        .iter()
+        .skip(1)
+        .filter(|id| !is_review_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let review_ids = expert_ids
+        .iter()
+        .skip(1)
+        .filter(|id| is_review_expert(id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut steps = vec![PipelineStepLayout {
+        expert_ids: vec![lead],
+        optional: None,
+    }];
+    if !support_ids.is_empty() {
+        steps.push(PipelineStepLayout {
+            expert_ids: support_ids,
+            optional: Some(search_heavy),
+        });
+    }
+    if !review_ids.is_empty() {
+        steps.push(PipelineStepLayout {
+            expert_ids: review_ids,
+            optional: Some(true),
+        });
+    }
+    steps
 }
 
 fn build_generic_steps(expert_ids: &[String]) -> Vec<PipelineStepLayout> {
@@ -161,23 +298,23 @@ fn build_layout_description(scene: &str, steps: &[PipelineStepLayout]) -> String
     match scene {
         "code-development" => {
             let mut phases = Vec::new();
-            if steps.iter().any(|step| step.expert_ids.iter().any(|id| id == RESEARCHER_ID)) {
+            if steps.iter().any(|step| step.expert_ids.iter().any(|id| is_research_expert(id))) {
                 phases.push("先快速摸清现状");
             }
-            if steps.iter().any(|step| step.expert_ids.iter().any(|id| id == DESIGNER_ID)) {
+            if steps.iter().any(|step| step.expert_ids.iter().any(|id| is_design_expert(id))) {
                 phases.push("补必要方案");
             }
             if steps.iter().any(|step| {
                 step.expert_ids
                     .iter()
-                    .any(|id| ENGINEER_IDS.contains(&id.as_str()))
+                    .any(|id| is_engineering_expert(id))
             }) {
                 phases.push("由主力专家直接修改");
             }
             if steps.iter().any(|step| {
                 step.expert_ids
                     .iter()
-                    .any(|id| REVIEW_IDS.contains(&id.as_str()))
+                    .any(|id| is_review_expert(id))
             }) {
                 phases.push("最后按需复核");
             }
@@ -188,6 +325,33 @@ fn build_layout_description(scene: &str, steps: &[PipelineStepLayout]) -> String
             }
         }
         "code-review" => "按需邀请审查专家协作复核".to_string(),
+        "disciplinary-analysis" => {
+            if steps.len() <= 1 {
+                "由主学科专家直接分析判断".to_string()
+            } else if steps.len() == 2 {
+                "先由主学科专家定主判断，再补辅助学科交叉论证".to_string()
+            } else {
+                "先由主学科专家定主判断，再补辅助学科交叉论证，最后做风险复核".to_string()
+            }
+        }
+        "technical-research" => {
+            if steps.len() <= 1 {
+                "由主学科专家直接完成技术调研".to_string()
+            } else if steps.len() == 2 {
+                "先由主学科专家摸清现状，再补辅助学科交叉调研".to_string()
+            } else {
+                "先由主学科专家摸清现状，再补辅助学科交叉调研，最后做风险复核".to_string()
+            }
+        }
+        "research-with-search" => {
+            if steps.len() <= 1 {
+                "由主学科专家直接联网调研".to_string()
+            } else if steps.len() == 2 {
+                "先由主学科专家联网摸清现状，再补辅助学科交叉调研".to_string()
+            } else {
+                "先由主学科专家联网摸清现状，再补辅助学科交叉调研，最后做风险复核".to_string()
+            }
+        }
         _ => "按需邀请专家协作处理".to_string(),
     }
 }
@@ -195,6 +359,9 @@ fn build_layout_description(scene: &str, steps: &[PipelineStepLayout]) -> String
 pub fn compute_pipeline_layout(plan: &PipelinePlanInput) -> PipelineLayout {
     let steps = match plan.scene.as_str() {
         "code-development" => build_code_development_steps(&plan.expert_ids, plan.requires_design),
+        "disciplinary-analysis" => build_disciplinary_analysis_steps(&plan.expert_ids),
+        "technical-research" => build_research_steps(&plan.expert_ids, false),
+        "research-with-search" => build_research_steps(&plan.expert_ids, true),
         _ => build_generic_steps(&plan.expert_ids),
     };
 
@@ -280,12 +447,32 @@ mod tests {
         let layout = compute_pipeline_layout(&PipelinePlanInput {
             scene: "code-development".to_string(),
             task_description: "修前端".to_string(),
-            expert_ids: vec!["jiang-ruoxi".to_string(), "jiang-yumo".to_string()],
+            expert_ids: vec!["discipline-120".to_string(), "discipline-520".to_string()],
             requires_design: Some(false),
         });
         assert_eq!(layout.steps.len(), 2);
-        assert_eq!(layout.steps[0].expert_ids, vec!["jiang-ruoxi".to_string()]);
-        assert_eq!(layout.steps[1].expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(layout.steps[0].expert_ids, vec!["discipline-120".to_string()]);
+        assert_eq!(layout.steps[1].expert_ids, vec!["discipline-520".to_string()]);
+    }
+
+    #[test]
+    fn code_development_keeps_analysis_and_documentation_disciplines_out_of_implementation_stage() {
+        let layout = compute_pipeline_layout(&PipelinePlanInput {
+            scene: "code-development".to_string(),
+            task_description: "先做统计分析和文档梳理，再改主项目实现".to_string(),
+            expert_ids: vec![
+                "discipline-910".to_string(),
+                "discipline-870".to_string(),
+                "discipline-520".to_string(),
+            ],
+            requires_design: Some(false),
+        });
+        assert_eq!(layout.steps.len(), 2);
+        assert_eq!(
+            layout.steps[0].expert_ids,
+            vec!["discipline-910".to_string(), "discipline-870".to_string()]
+        );
+        assert_eq!(layout.steps[1].expert_ids, vec!["discipline-520".to_string()]);
     }
 
     #[test]
@@ -294,18 +481,79 @@ mod tests {
             scene: "code-development".to_string(),
             task_description: "高风险改动".to_string(),
             expert_ids: vec![
-                "jiang-yumo".to_string(),
-                "jiang-jianheng".to_string(),
-                "jiang-cexun".to_string(),
+                "discipline-520".to_string(),
+                "discipline-620".to_string(),
+                "discipline-820".to_string(),
             ],
             requires_design: Some(false),
         });
         assert_eq!(layout.steps.len(), 2);
-        assert_eq!(layout.steps[0].expert_ids, vec!["jiang-yumo".to_string()]);
+        assert_eq!(layout.steps[0].expert_ids, vec!["discipline-520".to_string()]);
         assert_eq!(
             layout.steps[1].expert_ids,
-            vec!["jiang-jianheng".to_string(), "jiang-cexun".to_string()]
+            vec!["discipline-620".to_string(), "discipline-820".to_string()]
         );
+    }
+
+    #[test]
+    fn disciplinary_analysis_prioritizes_primary_expert_then_supporting_experts() {
+        let layout = compute_pipeline_layout(&PipelinePlanInput {
+            scene: "disciplinary-analysis".to_string(),
+            task_description: "从统计和系统科学视角分析调度方案".to_string(),
+            expert_ids: vec![
+                "discipline-910".to_string(),
+                "discipline-120".to_string(),
+                "discipline-620".to_string(),
+            ],
+            requires_design: None,
+        });
+        assert_eq!(layout.steps.len(), 3);
+        assert_eq!(layout.steps[0].expert_ids, vec!["discipline-910".to_string()]);
+        assert_eq!(layout.steps[1].expert_ids, vec!["discipline-120".to_string()]);
+        assert_eq!(layout.steps[2].expert_ids, vec!["discipline-620".to_string()]);
+        assert!(layout.description.contains("主学科专家"));
+    }
+
+    #[test]
+    fn technical_research_prioritizes_primary_then_supporting_then_review() {
+        let layout = compute_pipeline_layout(&PipelinePlanInput {
+            scene: "technical-research".to_string(),
+            task_description: "调研多专家系统的调度架构".to_string(),
+            expert_ids: vec![
+                "discipline-120".to_string(),
+                "discipline-910".to_string(),
+                "discipline-620".to_string(),
+            ],
+            requires_design: None,
+        });
+        assert_eq!(layout.steps.len(), 3);
+        assert_eq!(layout.steps[0].expert_ids, vec!["discipline-120".to_string()]);
+        assert_eq!(layout.steps[1].expert_ids, vec!["discipline-910".to_string()]);
+        assert_eq!(layout.steps[1].optional, Some(false));
+        assert_eq!(layout.steps[2].expert_ids, vec!["discipline-620".to_string()]);
+        assert_eq!(layout.steps[2].optional, Some(true));
+        assert!(layout.description.contains("主学科专家"));
+    }
+
+    #[test]
+    fn research_with_search_keeps_same_order_and_marks_support_optional() {
+        let layout = compute_pipeline_layout(&PipelinePlanInput {
+            scene: "research-with-search".to_string(),
+            task_description: "联网调研这个系统调度架构的最新方案".to_string(),
+            expert_ids: vec![
+                "discipline-120".to_string(),
+                "discipline-630".to_string(),
+                "discipline-820".to_string(),
+            ],
+            requires_design: None,
+        });
+        assert_eq!(layout.steps.len(), 3);
+        assert_eq!(layout.steps[0].expert_ids, vec!["discipline-120".to_string()]);
+        assert_eq!(layout.steps[1].expert_ids, vec!["discipline-630".to_string()]);
+        assert_eq!(layout.steps[1].optional, Some(true));
+        assert_eq!(layout.steps[2].expert_ids, vec!["discipline-820".to_string()]);
+        assert_eq!(layout.steps[2].optional, Some(true));
+        assert!(layout.description.contains("联网"));
     }
 
     #[test]
@@ -326,27 +574,21 @@ mod tests {
             scene: "code-review".to_string(),
             task_description: "审代码".to_string(),
             expert_ids: vec![
-                "jiang-jianheng".to_string(),
-                "jiang-cexun".to_string(),
-                "jiang-yingqiu".to_string(),
+                "discipline-620".to_string(),
+                "discipline-820".to_string(),
             ],
             requires_design: None,
         });
         let experts = vec![
             PipelineExpertInfo {
-                id: "jiang-jianheng".to_string(),
-                name: "江鉴衡".to_string(),
-                title: "质量审核".to_string(),
+                id: "discipline-620".to_string(),
+                name: "620 安全科学技术".to_string(),
+                title: "一级学科专家".to_string(),
             },
             PipelineExpertInfo {
-                id: "jiang-cexun".to_string(),
-                name: "江测巡".to_string(),
-                title: "测试专家".to_string(),
-            },
-            PipelineExpertInfo {
-                id: "jiang-yingqiu".to_string(),
-                name: "江映秋".to_string(),
-                title: "审查员".to_string(),
+                id: "discipline-820".to_string(),
+                name: "820 法学".to_string(),
+                title: "一级学科专家".to_string(),
             },
         ];
         let narrative = build_dispatch_narrative(&layout, &experts);

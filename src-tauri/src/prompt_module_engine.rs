@@ -1,3 +1,10 @@
+use crate::expert_identity::{
+    is_creative_expert as is_catalog_creative_expert,
+    is_documentation_expert as is_catalog_documentation_expert,
+    is_implementation_expert as is_catalog_implementation_expert,
+    is_review_expert as is_catalog_review_expert,
+    normalize_expert_id,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -209,10 +216,11 @@ pub fn build_prompt_plan(
     request: &PromptPlanRequest,
     traces: &[PromptModuleTrace],
 ) -> PromptPlanResponse {
-    let supported = supported_modules_for_expert(&request.expert_id);
+    let normalized_expert_id = normalize_expert_id(&request.expert_id).to_string();
+    let supported = supported_modules_for_expert(&normalized_expert_id);
     let history_hint_module_ids = suggest_history_hints(
         traces,
-        &request.expert_id,
+        &normalized_expert_id,
         &request.scene,
         &request.task_description,
         2,
@@ -225,7 +233,7 @@ pub fn build_prompt_plan(
         .filter(|module_id| supported.contains(module_id))
         .collect::<Vec<String>>();
     let mut module_ids = select_prompt_modules(
-        &request.expert_id,
+        &normalized_expert_id,
         &request.scene,
         &request.task_description,
     );
@@ -288,7 +296,7 @@ fn select_prompt_modules(expert_id: &str, scene: &str, task_description: &str) -
         }
     }
 
-    if expert_id == "jiang-huaying" {
+    if normalize_expert_id(expert_id) == "discipline-760" {
         let needs_video = scene == "video-production"
             || (includes_keyword(task_description, VIDEO_TRIGGER_KEYWORDS)
                 && !matches_phrase(task_description, VIDEO_NEGATION_PATTERNS));
@@ -348,91 +356,121 @@ fn is_prompt_module_id(value: &str) -> bool {
     )
 }
 
+fn is_engineering_expert(expert_id: &str) -> bool {
+    is_catalog_implementation_expert(expert_id)
+}
+
+fn is_review_expert(expert_id: &str) -> bool {
+    is_catalog_review_expert(expert_id)
+}
+
+fn is_documentation_expert(expert_id: &str) -> bool {
+    is_catalog_documentation_expert(expert_id)
+        || normalize_expert_id(expert_id).as_ref() == "discipline-860"
+}
+
+fn is_creative_expert(expert_id: &str) -> bool {
+    matches!(
+        normalize_expert_id(expert_id).as_ref(),
+        "discipline-750"
+    )
+        || is_catalog_creative_expert(expert_id)
+}
+
+fn is_analysis_expert(expert_id: &str) -> bool {
+    matches!(
+        normalize_expert_id(expert_id).as_ref(),
+        "discipline-110"
+            | "discipline-120"
+            | "discipline-190"
+            | "discipline-630"
+            | "discipline-720"
+            | "discipline-790"
+            | "discipline-810"
+            | "discipline-830"
+            | "discipline-840"
+            | "discipline-880"
+            | "discipline-890"
+            | "discipline-910"
+    )
+}
+
 fn prompt_module_map(static_only: bool) -> HashMap<&'static str, Vec<&'static str>> {
     let mut map = HashMap::new();
-    map.insert("jiang-ruoxi", vec![CODE_TOOL_PRIMER]);
-    map.insert(
-        "jiang-dingchu",
-        vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE],
-    );
-    map.insert(
-        "jiang-qinglan",
-        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
-    );
-    map.insert(
-        "jiang-yumo",
-        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
-    );
-    map.insert(
-        "jiang-subai",
-        vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE],
-    );
-    map.insert("jiang-yingqiu", vec![CODE_TOOL_PRIMER]);
-    map.insert(
-        "jiang-jianheng",
-        vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE],
-    );
-    map.insert("jiang-cexun", vec![CODE_TOOL_PRIMER, COMMAND_GUIDANCE]);
-    map.insert("jiang-zhilan", vec![DOCUMENT_TOOL_PRIMER]);
-    map.insert("jiang-huaying", vec![MEDIA_TOOL_PRIMER]);
-    if !static_only {
-        map.insert(
-            "jiang-ruoxi",
-            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
-        );
-        map.insert(
-            "jiang-dingchu",
-            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, DELIVERABLE_GUIDANCE],
-        );
-        map.insert(
-            "jiang-qinglan",
-            vec![
-                CODE_TOOL_PRIMER,
-                WEB_SEARCH_GUIDANCE,
-                COMMAND_GUIDANCE,
-                PATCH_GUIDANCE,
-                DELIVERABLE_GUIDANCE,
-            ],
-        );
-        map.insert(
-            "jiang-yumo",
-            vec![
-                CODE_TOOL_PRIMER,
-                WEB_SEARCH_GUIDANCE,
-                COMMAND_GUIDANCE,
-                PATCH_GUIDANCE,
-                DELIVERABLE_GUIDANCE,
-            ],
-        );
-        map.insert(
-            "jiang-subai",
-            vec![
-                CODE_TOOL_PRIMER,
-                WEB_SEARCH_GUIDANCE,
-                COMMAND_GUIDANCE,
-                PATCH_GUIDANCE,
-                DELIVERABLE_GUIDANCE,
-            ],
-        );
-        map.insert(
-            "jiang-yingqiu",
-            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
-        );
-        map.insert(
-            "jiang-jianheng",
-            vec![
-                CODE_TOOL_PRIMER,
-                WEB_SEARCH_GUIDANCE,
-                COMMAND_GUIDANCE,
-                DELIVERABLE_GUIDANCE,
-            ],
-        );
-        map.insert(
-            "jiang-cexun",
-            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE],
-        );
-        map.insert("jiang-zhilan", vec![DOCUMENT_TOOL_PRIMER]);
-        map.insert("jiang-huaying", vec![MEDIA_TOOL_PRIMER, VIDEO_WORKFLOW]);
+    for expert_id in [
+        "discipline-110", "discipline-120", "discipline-130", "discipline-140", "discipline-150",
+        "discipline-160", "discipline-170", "discipline-180", "discipline-190", "discipline-210",
+        "discipline-220", "discipline-230", "discipline-240", "discipline-310", "discipline-320",
+        "discipline-330", "discipline-340", "discipline-350", "discipline-360", "discipline-410",
+        "discipline-413", "discipline-416", "discipline-420", "discipline-430", "discipline-440",
+        "discipline-450", "discipline-460", "discipline-470", "discipline-480", "discipline-490",
+        "discipline-510", "discipline-520", "discipline-530", "discipline-535", "discipline-540",
+        "discipline-550", "discipline-560", "discipline-570", "discipline-580", "discipline-590",
+        "discipline-610", "discipline-620", "discipline-630", "discipline-710", "discipline-720",
+        "discipline-730", "discipline-740", "discipline-750", "discipline-760", "discipline-770",
+        "discipline-780", "discipline-790", "discipline-810", "discipline-820", "discipline-830",
+        "discipline-840", "discipline-850", "discipline-860", "discipline-870", "discipline-880",
+        "discipline-890", "discipline-910",
+    ] {
+        let modules = if is_engineering_expert(expert_id) {
+            if static_only {
+                vec![CODE_TOOL_PRIMER, PATCH_GUIDANCE, DELIVERABLE_GUIDANCE]
+            } else {
+                vec![
+                    CODE_TOOL_PRIMER,
+                    WEB_SEARCH_GUIDANCE,
+                    COMMAND_GUIDANCE,
+                    PATCH_GUIDANCE,
+                    DELIVERABLE_GUIDANCE,
+                ]
+            }
+        } else if is_review_expert(expert_id) {
+            if static_only {
+                vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE]
+            } else {
+                vec![
+                    CODE_TOOL_PRIMER,
+                    WEB_SEARCH_GUIDANCE,
+                    COMMAND_GUIDANCE,
+                    DELIVERABLE_GUIDANCE,
+                ]
+            }
+        } else if is_documentation_expert(expert_id) {
+            if expert_id == "discipline-740" {
+                if static_only {
+                    vec![CODE_TOOL_PRIMER]
+                } else {
+                    vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE]
+                }
+            } else if static_only {
+                vec![DOCUMENT_TOOL_PRIMER]
+            } else {
+                vec![DOCUMENT_TOOL_PRIMER, WEB_SEARCH_GUIDANCE]
+            }
+        } else if is_creative_expert(expert_id) {
+            if expert_id == "discipline-760" {
+                if static_only {
+                    vec![MEDIA_TOOL_PRIMER]
+                } else {
+                    vec![MEDIA_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, VIDEO_WORKFLOW]
+                }
+            } else if static_only {
+                vec![CODE_TOOL_PRIMER, DELIVERABLE_GUIDANCE]
+            } else {
+                vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, DELIVERABLE_GUIDANCE]
+            }
+        } else if is_analysis_expert(expert_id) {
+            if static_only {
+                vec![CODE_TOOL_PRIMER, COMMAND_GUIDANCE]
+            } else {
+                vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE]
+            }
+        } else if static_only {
+            vec![CODE_TOOL_PRIMER]
+        } else {
+            vec![CODE_TOOL_PRIMER, WEB_SEARCH_GUIDANCE, COMMAND_GUIDANCE]
+        };
+        map.insert(expert_id, modules);
     }
     map
 }
@@ -532,9 +570,10 @@ pub fn suggest_history_hints(
     task_description: &str,
     max_modules: usize,
 ) -> Vec<String> {
+    let normalized_expert_id = normalize_expert_id(expert_id);
     let relevant_traces = traces
         .iter()
-        .filter(|trace| trace.expert_id == expert_id)
+        .filter(|trace| normalize_expert_id(&trace.expert_id) == normalized_expert_id)
         .collect::<Vec<&PromptModuleTrace>>();
     if relevant_traces.is_empty() {
         return vec![];
@@ -599,7 +638,7 @@ mod tests {
     #[test]
     fn builds_prompt_plan_with_history_hints() {
         let traces = vec![PromptModuleTrace {
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             scene: "code-development".to_string(),
             task_description: "修复登录页白屏并运行 pnpm build 验证".to_string(),
             module_ids: vec![COMMAND_GUIDANCE.to_string()],
@@ -608,7 +647,7 @@ mod tests {
         }];
         let request = PromptPlanRequest {
             project_name: Some("demo".to_string()),
-            expert_id: "jiang-yumo".to_string(),
+            expert_id: "discipline-520".to_string(),
             base_prompt: "BASE".to_string(),
             scene: "code-development".to_string(),
             task_description: "修复白屏并验证 build 结果".to_string(),
@@ -626,7 +665,7 @@ mod tests {
     fn dedupes_prompt_traces_by_signature() {
         let traces = vec![
             PromptModuleTrace {
-                expert_id: "jiang-yumo".to_string(),
+                expert_id: "discipline-520".to_string(),
                 scene: "code-development".to_string(),
                 task_description: "修复白屏".to_string(),
                 module_ids: vec![COMMAND_GUIDANCE.to_string()],
@@ -634,7 +673,7 @@ mod tests {
                 created_at: 1,
             },
             PromptModuleTrace {
-                expert_id: "jiang-yumo".to_string(),
+                expert_id: "discipline-520".to_string(),
                 scene: "code-development".to_string(),
                 task_description: "修复白屏".to_string(),
                 module_ids: vec![COMMAND_GUIDANCE.to_string()],
@@ -645,5 +684,36 @@ mod tests {
         let deduped = dedupe_traces(traces);
         assert_eq!(deduped.len(), 1);
         assert_eq!(deduped[0].created_at, 2);
+    }
+
+    #[test]
+    fn analysis_and_documentation_disciplines_receive_matching_modules() {
+        let request = PromptPlanRequest {
+            project_name: Some("demo".to_string()),
+            expert_id: "discipline-630".to_string(),
+            base_prompt: "BASE".to_string(),
+            scene: "disciplinary-analysis".to_string(),
+            task_description: "分析多专家调度机制".to_string(),
+            hint_module_ids: vec![],
+        };
+        let plan = build_prompt_plan(&request, &[]);
+        assert!(plan
+            .module_ids
+            .iter()
+            .any(|module_id| module_id == COMMAND_GUIDANCE));
+
+        let doc_request = PromptPlanRequest {
+            project_name: Some("demo".to_string()),
+            expert_id: "discipline-860".to_string(),
+            base_prompt: "BASE".to_string(),
+            scene: "writing".to_string(),
+            task_description: "整理传播稿资料".to_string(),
+            hint_module_ids: vec![],
+        };
+        let doc_plan = build_prompt_plan(&doc_request, &[]);
+        assert!(doc_plan
+            .module_ids
+            .iter()
+            .any(|module_id| module_id == DOCUMENT_TOOL_PRIMER));
     }
 }

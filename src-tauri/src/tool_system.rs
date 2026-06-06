@@ -89,47 +89,8 @@ impl ToolRegistry {
 
     /// 根据专家角色过滤可用工具
     pub fn get_tools_for_expert(&self, expert_id: &str) -> Vec<ToolDefinition> {
-        let expert_lower = expert_id.to_lowercase();
-        let all_defs = self.list_definitions();
-
-        // 基础工具：所有专家都能用
-        let base_tools = ["file_read", "file_list", "index_search", "memory_query"];
-        // 工程师类专家额外工具
-        let engineer_tools = ["shell_exec", "file_write", "file_patch"];
-        // 调研员工具
-        let researcher_tools = ["web_search"];
-
-        let is_engineer = expert_lower.contains("engineer")
-            || expert_lower.contains("工程")
-            || expert_lower.contains("dev")
-            || expert_lower.contains("coder");
-        let is_researcher = expert_lower.contains("research")
-            || expert_lower.contains("调研")
-            || expert_lower.contains("search");
-
-        all_defs
-            .into_iter()
-            .filter(|def| {
-                let name = def.name.as_str();
-                if base_tools.contains(&name) {
-                    return true;
-                }
-                if is_engineer && engineer_tools.contains(&name) {
-                    return true;
-                }
-                if is_researcher && researcher_tools.contains(&name) {
-                    return true;
-                }
-                // 主管/全能专家可用全部
-                if expert_lower.contains("supervisor")
-                    || expert_lower.contains("主管")
-                    || expert_lower.contains("lead")
-                {
-                    return true;
-                }
-                false
-            })
-            .collect()
+        let _ = expert_id;
+        self.list_definitions()
     }
 }
 
@@ -853,7 +814,7 @@ mod tests {
         let ctx = ToolContext {
             working_dir: project_dir.to_string_lossy().to_string(),
             project_dir: project_dir.to_string_lossy().to_string(),
-            expert_id: "jiang-yumo".into(),
+            expert_id: "discipline-520".into(),
             session_id: "test-session".into(),
         };
 

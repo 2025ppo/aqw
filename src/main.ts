@@ -28,6 +28,16 @@ import {
   type TimeRange,
 } from "./expert-router";
 import {
+  CORE_EXPERT_IDS,
+  getDisciplineDisplayName,
+  getDisciplineExperts,
+  findExpertEntry,
+  isImplementationDisciplineExpert,
+  QUOTA_EXEMPT_IDS,
+  getExpertSpecializationSummary,
+  getSystemExperts,
+} from "./expert-catalog";
+import {
   saveUserIntentMemory,
   searchMemory,
   deleteMemory,
@@ -140,28 +150,38 @@ function log(level: string, msg: string) {
 log("INFO", "main.ts loaded");
 
 // ========== 窗口控制按钮 ==========
-const appWindow = getCurrentWindow();
-log("INFO", "appWindow acquired");
+function tryGetAppWindow() {
+  try {
+    const tauriWindow = getCurrentWindow();
+    log("INFO", "appWindow acquired");
+    return tauriWindow;
+  } catch (error) {
+    log("WARN", `appWindow unavailable in current runtime: ${error}`);
+    return null;
+  }
+}
+
+const appWindow = tryGetAppWindow();
 
 document
   .getElementById("header-minimize")
   ?.addEventListener("click", () => {
     log("INFO", "minimize clicked");
-    appWindow.minimize();
+    appWindow?.minimize();
   });
 
 document
   .getElementById("header-maximize")
   ?.addEventListener("click", () => {
     log("INFO", "maximize clicked");
-    appWindow.toggleMaximize();
+    appWindow?.toggleMaximize();
   });
 
 document
   .getElementById("header-close")
   ?.addEventListener("click", () => {
     log("INFO", "close clicked");
-    appWindow.close();
+    appWindow?.close();
   });
 
 // ========== 手动实现拖拽（替代 data-tauri-drag-region） ==========
@@ -171,7 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
     dragRegion.addEventListener("mousedown", async (e) => {
       if (e.button === 0) {
         log("INFO", "drag started");
-        await appWindow.startDragging();
+        await appWindow?.startDragging();
       }
     });
   }
@@ -221,7 +241,7 @@ window.addEventListener("DOMContentLoaded", () => {
   log("INFO", "canvas initialized");
 
   // 拖拽文件夹打开项目
-  appWindow.onDragDropEvent(async (event) => {
+  appWindow?.onDragDropEvent(async (event) => {
     if (event.payload.type === "drop") {
       const paths = event.payload.paths;
       log("INFO", `拖拽释放: ${paths.length} 个路径`);
@@ -241,13 +261,6 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   log("INFO", "drag-drop listener registered");
 
-  // 悬浮按钮切换激活状态
-  document.querySelectorAll(".view-tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".view-tab").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-    });
-  });
 });
 
 // ========== 主题切换 ==========
@@ -258,79 +271,7 @@ function applyTheme(dark: boolean) {
   log("INFO", `theme toggled: isDarkMode=${isDarkMode}`);
 
   const root = document.documentElement;
-  if (isDarkMode) {
-    root.style.setProperty("--bg-near-white", "#1e1e1e");
-    root.style.setProperty("--bg-primary", "#1a1a2e");
-    root.style.setProperty("--bg-secondary", "#252525");
-    root.style.setProperty("--bg-tertiary", "rgba(255,255,255,0.03)");
-    root.style.setProperty("--text-primary", "#e0e0e0");
-    root.style.setProperty("--text-secondary", "#a0a0b0");
-    root.style.setProperty("--text-muted", "#888888");
-    root.style.setProperty("--border-color", "#2a2a4a");
-    document.body.style.backgroundColor = "#1e1e1e";
-    document.body.style.color = "#e0e0e0";
-
-    const header = document.querySelector(".app-header") as HTMLElement;
-    if (header) {
-      header.style.backgroundColor = "#2d2d2d";
-      header.style.borderBottomColor = "#3d3d3d";
-    }
-
-    const sidebar = document.getElementById("sidebar");
-    if (sidebar) {
-      sidebar.style.backgroundColor = "#252525";
-      sidebar.style.borderRightColor = "#3d3d3d";
-    }
-
-    const mainContent = document.getElementById("main-content");
-    if (mainContent) {
-      mainContent.style.backgroundColor = "#1e1e1e";
-    }
-
-    document.querySelectorAll(".menu-trigger").forEach((el) => {
-      (el as HTMLElement).style.color = "#ccc";
-    });
-
-    document.querySelectorAll(".header-btn").forEach((el) => {
-      (el as HTMLElement).style.color = "#aaa";
-    });
-  } else {
-    root.style.setProperty("--bg-near-white", "#fafafa");
-    root.style.setProperty("--bg-primary", "#ffffff");
-    root.style.setProperty("--bg-secondary", "#f5f5f5");
-    root.style.setProperty("--bg-tertiary", "#fafafa");
-    root.style.setProperty("--text-primary", "#333333");
-    root.style.setProperty("--text-secondary", "#666666");
-    root.style.setProperty("--text-muted", "#999999");
-    root.style.setProperty("--border-color", "#e0e0e0");
-    document.body.style.backgroundColor = "#fafafa";
-    document.body.style.color = "#333";
-
-    const header = document.querySelector(".app-header") as HTMLElement;
-    if (header) {
-      header.style.backgroundColor = "#f5f5f5";
-      header.style.borderBottomColor = "#e8e8e8";
-    }
-
-    const sidebar = document.getElementById("sidebar");
-    if (sidebar) {
-      sidebar.style.backgroundColor = "#f2f2f2";
-      sidebar.style.borderRightColor = "#e8e8e8";
-    }
-
-    const mainContent = document.getElementById("main-content");
-    if (mainContent) {
-      mainContent.style.backgroundColor = "#fafafa";
-    }
-
-    document.querySelectorAll(".menu-trigger").forEach((el) => {
-      (el as HTMLElement).style.color = "#555";
-    });
-
-    document.querySelectorAll(".header-btn").forEach((el) => {
-      (el as HTMLElement).style.color = "#888";
-    });
-  }
+  root.dataset.theme = isDarkMode ? "dark" : "light";
 
   // 同步设置页面开关状态
   const themeToggle = document.getElementById("settings-theme-toggle") as HTMLInputElement;
@@ -343,13 +284,21 @@ document.getElementById("header-theme")?.addEventListener("click", () => {
   applyTheme(!isDarkMode);
 });
 
+applyTheme(false);
+
 // ========== 设置页面 ==========
 const settingsPage = document.getElementById("settings-page")!;
 const settingsBackBtn = document.getElementById("settings-back-btn")!;
+const workspaceSettingsPanel = document.getElementById("workspace-settings-panel")!;
+const workspaceSettingsBackBtn = document.getElementById("workspace-settings-back-btn")!;
 
 // 需要在设置页面打开时隐藏的 UI 元素
 const normalUIElements = [
   "canvas-container",
+  "canvas-directory-stack",
+  "draft-canvas",
+  "draft-toolbox",
+  "draft-sidebar",
   "floating-actions",
   "chat-card",
   "preview-chat-card",
@@ -363,12 +312,14 @@ const normalUIElements = [
   "token-browser",
   "image-browser",
   "data-browser",
+  "workspace-settings-panel",
 ];
 
 // 保存打开设置前的 display 状态，以便关闭时正确恢复
 const savedDisplayStates = new Map<string, string>();
 
 async function openSettings() {
+  workspaceSettingsPanel.classList.remove("active");
   settingsPage.classList.add("active");
   normalUIElements.forEach((id) => {
     const el = document.getElementById(id);
@@ -381,18 +332,6 @@ async function openSettings() {
   // 同步主题开关
   const themeToggle = document.getElementById("settings-theme-toggle") as HTMLInputElement;
   if (themeToggle) themeToggle.checked = isDarkMode;
-
-  // 加载密钥池和专家团数据（先密钥池后专家团，避免竞态）
-  try {
-    await loadKeyPool();
-  } catch (e) {
-    log("ERROR", `加载密钥池失败: ${e}`);
-  }
-  try {
-    await loadExperts();
-  } catch (e) {
-    log("ERROR", `加载专家团失败: ${e}`);
-  }
 
   log("INFO", "settings opened");
 }
@@ -447,6 +386,23 @@ settingsPage.querySelectorAll(".settings-nav-item").forEach((item) => {
 document.getElementById("settings-theme-toggle")?.addEventListener("change", (e) => {
   const checked = (e.target as HTMLInputElement).checked;
   applyTheme(checked);
+});
+
+function activateWorkspaceSettingsSection(section: "experts" | "keys") {
+  workspaceSettingsPanel.querySelectorAll<HTMLElement>(".settings-nav-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset.workspaceSection === section);
+  });
+  workspaceSettingsPanel.querySelectorAll<HTMLElement>(".settings-section").forEach((item) => {
+    item.classList.toggle("active", item.id === `settings-${section}`);
+  });
+}
+
+workspaceSettingsPanel.querySelectorAll<HTMLElement>(".settings-nav-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    const section = item.dataset.workspaceSection as "experts" | "keys" | undefined;
+    if (!section) return;
+    activateWorkspaceSettingsSection(section);
+  });
 });
 
 // ========== 密钥池配置 ==========
@@ -607,6 +563,38 @@ function showError(msg: string) {
   (toast as any).__timeout = setTimeout(() => {
     toast.classList.remove("show");
   }, 3000);
+}
+
+window.addEventListener("show-error", (event) => {
+  const message = (event as CustomEvent<{ message?: string }>).detail?.message;
+  if (message) {
+    showError(message);
+  }
+});
+
+async function resolveActiveProjectForView(viewLabel: string) {
+  try {
+    await sidebar.ready;
+  } catch {
+    // 继续走兜底恢复逻辑
+  }
+
+  const activeProject = sidebar.getActiveChat();
+  if (activeProject) {
+    return activeProject;
+  }
+
+  const fallbackProject = sidebar.getFirstChat();
+  if (fallbackProject) {
+    sidebar.setActiveChat(fallbackProject.id);
+    log("INFO", `${viewLabel}: 已自动恢复活跃项目 ${fallbackProject.name}`);
+    return fallbackProject;
+  }
+
+  log("WARN", `${viewLabel}: 没有可用项目`);
+  showError(`请先打开或创建一个项目，再进入${viewLabel}`);
+  sidebar.showProjectDialog();
+  return null;
 }
 
 function formatFileSize(size: number): string {
@@ -1118,6 +1106,13 @@ export interface Expert {
   name: string;
   title: string;
   description: string;
+  gender?: "male" | "female";
+  disciplineName?: string;
+  code?: string;
+  categoryId?: string;
+  categoryLabel?: string;
+  toolProfile?: string;
+  systemRole?: boolean;
   keyId: string | null;
   tokenAllocation?: {
     dailyLimit: number | null;
@@ -1126,57 +1121,57 @@ export interface Expert {
   };
 }
 
-// 核心角色 ID：江星图(主管)、江星河(助手)、江青澜(通用工程师)、江若溪(调研员)、江映秋(审查员)
-// 五者未配置密钥时软件核心功能不可用
-const CORE_EXPERT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan", "jiang-ruoxi", "jiang-yingqiu"];
-
-const SYSTEM_EXPERTS: Expert[] = [
-  {
-    id: "jiang-xingtu",
-    name: "江星图",
-    title: "主管",
-    description: "AI 对话区域的实际对话对象，负责整体调度与决策",
-    keyId: null,
-  },
-  {
-    id: "jiang-xinghe",
-    name: "江星河",
-    title: "助手",
-    description: "软件本体 AI 助手，负责画布目录关系生成、知识库与仓库生成、对话压缩/总结/优化",
-    keyId: null,
-  },
-];
+function toolProfileLabel(profile?: string): string {
+  switch (profile) {
+    case "engineering":
+      return "工程落地";
+    case "analysis":
+      return "分析研判";
+    case "documentation":
+      return "资料整理";
+    case "creative":
+      return "创意设计";
+    case "review":
+      return "审查把关";
+    default:
+      return "研究支撑";
+  }
+}
 
 function buildDefaultExperts(): Expert[] {
-  const routerExperts = getAvailableExpertInfos().map((info) => ({
-    id: info.id,
-    name: info.name,
-    title: info.title,
-    description: info.description,
+  const systemExperts: Expert[] = getSystemExperts().map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    title: entry.title,
+    description: entry.description,
+    gender: entry.gender,
+    disciplineName: entry.title,
+    code: entry.code,
+    categoryId: entry.categoryId,
+    categoryLabel: entry.categoryLabel,
+    toolProfile: entry.toolProfile,
+    systemRole: entry.systemRole,
+    keyId: null,
+  }));
+  const disciplineExperts: Expert[] = getDisciplineExperts().map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    title: entry.title,
+    description: entry.description,
+    gender: entry.gender,
+    disciplineName: getDisciplineDisplayName(entry.id),
+    code: entry.code,
+    categoryId: entry.categoryId,
+    categoryLabel: entry.categoryLabel,
+    toolProfile: entry.toolProfile,
+    systemRole: entry.systemRole,
     keyId: null,
   }));
 
-  const orderedIds = [
-    "jiang-xingtu",
-    "jiang-xinghe",
-    "jiang-qinglan",
-    ...routerExperts.map((expert) => expert.id).filter((id) => id !== "jiang-qinglan"),
-  ];
-
-  return orderedIds
-    .map((id) => SYSTEM_EXPERTS.find((expert) => expert.id === id) || routerExperts.find((expert) => expert.id === id))
-    .filter((expert): expert is Expert => Boolean(expert))
-    .map((expert) => ({
-      ...expert,
-      keyId: null,
-      tokenAllocation: expert.tokenAllocation
-        ? {
-          dailyLimit: expert.tokenAllocation.dailyLimit ?? null,
-          monthlyLimit: expert.tokenAllocation.monthlyLimit ?? null,
-          yearlyLimit: expert.tokenAllocation.yearlyLimit ?? null,
-        }
-        : undefined,
-    }));
+  return [...systemExperts, ...disciplineExperts].map((expert) => ({
+    ...expert,
+    keyId: null,
+  }));
 }
 
 export let experts: Expert[] = [];
@@ -1247,137 +1242,468 @@ function getUnconfiguredCoreNames(): string[] {
 }
 
 function renderExperts() {
-  const gridSpecial = document.getElementById("expert-grid-special")!;
-  const gridRegular = document.getElementById("expert-grid-regular")!;
+  const gridSpecial = document.getElementById("expert-grid-special") as HTMLElement | null;
+  const gridRegular = document.getElementById("expert-grid-regular") as HTMLElement | null;
+  const filterWrap = document.getElementById("expert-filter-pills") as HTMLElement | null;
+  const searchInput = document.getElementById("expert-search-input") as HTMLInputElement | null;
+  const unboundToggle = document.getElementById("expert-filter-unbound") as HTMLInputElement | null;
+  const resultCopy = document.getElementById("expert-result-copy");
+  const totalStat = document.getElementById("expert-stat-total");
+  const activeStat = document.getElementById("expert-stat-active");
+  const systemStat = document.getElementById("expert-stat-system");
+  const unboundStat = document.getElementById("expert-stat-unbound");
+  const systemDeck = document.getElementById("expert-command-deck");
+  const emptyState = document.getElementById("expert-empty");
+  const globalKeySelect = document.getElementById("expert-global-key") as HTMLSelectElement | null;
+  const applyAllCheckbox = document.getElementById("apply-key-to-all") as HTMLInputElement | null;
+  const applyModelBtn = document.getElementById("apply-model-btn") as HTMLButtonElement | null;
+  const expandAllBtn = document.getElementById("expert-expand-all") as HTMLButtonElement | null;
+  const collapseAllBtn = document.getElementById("expert-collapse-all") as HTMLButtonElement | null;
+  const configNote = document.getElementById("expert-config-note");
 
-  // 构建密钥选项
+  if (!gridSpecial || !gridRegular || !filterWrap || !searchInput || !unboundToggle || !globalKeySelect || !applyAllCheckbox || !applyModelBtn) {
+    return;
+  }
+
+  const escapeHtml = (text: string): string => {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  };
+  const escapeAttr = (text: string): string => escapeHtml(text).replace(/"/g, "&quot;");
+
+  const previousSearch = searchInput.value || "";
+  const previousFilter = filterWrap.querySelector<HTMLElement>(".is-active")?.dataset.filter || "all";
+  const previousUnboundOnly = unboundToggle.checked;
+  const previousGlobalKey = globalKeySelect.value;
+
+  const categoryDescriptions: Record<string, string> = {
+    system: "负责调度、协作和最终收敛，是整套专家机制的中枢层。",
+    natural: "偏基础研究与分析推演，适合处理模型、机理与理论问题。",
+    agriculture: "围绕农业系统、资源利用与生产条件给出专业判断。",
+    medical: "聚焦医学证据、诊疗体系和健康相关风险分析。",
+    engineering: "偏工程实现、产品落地与复杂系统的方案拆解。",
+    humanities: "处理写作、法务、传播、社会分析等人文社科场景。",
+  };
+  const categoryOrder = ["natural", "agriculture", "medical", "engineering", "humanities"];
+
   const keyOptions = keyPoolItems
-    .map((item) => {
-      return `<option value="${item.data.id}">${item.data.label}</option>`;
+    .map((item) => `<option value="${escapeAttr(item.data.id)}">${escapeHtml(item.data.label)}</option>`)
+    .join("");
+
+  globalKeySelect.innerHTML = `<option value="">选择统一绑定的密钥...</option>${keyOptions}`;
+  if (previousGlobalKey) {
+    globalKeySelect.value = previousGlobalKey;
+  }
+
+  const getBindingLabel = (keyId: string | null): string => {
+    if (!keyId) return "未绑定模型";
+    const matched = keyPoolItems.find((item) => item.data.id === keyId);
+    return matched ? matched.data.label : "已绑定密钥";
+  };
+
+  const buildSearchText = (expert: Expert, specialization: ReturnType<typeof getExpertSpecializationSummary>): string => {
+    return [
+      expert.name,
+      expert.disciplineName,
+      expert.title,
+      expert.description,
+      expert.code,
+      expert.categoryLabel,
+      toolProfileLabel(expert.toolProfile),
+      expert.gender === "male" ? "男" : expert.gender === "female" ? "女" : "",
+      specialization.knowledge.join(" "),
+      specialization.methodology.join(" "),
+      specialization.promptFocus.join(" "),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  };
+
+  const renderArchive = (expert: Expert, specialization: ReturnType<typeof getExpertSpecializationSummary>): string => {
+    if (expert.systemRole) {
+      return `
+        <div class="expert-archive-panel is-static">
+          <div class="expert-archive-grid">
+            <div class="expert-archive-block">
+              <div class="expert-archive-title">角色定位</div>
+              <ul class="expert-archive-list">
+                <li>${escapeHtml(expert.description)}</li>
+              </ul>
+            </div>
+            <div class="expert-archive-block">
+              <div class="expert-archive-title">当前状态</div>
+              <ul class="expert-archive-list">
+                <li>${escapeHtml(getBindingLabel(expert.keyId))}</li>
+                <li>核心角色默认不参与词元配额限制。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const knowledge = specialization.knowledge.slice(0, 2);
+    const methodology = specialization.methodology.slice(0, 2);
+    const focus = specialization.promptFocus.slice(0, 4);
+
+    return `
+      <button class="expert-archive-toggle" type="button" data-archive-toggle="${escapeAttr(expert.id)}">展开角色档案</button>
+      <div class="expert-archive-panel" data-archive-panel="${escapeAttr(expert.id)}" hidden>
+        ${focus.length > 0 ? `
+          <div class="expert-archive-focus">
+            ${focus.map((item) => `<span class="expert-archive-tag">${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+        <div class="expert-archive-grid">
+          <div class="expert-archive-block">
+            <div class="expert-archive-title">知识抓手</div>
+            <ul class="expert-archive-list">
+              ${knowledge.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </div>
+          <div class="expert-archive-block">
+            <div class="expert-archive-title">方法偏好</div>
+            <ul class="expert-archive-list">
+              ${methodology.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  const cardHtml = (expert: Expert) => {
+    const specialization = getExpertSpecializationSummary(expert.id);
+    const searchText = buildSearchText(expert, specialization);
+    const disciplineLabel = expert.systemRole
+      ? expert.title
+      : [expert.code, expert.disciplineName].filter(Boolean).join(" · ");
+    const keywords = specialization.promptFocus.length > 0
+      ? specialization.promptFocus.slice(0, 4)
+      : (findExpertEntry(expert.id)?.keywords || []).slice(0, 4);
+    const bindingState = expert.keyId ? "configured" : "unbound";
+    const bindingText = getBindingLabel(expert.keyId);
+    const quotaHtml = QUOTA_EXEMPT_IDS.includes(expert.id) ? `
+      <div class="expert-card-quota is-exempt">
+        <span class="expert-field-label">词元配额</span>
+        <span class="expert-quota-exempt">核心角色默认不限额</span>
+      </div>
+    ` : `
+      <div class="expert-card-quota">
+        <span class="expert-field-label">词元配额</span>
+        <div class="expert-quota-grid">
+          <label class="expert-mini-field">
+            <span>日</span>
+            <input type="number" placeholder="不限" class="quota-input quota-daily" data-expert-id="${escapeAttr(expert.id)}" value="${expert.tokenAllocation?.dailyLimit ?? ""}" min="0" />
+          </label>
+          <label class="expert-mini-field">
+            <span>月</span>
+            <input type="number" placeholder="不限" class="quota-input quota-monthly" data-expert-id="${escapeAttr(expert.id)}" value="${expert.tokenAllocation?.monthlyLimit ?? ""}" min="0" />
+          </label>
+          <label class="expert-mini-field">
+            <span>年</span>
+            <input type="number" placeholder="不限" class="quota-input quota-yearly" data-expert-id="${escapeAttr(expert.id)}" value="${expert.tokenAllocation?.yearlyLimit ?? ""}" min="0" />
+          </label>
+        </div>
+      </div>
+    `;
+
+    return `
+      <article
+        class="expert-card${CORE_EXPERT_IDS.includes(expert.id) ? " expert-card-core" : ""}"
+        data-expert-id="${escapeAttr(expert.id)}"
+        data-category="${escapeAttr(expert.systemRole ? "system" : (expert.categoryId || "uncategorized"))}"
+        data-configured="${expert.keyId ? "true" : "false"}"
+        data-search="${escapeAttr(searchText)}"
+      >
+        <div class="expert-card-topline">
+          <span class="expert-status-chip ${bindingState}">${escapeHtml(bindingText)}</span>
+          <div class="expert-badges">
+            ${expert.code ? `<span class="expert-badge expert-badge-code">${escapeHtml(expert.code)}</span>` : ""}
+            ${expert.toolProfile ? `<span class="expert-badge expert-badge-profile">${escapeHtml(toolProfileLabel(expert.toolProfile))}</span>` : ""}
+            ${expert.gender === "male" ? `<span class="expert-badge expert-badge-gender">男</span>` : expert.gender === "female" ? `<span class="expert-badge expert-badge-gender">女</span>` : ""}
+          </div>
+        </div>
+        <div class="expert-card-head">
+          <div class="expert-name">${escapeHtml(expert.name)}</div>
+          <div class="expert-title">${escapeHtml(disciplineLabel || "未定义角色")}</div>
+          <div class="expert-desc">${escapeHtml(expert.description)}</div>
+        </div>
+        <div class="expert-traits">
+          ${(keywords.length > 0 ? keywords : ["职责清晰", "可协作", "可调度"])
+            .map((item: string) => `<span class="expert-trait">${escapeHtml(item)}</span>`)
+            .join("")}
+        </div>
+        <div class="expert-card-controls">
+          <label class="expert-select-block">
+            <span class="expert-field-label">绑定模型</span>
+            <select class="expert-key-select" data-expert-id="${escapeAttr(expert.id)}">
+              <option value="">未配置</option>
+              ${keyOptions}
+            </select>
+          </label>
+          ${quotaHtml}
+        </div>
+        ${renderArchive(expert, specialization)}
+      </article>
+    `;
+  };
+
+  const systemExperts = experts.filter((expert) => expert.systemRole);
+  const regularExperts = experts.filter((expert) => !expert.systemRole);
+  const groupedExperts = regularExperts.reduce((map, expert) => {
+    const key = expert.categoryLabel || "未分类";
+    const current = map.get(key) || [];
+    current.push(expert);
+    map.set(key, current);
+    return map;
+  }, new Map<string, Expert[]>());
+
+  gridSpecial.innerHTML = systemExperts.map(cardHtml).join("");
+
+  const sortedGroups = Array.from(groupedExperts.entries()).sort((left, right) => {
+    const leftCategoryId = left[1][0]?.categoryId || "";
+    const rightCategoryId = right[1][0]?.categoryId || "";
+    return categoryOrder.indexOf(leftCategoryId) - categoryOrder.indexOf(rightCategoryId);
+  });
+
+  gridRegular.innerHTML = sortedGroups
+    .map(([label, groupExperts]) => {
+      const sortedExperts = [...groupExperts].sort((left, right) => (left.code || left.name).localeCompare(right.code || right.name, "zh-Hans-CN", { numeric: true }));
+      const categoryId = sortedExperts[0]?.categoryId || "uncategorized";
+      return `
+        <section class="expert-cluster" data-category="${escapeAttr(categoryId)}" data-cluster="${escapeAttr(categoryId)}">
+          <div class="expert-cluster-head">
+            <div class="expert-cluster-copy">
+              <div class="expert-cluster-kicker">一级学科分组</div>
+              <div class="expert-cluster-title">${escapeHtml(label)}</div>
+              <div class="expert-cluster-meta">${escapeHtml(categoryDescriptions[categoryId] || "按学科结构组织专家，便于快速配置和筛选。")}</div>
+            </div>
+            <div class="expert-cluster-actions">
+              <span class="expert-cluster-count">${sortedExperts.length} 人</span>
+              <button class="expert-cluster-toggle" type="button" data-cluster-toggle="${escapeAttr(categoryId)}">收起</button>
+            </div>
+          </div>
+          <div class="expert-cluster-body" data-cluster-body="${escapeAttr(categoryId)}">
+            <div class="expert-card-grid">
+              ${sortedExperts.map(cardHtml).join("")}
+            </div>
+          </div>
+        </section>
+      `;
     })
     .join("");
 
-  // 填充全局模型配置下拉框
-  const globalKeySelect = document.getElementById("expert-global-key") as HTMLSelectElement;
-  if (globalKeySelect) {
-    globalKeySelect.innerHTML = `<option value="">选择密钥...</option>${keyOptions}`;
+  totalStat && (totalStat.textContent = String(experts.length));
+  systemStat && (systemStat.textContent = String(systemExperts.length));
+  unboundStat && (unboundStat.textContent = String(experts.filter((expert) => !expert.keyId).length));
+  if (configNote) {
+    configNote.textContent = `${experts.length} 位角色已装入主项目结构。当前界面以“人名 + 学科 + 配置状态”为主视图。`;
   }
 
-  const EXEMPT_EXPERT_IDS = ["jiang-xingtu", "jiang-xinghe", "jiang-qinglan"];
-
-  const cardHtml = (expert: Expert) => {
-    const selectHtml = `<select class="expert-key-select" data-expert-id="${expert.id}">
-      <option value="">未配置</option>
-      ${keyOptions}
-    </select>`;
-    const quotaHtml = EXEMPT_EXPERT_IDS.includes(expert.id) ? "" : `
-      <div class="expert-quota-config">
-        <span class="quota-label">词元配额</span>
-        <div class="quota-inputs">
-          <div class="quota-input-group">
-            <input type="number" placeholder="不限制" class="quota-input quota-daily" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.dailyLimit ?? ""}" min="0" />
-            <span class="quota-unit">日</span>
-          </div>
-          <div class="quota-input-group">
-            <input type="number" placeholder="不限制" class="quota-input quota-monthly" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.monthlyLimit ?? ""}" min="0" />
-            <span class="quota-unit">月</span>
-          </div>
-          <div class="quota-input-group">
-            <input type="number" placeholder="不限制" class="quota-input quota-yearly" data-expert-id="${expert.id}" value="${expert.tokenAllocation?.yearlyLimit ?? ""}" min="0" />
-            <span class="quota-unit">年</span>
-          </div>
-        </div>
-        <span class="quota-hint">留空表示不限制</span>
-      </div>`;
-    return `<div class="expert-card${CORE_EXPERT_IDS.includes(expert.id) ? " expert-card-core" : ""}">
-      <div class="expert-body">
-        <div class="expert-header">
-          <div class="expert-name">${expert.name}</div>
-          <div class="expert-title">${expert.title}</div>
-          <div class="expert-desc">${expert.description}</div>
-        </div>
-        <div class="expert-footer">
-          ${selectHtml}
-          ${quotaHtml}
-        </div>
-      </div>
-    </div>`;
-  };
-
-  // 顶部核心角色（前3个）
-  const specialExperts = experts.slice(0, 3);
-  gridSpecial.innerHTML = specialExperts.map(cardHtml).join("");
-
-  // 下方普通专家（后4个）
-  const regularExperts = experts.slice(3);
-  gridRegular.innerHTML = regularExperts.map(cardHtml).join("");
-
-  // 设置当前选中值（涵盖两个 grid）
-  const allGrids = [gridSpecial, gridRegular];
   experts.forEach((expert) => {
-    allGrids.forEach((grid) => {
-      const select = grid.querySelector(`select[data-expert-id="${expert.id}"]`) as HTMLSelectElement;
+    [gridSpecial, gridRegular].forEach((grid) => {
+      const select = grid.querySelector(`select[data-expert-id="${expert.id}"]`) as HTMLSelectElement | null;
       if (select && expert.keyId) {
         select.value = expert.keyId;
       }
     });
   });
 
-  // 绑定 change 事件（涵盖两个 grid）
-  allGrids.forEach((grid) => {
-    grid.querySelectorAll(".expert-key-select").forEach((select) => {
-      select.addEventListener("change", async (e) => {
-        const expertId = (e.target as HTMLElement).dataset.expertId;
-        const keyId = (e.target as HTMLSelectElement).value;
-        const expert = experts.find((ex) => ex.id === expertId);
-        if (expert) {
-          expert.keyId = keyId || null;
-          await saveExperts();
-        }
-      });
+  [gridSpecial, gridRegular].forEach((grid) => {
+    grid.querySelectorAll<HTMLSelectElement>(".expert-key-select").forEach((select) => {
+      select.onchange = async (e) => {
+        const target = e.target as HTMLSelectElement;
+        const expertId = target.dataset.expertId;
+        const expert = experts.find((item) => item.id === expertId);
+        if (!expert) return;
+        expert.keyId = target.value || null;
+        await saveExperts();
+        renderExperts();
+      };
     });
-  });
 
-  // 绑定配额输入框 change 事件
-  allGrids.forEach((grid) => {
-    grid.querySelectorAll(".quota-input").forEach((input) => {
-      input.addEventListener("change", async (e) => {
-        const el = e.target as HTMLInputElement;
-        const expertId = el.dataset.expertId!;
-        const expert = experts.find((ex) => ex.id === expertId);
+    grid.querySelectorAll<HTMLInputElement>(".quota-input").forEach((input) => {
+      input.onchange = async (e) => {
+        const target = e.target as HTMLInputElement;
+        const expertId = target.dataset.expertId;
+        const expert = experts.find((item) => item.id === expertId);
         if (!expert) return;
         if (!expert.tokenAllocation) {
           expert.tokenAllocation = { dailyLimit: null, monthlyLimit: null, yearlyLimit: null };
         }
-        const value = el.value ? parseInt(el.value, 10) : null;
-        if (el.classList.contains("quota-daily")) expert.tokenAllocation.dailyLimit = value;
-        if (el.classList.contains("quota-monthly")) expert.tokenAllocation.monthlyLimit = value;
-        if (el.classList.contains("quota-yearly")) expert.tokenAllocation.yearlyLimit = value;
+        const value = target.value ? parseInt(target.value, 10) : null;
+        if (target.classList.contains("quota-daily")) expert.tokenAllocation.dailyLimit = value;
+        if (target.classList.contains("quota-monthly")) expert.tokenAllocation.monthlyLimit = value;
+        if (target.classList.contains("quota-yearly")) expert.tokenAllocation.yearlyLimit = value;
         await saveExperts();
-      });
+      };
     });
   });
 
-  // 绑定全局模型配置应用按钮
-  const applyModelBtn = document.getElementById("apply-model-btn");
-  if (applyModelBtn) {
-    applyModelBtn.addEventListener("click", async () => {
-      const globalSelect = document.getElementById("expert-global-key") as HTMLSelectElement;
-      const applyAllCheckbox = document.getElementById("apply-key-to-all") as HTMLInputElement;
-      const selectedKeyId = globalSelect?.value;
-      if (!applyAllCheckbox?.checked) {
-        showError("请先勾选\"为所有专家配置该模型\"确认选项");
-        return;
+  document.querySelectorAll<HTMLButtonElement>("[data-archive-toggle]").forEach((button) => {
+    button.onclick = () => {
+      const targetId = button.dataset.archiveToggle;
+      const panel = document.querySelector<HTMLElement>(`[data-archive-panel="${targetId}"]`);
+      if (!panel) return;
+      const nextHidden = !panel.hidden;
+      panel.hidden = nextHidden;
+      button.textContent = nextHidden ? "展开角色档案" : "收起角色档案";
+    };
+  });
+
+  const setClusterState = (clusterId: string, collapsed: boolean) => {
+    const body = document.querySelector<HTMLElement>(`[data-cluster-body="${clusterId}"]`);
+    const button = document.querySelector<HTMLButtonElement>(`[data-cluster-toggle="${clusterId}"]`);
+    if (!body || !button) return;
+    body.hidden = collapsed;
+    button.textContent = collapsed ? "展开" : "收起";
+  };
+
+  document.querySelectorAll<HTMLButtonElement>("[data-cluster-toggle]").forEach((button) => {
+    button.onclick = () => {
+      const clusterId = button.dataset.clusterToggle;
+      if (!clusterId) return;
+      const body = document.querySelector<HTMLElement>(`[data-cluster-body="${clusterId}"]`);
+      if (!body) return;
+      setClusterState(clusterId, !body.hidden);
+    };
+  });
+
+  expandAllBtn && (expandAllBtn.onclick = () => {
+    document.querySelectorAll<HTMLElement>("[data-cluster-body]").forEach((body) => {
+      const clusterId = body.dataset.clusterBody;
+      if (clusterId) setClusterState(clusterId, false);
+    });
+  });
+  collapseAllBtn && (collapseAllBtn.onclick = () => {
+    document.querySelectorAll<HTMLElement>("[data-cluster-body]").forEach((body) => {
+      const clusterId = body.dataset.clusterBody;
+      if (clusterId) setClusterState(clusterId, true);
+    });
+  });
+
+  const filters = [
+    { id: "all", label: "全部专家" },
+    { id: "system", label: "系统角色" },
+    ...sortedGroups.map(([label, groupExperts]) => ({
+      id: groupExperts[0]?.categoryId || "uncategorized",
+      label,
+    })),
+  ];
+
+  filterWrap.innerHTML = filters
+    .map((filter) => `<button class="expert-filter-chip${filter.id === "all" ? " is-active" : ""}" type="button" data-filter="${escapeAttr(filter.id)}">${escapeHtml(filter.label)}</button>`)
+    .join("");
+
+  const applyFilters = () => {
+    const activeFilter = filterWrap.querySelector<HTMLElement>(".is-active")?.dataset.filter || "all";
+    const tokens = searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const includeTerms = tokens.filter((item) => !item.startsWith("-"));
+    const excludeTerms = tokens.filter((item) => item.startsWith("-") && item.length > 1).map((item) => item.slice(1));
+    let visibleCards = 0;
+
+    document.querySelectorAll<HTMLElement>(".expert-card").forEach((card) => {
+      const searchText = card.dataset.search || "";
+      const cardCategory = card.dataset.category || "uncategorized";
+      const isConfigured = card.dataset.configured === "true";
+      const matchedText = includeTerms.every((term) => searchText.includes(term))
+        && excludeTerms.every((term) => !searchText.includes(term));
+      const matchedFilter = activeFilter === "all" || activeFilter === cardCategory;
+      const matchedUnbound = !unboundToggle.checked || !isConfigured;
+      const matched = matchedText && matchedFilter && matchedUnbound;
+      card.hidden = !matched;
+      if (matched) visibleCards += 1;
+    });
+
+    document.querySelectorAll<HTMLElement>(".expert-cluster").forEach((cluster) => {
+      const cards = Array.from(cluster.querySelectorAll<HTMLElement>(".expert-card"));
+      const visibleInCluster = cards.filter((card) => !card.hidden).length;
+      cluster.hidden = visibleInCluster === 0;
+      const countEl = cluster.querySelector<HTMLElement>(".expert-cluster-count");
+      if (countEl) {
+        countEl.textContent = `${visibleInCluster} / ${cards.length} 人`;
       }
-      if (!selectedKeyId) {
-        showError("请先选择一个密钥");
-        return;
-      }
-      experts.forEach((ex) => { ex.keyId = selectedKeyId; });
+    });
+
+    if (systemDeck) {
+      const visibleSystemCount = Array.from(gridSpecial.querySelectorAll<HTMLElement>(".expert-card")).filter((card) => !card.hidden).length;
+      systemDeck.hidden = visibleSystemCount === 0;
+    }
+
+    activeStat && (activeStat.textContent = String(visibleCards));
+    if (resultCopy) {
+      const filterLabel = filterWrap.querySelector<HTMLElement>(".is-active")?.textContent || "全部专家";
+      const suffix = excludeTerms.length > 0 ? `，已排除 ${excludeTerms.map((item) => `-${item}`).join(" ")}` : "";
+      resultCopy.textContent = `当前显示 ${visibleCards} / ${experts.length} 位角色，筛选范围：${filterLabel}${suffix}。`;
+    }
+    if (emptyState) {
+      emptyState.hidden = visibleCards > 0;
+    }
+  };
+
+  filterWrap.querySelectorAll<HTMLButtonElement>(".expert-filter-chip").forEach((button) => {
+    if (button.dataset.filter === previousFilter) {
+      filterWrap.querySelector(".is-active")?.classList.remove("is-active");
+      button.classList.add("is-active");
+    }
+    button.onclick = () => {
+      filterWrap.querySelector(".is-active")?.classList.remove("is-active");
+      button.classList.add("is-active");
+      applyFilters();
+    };
+  });
+
+  searchInput.value = previousSearch;
+  unboundToggle.checked = previousUnboundOnly;
+  searchInput.oninput = applyFilters;
+  unboundToggle.onchange = applyFilters;
+
+  applyModelBtn.onclick = async () => {
+    const selectedKeyId = globalKeySelect.value;
+    const selectedLabel = globalKeySelect.selectedOptions[0]?.textContent?.trim() || "所选密钥";
+    if (!applyAllCheckbox.checked) {
+      showError("请先确认“覆盖全部专家团”。");
+      return;
+    }
+    if (!selectedKeyId) {
+      showError("请先选择一个可绑定的密钥。");
+      return;
+    }
+
+    const targetExperts = [...experts];
+
+    if (targetExperts.length === 0) {
+      showError("当前没有可配置的专家。");
+      return;
+    }
+
+    const originalButtonText = applyModelBtn.textContent || "一键配置";
+    applyModelBtn.disabled = true;
+    applyModelBtn.textContent = "配置中...";
+
+    try {
+      targetExperts.forEach((expert) => {
+        expert.keyId = selectedKeyId;
+      });
       await saveExperts();
       renderExperts();
-    });
-  }
+      applyAllCheckbox.checked = false;
+      const latestConfigNote = document.getElementById("expert-config-note");
+      if (latestConfigNote) {
+        latestConfigNote.textContent = `已将 ${targetExperts.length} 位专家统一绑定到 ${selectedLabel}。`;
+      }
+    } catch (error) {
+      showError(`统一配置失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      applyModelBtn.disabled = false;
+      applyModelBtn.textContent = originalButtonText;
+    }
+  };
+
+  applyFilters();
 }
 
 // ========== 监听对话切换 ==========
@@ -2715,9 +3041,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           {
             workspacePath: activeProjectForPipeline?.workspacePath,
             requireRealMutations: !!activeProjectForPipeline?.workspacePath
-              && dispatchPlan.expertIds.some((expertId) =>
-                ["jiang-dingchu", "jiang-qinglan", "jiang-yumo", "jiang-subai"].includes(expertId)
-              ),
+              && dispatchPlan.expertIds.some((expertId) => isImplementationDisciplineExpert(expertId)),
           },
           supervisorKey,
           getExpertKeyId("jiang-xingtu") || "jiang-xingtu",
@@ -3389,11 +3713,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const webArtifacts = artifactPaths.filter(isWebArtifactPath);
     const backendArtifacts = artifactPaths.filter(isBackendArtifactPath);
     const relevantArtifacts = (webArtifacts.length > 0 ? webArtifacts : artifactPaths).slice(0, 12);
-    const engineerId = webArtifacts.length > 0
-      ? "jiang-yumo"
-      : backendArtifacts.length > 0
-        ? "jiang-subai"
-        : "jiang-qinglan";
+    const engineerId = webArtifacts.length > 0 || backendArtifacts.length > 0
+      ? "discipline-520"
+      : "discipline-413";
     let fileContext = "";
     if (projectName && relevantArtifacts.length > 0) {
       const previews: string[] = [];
@@ -5131,8 +5453,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       // 恢复画布和悬浮按钮可见性
-      if (canvasContainer) canvasContainer.style.visibility = "visible";
-      if (floatingActions) floatingActions.style.visibility = "visible";
+      setElementVisible(canvasContainer as HTMLElement | null, true, "block");
+      setFloatingActionsVisible(true);
 
       // 隐藏画布文件预览卡片
       hideCanvasFileCard();
@@ -5200,6 +5522,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ========== 目录卡片模式（structure/logic） ==========
   let directoryMode: "structure" | "logic" = "structure";
+  let directorySurfaceMode: "directory" | "draft" = "directory";
 
   /**
    * 把后端返回的 canvasDirectory 数据归一化成 { structure?, logic? } 形式。
@@ -5689,12 +6012,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function updateDirectorySurfaceUI() {
+    const card = document.getElementById("canvas-directory-card");
+    const title = document.getElementById("canvas-directory-title");
+    const subtitle = document.getElementById("canvas-directory-subtitle");
+    const directoryBtn = document.getElementById("dir-view-directory");
+    const draftBtn = document.getElementById("dir-view-draft");
+    const modeLabel = directoryMode === "structure" ? "结构" : "逻辑";
+
+    if (card) card.classList.toggle("draft-active", directorySurfaceMode === "draft");
+    if (directoryBtn) directoryBtn.classList.toggle("active", directorySurfaceMode === "directory");
+    if (draftBtn) draftBtn.classList.toggle("active", directorySurfaceMode === "draft");
+
+    if (title) {
+      title.textContent = directorySurfaceMode === "draft"
+        ? "可视化目录 · 草稿"
+        : "可视化目录";
+    }
+
+    if (subtitle) {
+      subtitle.textContent = directorySurfaceMode === "draft"
+        ? `当前以${modeLabel}目录为底图，可直接叠加批注与连线`
+        : `当前为${modeLabel}目录视图`;
+    }
+  }
+
   // 同步页签 UI 状态
   function updateTabActive() {
     const tabStructure = document.getElementById("dir-tab-structure");
     const tabLogic = document.getElementById("dir-tab-logic");
     if (tabStructure) tabStructure.classList.toggle("active", directoryMode === "structure");
     if (tabLogic) tabLogic.classList.toggle("active", directoryMode === "logic");
+    updateDirectorySurfaceUI();
   }
 
   // 绑定状态按钮点击（触发增量更新）
@@ -5733,25 +6082,28 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   void incrementalStructureUpdate;
 
-  // 绑定目录卡片页签切换
-  const tabStructure = document.getElementById("dir-tab-structure");
-  const tabLogic = document.getElementById("dir-tab-logic");
-  tabStructure?.addEventListener("click", async () => {
-    if (directoryMode === "structure") return;
-    directoryMode = "structure";
+  async function switchDirectoryMode(nextMode: "structure" | "logic") {
+    if (directoryMode === nextMode) {
+      updateTabActive();
+      return;
+    }
+
+    directoryMode = nextMode;
     updateTabActive();
+
     const activeProject = sidebar.getActiveChat();
     if (!activeProject) return;
     const canvas = getCanvas();
     if (!canvas) return;
     canvas.clear();
+
     try {
       const cached = await invoke<string>("load_canvas_directory", {
         projectName: activeProject.name,
       });
       if (cached && cached !== "null") {
         const parsed = JSON.parse(cached);
-        const modeData = normalizeCachedDirectory(parsed).structure;
+        const modeData = normalizeCachedDirectory(parsed)[nextMode];
         if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
           canvas.setData(modeData.nodes, modeData.edges);
           await checkDirectoryChanges(activeProject.name, modeData, activeProject.workspacePath);
@@ -5759,48 +6111,28 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }
     } catch { /* ignore */ }
-    // 无缓存：结构模式直接自动生成（纯机械操作，画布永不允许为空）
+
     updateDirectoryStatus("updating");
-    const result = await generateStructureCanvas(activeProject.name, activeProject.workspacePath);
-    canvas.setData(result.nodes, result.edges);
-    const snapshot = await collectDirectorySnapshot(activeProject.name, activeProject.workspacePath);
-    const now = new Date().toISOString();
-    try {
-      await saveDirectoryModeData(
-        activeProject.name,
-        "structure",
-        result.nodes,
-        result.edges,
-        snapshot,
-        now,
-      );
-    } catch { /* 保存失败不影响显示 */ }
-    updateDirectoryStatus("up-to-date");
-  });
-  tabLogic?.addEventListener("click", async () => {
-    if (directoryMode === "logic") return;
-    directoryMode = "logic";
-    updateTabActive();
-    const activeProject = sidebar.getActiveChat();
-    if (!activeProject) return;
-    const canvas = getCanvas();
-    if (!canvas) return;
-    canvas.clear();
-    try {
-      const cached = await invoke<string>("load_canvas_directory", {
-        projectName: activeProject.name,
-      });
-      if (cached && cached !== "null") {
-        const parsed = JSON.parse(cached);
-        const modeData = normalizeCachedDirectory(parsed).logic;
-        if (modeData && modeData.nodes && modeData.edges && modeData.nodes.length > 0) {
-          canvas.setData(modeData.nodes, modeData.edges);
-          await checkDirectoryChanges(activeProject.name, modeData, activeProject.workspacePath);
-          return;
-        }
-      }
-    } catch { /* ignore */ }
-    updateDirectoryStatus("updating");
+
+    if (nextMode === "structure") {
+      const result = await generateStructureCanvas(activeProject.name, activeProject.workspacePath);
+      canvas.setData(result.nodes, result.edges);
+      const snapshot = await collectDirectorySnapshot(activeProject.name, activeProject.workspacePath);
+      const now = new Date().toISOString();
+      try {
+        await saveDirectoryModeData(
+          activeProject.name,
+          "structure",
+          result.nodes,
+          result.edges,
+          snapshot,
+          now,
+        );
+      } catch { /* 保存失败不影响显示 */ }
+      updateDirectoryStatus("up-to-date");
+      return;
+    }
+
     try {
       await checkAndBuildIndex(activeProject.name);
       const logicResult = await generateLogicCanvas(activeProject.name);
@@ -5821,7 +6153,121 @@ document.addEventListener("DOMContentLoaded", async () => {
       canvas.setData(rootResult.nodes, rootResult.edges);
       updateDirectoryStatus("needs-update");
     }
+  }
+
+  function switchDirectorySurface(nextMode: "directory" | "draft") {
+    if (directorySurfaceMode === nextMode) {
+      updateDirectorySurfaceUI();
+      return;
+    }
+
+    directorySurfaceMode = nextMode;
+    if (nextMode === "draft") {
+      if (!isDraftMode) enterDraftMode();
+      else updateDirectorySurfaceUI();
+      return;
+    }
+
+    if (isDraftMode) {
+      exitDraftMode();
+    } else {
+      showDirectoryWorkspace();
+      clearViewTabs("btn-directory");
+      updateDirectorySurfaceUI();
+    }
+  }
+
+  document.querySelector(".canvas-directory-tabs")?.addEventListener("click", (e) => {
+    const tab = (e.target as HTMLElement).closest<HTMLButtonElement>(".canvas-directory-tab");
+    if (!tab) return;
+    const nextMode = tab.dataset.mode as "structure" | "logic" | undefined;
+    if (!nextMode) return;
+    void switchDirectoryMode(nextMode);
   });
+
+  document.querySelector(".canvas-view-switch")?.addEventListener("click", (e) => {
+    const button = (e.target as HTMLElement).closest<HTMLButtonElement>(".canvas-view-switch-btn");
+    if (!button) return;
+    if (button.id === "dir-view-draft") {
+      switchDirectorySurface("draft");
+      return;
+    }
+    switchDirectorySurface("directory");
+  });
+
+  updateDirectorySurfaceUI();
+
+  type PrimaryWorkspaceView = "directory" | "file" | "repo" | "git" | "token" | "workspace-settings";
+
+  function switchPrimaryWorkspaceView(view: PrimaryWorkspaceView) {
+    switch (view) {
+      case "directory":
+        enterDirectoryMode();
+        return;
+      case "file":
+        enterFileMode();
+        return;
+      case "repo":
+        void enterWikiMode();
+        return;
+      case "git":
+        void enterGitMode();
+        return;
+      case "token":
+        enterTokenMode();
+        return;
+      case "workspace-settings":
+        void enterWorkspaceSettingsMode();
+        return;
+    }
+  }
+
+  function bindPrimaryWorkspaceViewTabs() {
+    const floatingActionsHost = document.getElementById("floating-actions");
+    if (!floatingActionsHost || floatingActionsHost.dataset.bound === "true") {
+      return;
+    }
+
+    floatingActionsHost.dataset.bound = "true";
+    floatingActionsHost.addEventListener("click", (e) => {
+      const button = (e.target as HTMLElement).closest<HTMLButtonElement>(".view-tab");
+      if (!button) return;
+      const view = button.dataset.view as PrimaryWorkspaceView | undefined;
+      if (!view) return;
+      e.preventDefault();
+      switchPrimaryWorkspaceView(view);
+    });
+  }
+
+  bindPrimaryWorkspaceViewTabs();
+
+  // 保留全局API（兼容 ACTION 系统），并提前绑定避免后续初始化异常影响页签切换。
+  (window as any).__switchView = (view: string) => {
+    if (
+      view === "file" ||
+      view === "directory" ||
+      view === "repo" ||
+      view === "git" ||
+      view === "token" ||
+      view === "workspace-settings"
+    ) {
+      switchPrimaryWorkspaceView(view as PrimaryWorkspaceView);
+      return;
+    }
+    if (view === "image") {
+      enterImageMode();
+      return;
+    }
+    if (view === "video") {
+      enterVideoMode();
+      return;
+    }
+    if (view === "data-analysis") {
+      enterDataMode();
+      return;
+    }
+    enterDirectoryMode();
+  };
 
   // 初始化显示
   renderMessages();
@@ -5947,9 +6393,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /** 进入 Wiki 模式 */
   async function enterWikiMode() {
-    const activeProject = sidebar.getActiveChat();
+    const activeProject = await resolveActiveProjectForView("仓库");
     if (!activeProject) {
-      log("WARN", "Wiki: 没有活跃项目");
       return;
     }
     exitDraftMode();
@@ -5971,7 +6416,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       repoBrowser.classList.add("active");
     }
     clearViewTabs("btn-repo");
-    if (floatingActions) floatingActions.style.visibility = "visible";
+    setFloatingActionsVisible(true);
 
     // 加载仓库导航
     await loadRepoBrowser(activeProject.name);
@@ -6371,14 +6816,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     hideAllWorkspacePanels();
     hideDirectoryWorkspace();
     isDraftMode = true;
+    directorySurfaceMode = "draft";
 
     // 恢复目录画布可见（草稿模式下仍需要底层目录画布作为背景）
     const cc = document.getElementById("canvas-container");
-    const dirCard = document.getElementById("canvas-directory-card");
-    if (cc) cc.style.visibility = "visible";
-    if (dirCard) dirCard.style.display = "";
+    const dirStack = document.getElementById("canvas-directory-stack");
+    setElementVisible(cc as HTMLElement | null, true, "block");
+    setElementVisible(dirStack as HTMLElement | null, true, "flex");
+    document.body.classList.add("workspace-draft-mode");
 
-    clearViewTabs("btn-draft");
+    clearViewTabs("btn-directory");
+    updateDirectorySurfaceUI();
 
     // 激活草稿画布和工具栏
     draftCanvas.activate();
@@ -6399,6 +6847,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   function exitDraftMode() {
     if (!isDraftMode) return;
     isDraftMode = false;
+    directorySurfaceMode = "directory";
+    document.body.classList.remove("workspace-draft-mode");
 
     draftCanvas.deactivate();
     draftToolbox.hide();
@@ -6406,6 +6856,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     showDirectoryWorkspace();
     clearViewTabs("btn-directory");
+    updateDirectorySurfaceUI();
 
     log("INFO", "退出草稿模式");
   }
@@ -6821,7 +7272,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // 更新按钮active状态
     clearViewTabs("btn-token");
-    if (floatingActions) floatingActions.style.visibility = "visible";
+    setFloatingActionsVisible(true);
 
     log("INFO", "进入词元模式");
   }
@@ -6976,9 +7427,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function enterGitMode() {
     if (isGitMode) return;
-    const activeProject = sidebar.getActiveChat();
+    const activeProject = await resolveActiveProjectForView("Git");
     if (!activeProject) {
-      log("WARN", "Git: 没有活跃项目");
       return;
     }
     exitDraftMode();
@@ -6994,7 +7444,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // 更新浮动按钮状态
     clearViewTabs("btn-git");
-    if (floatingActions) floatingActions.style.visibility = "visible";
+    setFloatingActionsVisible(true);
 
     // 显示 Git 面板
     const gitPanel = document.getElementById("git-panel");
@@ -7103,61 +7553,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
-  // btn-token 进入/退出词元模式
-  document.getElementById("btn-token")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (isTokenMode) {
-      exitTokenMode();
-    } else {
-      exitGitMode();
-      enterTokenMode();
-    }
-  });
-
-  // btn-file 进入文件工作台
-  document.getElementById("btn-file")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    enterFileMode();
-  });
-
   // 词元面板返回按钮
   document.getElementById("token-panel-back")?.addEventListener("click", () => {
     exitTokenMode();
-  });
-
-  // btn-draft 进入草稿模式
-  document.getElementById("btn-draft")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    exitTokenMode();
-    exitGitMode();
-    enterDraftMode();
-  });
-
-  // btn-repo 进入 Wiki 模式（覆盖悬浮按钮的通用点击行为）
-  document.getElementById("btn-repo")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    exitTokenMode();
-    exitDraftMode();
-    exitGitMode();
-    enterWikiMode();
-  });
-
-  // btn-git 进入 Git 模式
-  document.getElementById("btn-git")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (isGitMode) {
-      exitGitMode();
-    } else {
-      exitTokenMode();
-      exitDraftMode();
-      exitWikiMode();
-      enterGitMode();
-    }
-  });
-
-  // btn-directory 退出所有模式，回到目录
-  document.getElementById("btn-directory")?.addEventListener("click", () => {
-    enterDirectoryMode();
   });
 
   type ImageCard = {
@@ -7221,13 +7619,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitGitMode();
     exitVideoMode();
     exitDataMode();
-    const dirCard = document.getElementById("canvas-directory-card");
     const imgPanel = document.getElementById("image-panel");
-    const cc = document.getElementById("canvas-container");
-    const workspaceCanvas = document.getElementById("workspace-canvas");
-    if (dirCard) dirCard.style.display = "none";
-    if (cc) cc.style.visibility = "visible";
-    if (workspaceCanvas) workspaceCanvas.style.display = "none";
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
     if (imgPanel) {
       imgPanel.style.display = "flex";
       imgPanel.classList.add("active");
@@ -7240,16 +7634,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function exitImageMode(): void {
     const imgPanel = document.getElementById("image-panel");
-    const dirCard = document.getElementById("canvas-directory-card");
-    const cc = document.getElementById("canvas-container");
-    const workspaceCanvas = document.getElementById("workspace-canvas");
     if (imgPanel) {
       imgPanel.classList.remove("active");
       imgPanel.style.display = "none";
     }
-    if (workspaceCanvas) workspaceCanvas.style.display = "";
-    if (cc) cc.style.visibility = "visible";
-    if (dirCard) dirCard.style.display = "";
   }
 
   // ============ 视频模式 ============
@@ -7260,19 +7648,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitGitMode();
     exitImageMode();
     exitDataMode();
-    const dirCard = document.getElementById("canvas-directory-card");
     const vidCard = document.getElementById("canvas-video-card");
     const vidBrowser = document.getElementById("video-browser");
     const vidPanel = document.getElementById("video-panel");
-    const cc = document.getElementById("canvas-container");
-    if (dirCard) dirCard.style.display = "none";
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
     if (vidCard) vidCard.style.display = "flex";
     if (vidBrowser) vidBrowser.style.display = "flex";
     if (vidPanel) {
       vidPanel.style.display = "flex";
       vidPanel.classList.add("active");
     }
-    if (cc) cc.style.visibility = "hidden";
     document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-video")?.classList.add("active");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "video" } }));
@@ -7282,16 +7668,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const vidCard = document.getElementById("canvas-video-card");
     const vidBrowser = document.getElementById("video-browser");
     const vidPanel = document.getElementById("video-panel");
-    const cc = document.getElementById("canvas-container");
-    const dirCard = document.getElementById("canvas-directory-card");
     if (vidCard) vidCard.style.display = "none";
     if (vidBrowser) vidBrowser.style.display = "none";
     if (vidPanel) {
       vidPanel.classList.remove("active");
       vidPanel.style.display = "none";
     }
-    if (cc) cc.style.visibility = "visible";
-    if (dirCard) dirCard.style.display = "";
   }
 
   // ============ 数据分析模式（隐藏画布，显示面板 - 类似wiki模式） ============
@@ -7302,10 +7684,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     exitGitMode();
     exitImageMode();
     exitVideoMode();
-    const cc = document.getElementById("canvas-container");
     const dataPanel = document.getElementById("data-panel");
     const dataBrowser = document.getElementById("data-browser");
-    if (cc) cc.style.visibility = "hidden";
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
     if (dataPanel) dataPanel.style.display = "flex";
     if (dataBrowser) dataBrowser.style.display = "flex";
     document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
@@ -7314,12 +7696,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function exitDataMode(): void {
-    const cc = document.getElementById("canvas-container");
     const dataPanel = document.getElementById("data-panel");
     const dataBrowser = document.getElementById("data-browser");
     if (dataPanel) dataPanel.style.display = "none";
     if (dataBrowser) dataBrowser.style.display = "none";
-    if (cc) cc.style.visibility = "visible";
   }
 
   // ============ 新按钮事件绑定 ============
@@ -7339,7 +7719,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("video-back")?.addEventListener("click", () => {
     exitVideoMode();
-    document.getElementById("canvas-directory-card")!.style.display = "";
+    document.getElementById("canvas-directory-stack")!.style.display = "";
     document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
   });
@@ -7348,22 +7728,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("data-back")?.addEventListener("click", () => {
     exitDataMode();
-    document.getElementById("canvas-directory-card")!.style.display = "";
+    document.getElementById("canvas-directory-stack")!.style.display = "";
     document.querySelectorAll(".view-tab").forEach(b => b.classList.remove("active"));
     document.getElementById("btn-directory")?.classList.add("active");
   });
-
-  // 保留全局API（兼宼ACTION系统）
-  (window as any).__switchView = (view: string) => {
-    if (view === "file") enterFileMode();
-    else if (view === "directory") enterDirectoryMode();
-    else if (view === "image") enterImageMode();
-    else if (view === "video") enterVideoMode();
-    else if (view === "data-analysis") enterDataMode();
-    else {
-      enterDirectoryMode();
-    }
-  };
 
   wikiBack?.addEventListener("click", () => exitWikiMode());
 
@@ -7489,6 +7857,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     el.style.display = visible ? display : "none";
   }
 
+  function setFloatingActionsVisible(visible: boolean) {
+    setElementVisible(floatingActions as HTMLElement | null, visible, "flex");
+  }
+
   function resetFilePreviewSurfaces() {
     if (filePreviewEditor) filePreviewEditor.style.display = "none";
     if (filePreviewMd) filePreviewMd.classList.remove("active");
@@ -7527,22 +7899,55 @@ document.addEventListener("DOMContentLoaded", async () => {
     setElementVisible(document.getElementById("video-panel"), false);
     setElementVisible(document.getElementById("data-panel"), false);
     setElementVisible(document.getElementById("data-browser"), false);
+    setElementVisible(workspaceSettingsPanel as HTMLElement | null, false);
+    workspaceSettingsPanel.classList.remove("active");
     setElementVisible(document.getElementById("preview-chat-card"), false);
     hideCanvasFileCard();
     resetFilePreviewSurfaces();
   }
 
   function showDirectoryWorkspace() {
-    if (canvasContainer) canvasContainer.style.visibility = "visible";
-    if (floatingActions) floatingActions.style.visibility = "visible";
-    const dirCard = document.getElementById("canvas-directory-card");
-    if (dirCard) dirCard.style.display = "";
+    setElementVisible(canvasContainer as HTMLElement | null, true, "block");
+    setFloatingActionsVisible(true);
+    const dirStack = document.getElementById("canvas-directory-stack");
+    setElementVisible(dirStack as HTMLElement | null, true, "flex");
   }
 
   function hideDirectoryWorkspace() {
-    if (canvasContainer) canvasContainer.style.visibility = "hidden";
-    const dirCard = document.getElementById("canvas-directory-card");
-    if (dirCard) dirCard.style.display = "none";
+    setElementVisible(canvasContainer as HTMLElement | null, false, "block");
+    const dirStack = document.getElementById("canvas-directory-stack");
+    setElementVisible(dirStack as HTMLElement | null, false, "flex");
+  }
+
+  async function enterWorkspaceSettingsMode() {
+    exitDraftMode();
+    exitWikiMode();
+    exitTokenMode();
+    exitGitMode();
+    exitImageMode();
+    exitVideoMode();
+    exitDataMode();
+    hideAllWorkspacePanels();
+    hideDirectoryWorkspace();
+    setElementVisible(workspaceSettingsPanel as HTMLElement | null, true);
+    workspaceSettingsPanel.classList.add("active");
+    setFloatingActionsVisible(true);
+    clearViewTabs("btn-workspace-settings");
+    activateWorkspaceSettingsSection("experts");
+
+    try {
+      await loadKeyPool();
+    } catch (e) {
+      log("ERROR", `项目设置加载密钥池失败: ${e}`);
+    }
+
+    try {
+      await loadExperts();
+    } catch (e) {
+      log("ERROR", `项目设置加载专家团失败: ${e}`);
+    }
+
+    window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "workspace-settings" } }));
   }
 
   function enterFileMode() {
@@ -7557,13 +7962,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     hideDirectoryWorkspace();
     setElementVisible(fileBrowserCard as HTMLElement | null, true);
     setElementVisible(filePreviewCard as HTMLElement | null, true);
-    if (floatingActions) floatingActions.style.visibility = "visible";
+    setFloatingActionsVisible(true);
     clearViewTabs("btn-file");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "file" } }));
   }
 
   function enterDirectoryMode() {
     exitDraftMode();
+    document.body.classList.remove("workspace-draft-mode");
     exitWikiMode();
     exitTokenMode();
     exitGitMode();
@@ -7575,6 +7981,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     clearViewTabs("btn-directory");
     window.dispatchEvent(new CustomEvent("view-changed", { detail: { view: "directory" } }));
   }
+
+  workspaceSettingsBackBtn.addEventListener("click", () => {
+    enterDirectoryMode();
+  });
 
   function setFileCanvasSyncState(
     state: "idle" | "building" | "ready" | "error",

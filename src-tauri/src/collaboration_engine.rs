@@ -308,12 +308,12 @@ mod tests {
     fn builds_expert_task_payload_with_matching_followups() {
         let response = build_expert_task_payload(&ExpertTaskBuildRequest {
             base_task_description: "修一下".to_string(),
-            expert_id: "jiang-yumo".to_string(),
-            current_step_expert_ids: vec!["jiang-yumo".to_string()],
+            expert_id: "discipline-520".to_string(),
+            current_step_expert_ids: vec!["discipline-520".to_string()],
             pending_followups: vec![PipelineFollowup {
                 id: "f1".to_string(),
                 message: "顺便修文案".to_string(),
-                target_expert_ids: vec!["jiang-yumo".to_string()],
+                target_expert_ids: vec!["discipline-520".to_string()],
                 delivery_mode: "current-step".to_string(),
                 consumed_by: vec![],
                 created_at: 1,
@@ -330,23 +330,23 @@ mod tests {
     fn applies_task_completion_and_consumes_followups() {
         let response = apply_task_completion_state(&TaskCompletionStateRequest {
             completed_results: vec![CompletedExpertResult {
-                expert_id: "jiang-ruoxi".to_string(),
-                name: "江若溪".to_string(),
-                title: "调研员".to_string(),
+                expert_id: "discipline-120".to_string(),
+                name: "120 信息科学与系统科学".to_string(),
+                title: "一级学科专家".to_string(),
                 output: "旧".to_string(),
             }],
             pending_followups: vec![PipelineFollowup {
                 id: "f1".to_string(),
                 message: "修文案".to_string(),
-                target_expert_ids: vec!["jiang-yumo".to_string()],
+                target_expert_ids: vec!["discipline-520".to_string()],
                 delivery_mode: "current-step".to_string(),
                 consumed_by: vec![],
                 created_at: 1,
             }],
             task: TaskCompletionSummary {
-                expert_id: "jiang-yumo".to_string(),
-                expert_name: "江予墨".to_string(),
-                expert_title: "前端工程师".to_string(),
+                expert_id: "discipline-520".to_string(),
+                expert_name: "520 计算机科学技术".to_string(),
+                expert_title: "一级学科专家".to_string(),
                 output: Some("已修改".to_string()),
             },
             followup_ids: vec!["f1".to_string()],
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(response.completed_results.len(), 2);
         assert_eq!(
             response.pending_followups[0].consumed_by,
-            vec!["jiang-yumo".to_string()]
+            vec!["discipline-520".to_string()]
         );
     }
 
@@ -363,12 +363,12 @@ mod tests {
         let response = plan_step_followup_round(&FollowupRoundPlanRequest {
             scene: "code-development".to_string(),
             base_task_description: "修一下".to_string(),
-            current_step_expert_ids: vec!["jiang-yumo".to_string(), "jiang-ruoxi".to_string()],
+            current_step_expert_ids: vec!["discipline-520".to_string(), "discipline-120".to_string()],
             pending_followups: vec![
                 PipelineFollowup {
                     id: "f1".to_string(),
                     message: "补上函数计算器".to_string(),
-                    target_expert_ids: vec!["jiang-yumo".to_string()],
+                    target_expert_ids: vec!["discipline-520".to_string()],
                     delivery_mode: "current-step".to_string(),
                     consumed_by: vec![],
                     created_at: 1,
@@ -404,7 +404,7 @@ mod tests {
             }),
         });
         assert_eq!(response.tasks.len(), 1);
-        assert_eq!(response.tasks[0].expert_id, "jiang-yumo");
+        assert_eq!(response.tasks[0].expert_id, "discipline-520");
         assert!(response.tasks[0].text.contains("补上函数计算器"));
         assert_eq!(response.tasks[0].followup_ids, vec!["f1".to_string()]);
     }
@@ -414,11 +414,11 @@ mod tests {
         let response = plan_current_step_tasks(&StepTaskPlanRequest {
             scene: "quick-answer".to_string(),
             base_task_description: "请先调研再实现".to_string(),
-            current_step_expert_ids: vec!["jiang-ruoxi".to_string(), "jiang-yumo".to_string()],
+            current_step_expert_ids: vec!["discipline-120".to_string(), "discipline-520".to_string()],
             pending_followups: vec![PipelineFollowup {
                 id: "f1".to_string(),
                 message: "补充一句说明".to_string(),
-                target_expert_ids: vec!["jiang-yumo".to_string()],
+                target_expert_ids: vec!["discipline-520".to_string()],
                 delivery_mode: "current-step".to_string(),
                 consumed_by: vec![],
                 created_at: 1,
@@ -426,9 +426,9 @@ mod tests {
             blackboard: None,
         });
         assert_eq!(response.tasks.len(), 2);
-        assert_eq!(response.tasks[0].expert_id, "jiang-ruoxi");
+        assert_eq!(response.tasks[0].expert_id, "discipline-120");
         assert_eq!(response.tasks[0].followup_ids.len(), 0);
-        assert_eq!(response.tasks[1].expert_id, "jiang-yumo");
+        assert_eq!(response.tasks[1].expert_id, "discipline-520");
         assert_eq!(response.tasks[1].followup_ids, vec!["f1".to_string()]);
     }
 }

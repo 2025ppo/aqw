@@ -2,6 +2,7 @@
   | "code-development"
   | "code-review"
   | "technical-research"
+  | "disciplinary-analysis"
   | "design"
   | "quick-answer"
   | "translation"
@@ -165,31 +166,64 @@ export const PROMPT_MODULES: Record<PromptModuleId, PromptModuleDefinition> = {
 
 const ALL_PROMPT_MODULE_IDS = Object.keys(PROMPT_MODULES) as PromptModuleId[];
 
-const EXPERT_STATIC_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
-  "jiang-ruoxi": ["code-tool-primer"],
-  "jiang-dingchu": ["code-tool-primer", "deliverable-guidance"],
-  "jiang-qinglan": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-  "jiang-yumo": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-  "jiang-subai": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-  "jiang-yingqiu": ["code-tool-primer"],
-  "jiang-jianheng": ["code-tool-primer", "deliverable-guidance"],
-  "jiang-cexun": ["code-tool-primer", "command-guidance"],
-  "jiang-zhilan": ["document-tool-primer"],
-  "jiang-huaying": ["media-tool-primer"],
-};
+import {
+  findExpertEntry,
+  isCreativeMediaDisciplineExpert,
+  isDocumentationDisciplineExpert,
+  isQuantitativeAnalysisDisciplineExpert,
+  isReviewDisciplineExpert,
+} from "./expert-catalog";
 
-const EXPERT_SUPPORTED_PROMPT_MODULES: Partial<Record<string, PromptModuleId[]>> = {
-  "jiang-ruoxi": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-dingchu": ["code-tool-primer", "web-search-guidance", "deliverable-guidance"],
-  "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-  "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-  "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-  "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"],
-  "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-  "jiang-zhilan": ["document-tool-primer"],
-  "jiang-huaying": ["media-tool-primer", "video-workflow"],
-};
+function getStaticPromptModulesForExpert(expertId: string): PromptModuleId[] {
+  const entry = findExpertEntry(expertId);
+  if (!entry) return [];
+  switch (entry.toolProfile) {
+    case "engineering":
+      return ["code-tool-primer", "patch-guidance", "deliverable-guidance"];
+    case "review":
+      return isReviewDisciplineExpert(entry.id)
+        ? ["code-tool-primer", "deliverable-guidance"]
+        : ["code-tool-primer"];
+    case "documentation":
+      return isDocumentationDisciplineExpert(entry.id) && entry.id === "discipline-740"
+        ? ["code-tool-primer"]
+        : ["document-tool-primer"];
+    case "creative":
+      return isCreativeMediaDisciplineExpert(entry.id)
+        ? ["media-tool-primer"]
+        : ["code-tool-primer", "deliverable-guidance"];
+    case "analysis":
+      return isQuantitativeAnalysisDisciplineExpert(entry.id)
+        ? ["code-tool-primer", "command-guidance"]
+        : ["code-tool-primer"];
+    default:
+      return ["code-tool-primer"];
+  }
+}
+
+function getSupportedPromptModulesForCatalogExpert(expertId: string): PromptModuleId[] {
+  const entry = findExpertEntry(expertId);
+  const staticModules = getStaticPromptModulesForExpert(expertId);
+  if (!entry) return staticModules;
+  switch (entry.toolProfile) {
+    case "engineering":
+      return ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"];
+    case "review":
+      return ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"];
+    case "documentation":
+      return isDocumentationDisciplineExpert(entry.id) && entry.id === "discipline-740"
+        ? ["code-tool-primer", "web-search-guidance"]
+        : ["document-tool-primer", "web-search-guidance"];
+    case "creative":
+      return isCreativeMediaDisciplineExpert(entry.id)
+        ? ["media-tool-primer", "video-workflow", "web-search-guidance"]
+        : ["code-tool-primer", "web-search-guidance", "deliverable-guidance"];
+    case "analysis":
+      return ["code-tool-primer", "web-search-guidance", "command-guidance"];
+    default:
+      return ["code-tool-primer", "web-search-guidance", "command-guidance"];
+  }
+}
 
 const WEB_SEARCH_TRIGGER_KEYWORDS = [
   "最新", "最近", "官网", "官方", "文档", "release", "changelog", "版本", "兼容", "api",
@@ -339,7 +373,8 @@ export function normalizePromptModuleTraces(raw: unknown): PromptModuleTrace[] {
 }
 
 export function getSupportedPromptModulesForExpert(expertId: string): PromptModuleId[] {
-  return [...(EXPERT_SUPPORTED_PROMPT_MODULES[expertId] || EXPERT_STATIC_PROMPT_MODULES[expertId] || [])];
+  const supported = getSupportedPromptModulesForCatalogExpert(expertId);
+  return supported.length > 0 ? [...supported] : [...getStaticPromptModulesForExpert(expertId)];
 }
 
 export function sanitizePromptModuleTaskDescription(taskDescription: string): string {
@@ -355,7 +390,7 @@ export function selectPromptModules(
   scene: PromptScene,
   taskDescription: string
 ): PromptModuleId[] {
-  const modules = new Set<PromptModuleId>(EXPERT_STATIC_PROMPT_MODULES[expertId] || []);
+  const modules = new Set<PromptModuleId>(getStaticPromptModulesForExpert(expertId));
   const hasCodeToolPrimer = modules.has("code-tool-primer");
 
   if (hasCodeToolPrimer) {
@@ -372,7 +407,7 @@ export function selectPromptModules(
     if (needsCommandGuidance) modules.add("command-guidance");
   }
 
-  if (expertId === "jiang-huaying") {
+  if (findExpertEntry(expertId)?.toolProfile === "creative") {
     const needsVideoWorkflow =
       scene === "video-production"
       || (

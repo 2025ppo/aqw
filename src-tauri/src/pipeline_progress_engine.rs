@@ -161,9 +161,9 @@ mod tests {
         let snapshot = build_progress_snapshot(&PipelineProgressSnapshotRequest {
             active_tasks: vec![
                 PipelineProgressTask {
-                    expert_id: "jiang-yumo".to_string(),
-                    expert_name: "江予墨".to_string(),
-                    expert_title: "前端工程师".to_string(),
+                    expert_id: "discipline-520".to_string(),
+                    expert_name: "520 计算机科学技术".to_string(),
+                    expert_title: "一级学科专家".to_string(),
                     status: "running".to_string(),
                     input: "修界面".to_string(),
                     output: None,
@@ -171,9 +171,9 @@ mod tests {
                     phase_detail: Some("正在读取 app.js".to_string()),
                 },
                 PipelineProgressTask {
-                    expert_id: "jiang-ruoxi".to_string(),
-                    expert_name: "江若溪".to_string(),
-                    expert_title: "调研员".to_string(),
+                    expert_id: "discipline-120".to_string(),
+                    expert_name: "120 信息科学与系统科学".to_string(),
+                    expert_title: "一级学科专家".to_string(),
                     status: "done".to_string(),
                     input: "调研".to_string(),
                     output: Some("已完成调研".to_string()),
@@ -181,18 +181,18 @@ mod tests {
                     phase_detail: None,
                 },
             ],
-            active_step_expert_ids: vec!["jiang-yumo".to_string()],
-            planned_expert_ids: vec!["jiang-yumo".to_string(), "jiang-ruoxi".to_string()],
+            active_step_expert_ids: vec!["discipline-520".to_string()],
+            planned_expert_ids: vec!["discipline-520".to_string(), "discipline-120".to_string()],
             expert_labels: vec![
                 PipelineProgressExpertLabel {
-                    id: "jiang-yumo".to_string(),
-                    name: "江予墨".to_string(),
-                    title: "前端工程师".to_string(),
+                    id: "discipline-520".to_string(),
+                    name: "520 计算机科学技术".to_string(),
+                    title: "一级学科专家".to_string(),
                 },
                 PipelineProgressExpertLabel {
-                    id: "jiang-ruoxi".to_string(),
-                    name: "江若溪".to_string(),
-                    title: "调研员".to_string(),
+                    id: "discipline-120".to_string(),
+                    name: "120 信息科学与系统科学".to_string(),
+                    title: "一级学科专家".to_string(),
                 },
             ],
         });
@@ -200,13 +200,13 @@ mod tests {
         assert_eq!(snapshot.active_task_count, 1);
         assert!(snapshot
             .progress_report
-            .contains("江予墨（前端工程师）：执行中"));
+            .contains("520 计算机科学技术（一级学科专家）：执行中"));
         assert!(snapshot
             .current_step_summary
-            .contains("jiang-yumo: 江予墨（前端工程师）"));
+            .contains("discipline-520: 520 计算机科学技术（一级学科专家）"));
         assert!(snapshot
             .remaining_expert_summary
-            .contains("jiang-ruoxi: 江若溪（调研员）"));
+            .contains("discipline-120: 120 信息科学与系统科学（一级学科专家）"));
         assert!(snapshot.active_task_summary.contains("正在读取 app.js"));
     }
 }

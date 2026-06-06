@@ -1,3 +1,4 @@
+use crate::expert_identity::{is_creative_expert, is_documentation_expert, is_review_expert};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -67,6 +68,7 @@ pub struct BlackboardTask {
 #[serde(rename_all = "camelCase")]
 pub struct ExpertTaskSummary {
     pub id: String,
+    pub expert_id: String,
     pub expert_name: String,
     pub expert_title: String,
     pub output: Option<String>,
@@ -193,7 +195,11 @@ pub fn update_blackboard_from_task(
             .collect();
     }
 
-    if task.expert_title.contains("调研") || task.expert_title.contains("设计") {
+    if is_creative_expert(&task.expert_id)
+        || is_documentation_expert(&task.expert_id)
+        || task.expert_title.contains("调研")
+        || task.expert_title.contains("设计")
+    {
         blackboard.evidence.push(EvidenceItem {
             id: format!("{}-evidence-{}", task.id, blackboard.evidence.len() + 1),
             source: format!("{}（{}）", task.expert_name, task.expert_title),
@@ -242,7 +248,10 @@ pub fn update_blackboard_from_task(
         }
     }
 
-    if task.expert_title.contains("审查") || task.expert_title.contains("审核") {
+    if is_review_expert(&task.expert_id)
+        || task.expert_title.contains("审查")
+        || task.expert_title.contains("审核")
+    {
         let decision = if Regex::new(r"(不通过|阻断|block)")
             .expect("block review regex")
             .is_match(&output)
@@ -601,6 +610,7 @@ mod tests {
             &mut blackboard,
             &ExpertTaskSummary {
                 id: "task-1".to_string(),
+                expert_id: "discipline-520".to_string(),
                 expert_name: "江予墨".to_string(),
                 expert_title: "前端工程师".to_string(),
                 output: Some(
@@ -616,6 +626,7 @@ mod tests {
             &mut blackboard,
             &ExpertTaskSummary {
                 id: "task-2".to_string(),
+                expert_id: "discipline-620".to_string(),
                 expert_name: "江映秋".to_string(),
                 expert_title: "审查员".to_string(),
                 output: Some("建议返工，当前方案不通过".to_string()),
