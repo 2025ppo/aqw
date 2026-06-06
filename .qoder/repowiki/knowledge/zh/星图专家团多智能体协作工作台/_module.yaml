@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ai_experts
+title: 星图专家团多智能体协作工作台
+scope:
+    - ai-experts/
+source_files: []
+depends_on: []
+related_to: []
