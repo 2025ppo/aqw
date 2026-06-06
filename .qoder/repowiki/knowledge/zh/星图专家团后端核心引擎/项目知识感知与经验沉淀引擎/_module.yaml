@@ -1,0 +1,21 @@
+schema_version: 1
+module_path: backend_core/core_utils
+title: 项目知识感知与经验沉淀引擎
+scope:
+    - src-tauri/src/config.rs
+    - src-tauri/src/rbac.rs
+    - src-tauri/src/approval_store.rs
+    - src-tauri/src/blackboard_engine.rs
+    - src-tauri/src/collaboration_engine.rs
+    - src-tauri/src/deliverables.rs
+    - src-tauri/src/doc_processor.rs
+    - src-tauri/src/experience.rs
+    - src-tauri/src/health_score.rs
+    - src-tauri/src/hooks.rs
+    - src-tauri/src/repo_wiki.rs
+    - src-tauri/src/supervisor_engine.rs
+    - src-tauri/src/workflow_engine.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/memory_search

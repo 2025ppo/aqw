@@ -613,6 +613,19 @@ function ensureReplyIncludes(reply, expectedSnippets) {
   };
 }
 
+function ensureProjectContainsSnippets(projectDir, snippets, minMatches = snippets.length) {
+  const files = ["index.html", "styles.css", "app.js", "README.md"]
+    .map((file) => path.join(projectDir, file))
+    .filter((file) => fs.existsSync(file));
+  const combined = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+  const matched = snippets.filter((snippet) => combined.includes(snippet));
+  return {
+    ok: matched.length >= Math.min(minMatches, snippets.length),
+    matched,
+    missing: snippets.filter((snippet) => !matched.includes(snippet)),
+  };
+}
+
 function ensureNoFileMutation(turnResult) {
   const mutated = turnResult.toolCalls
     .map((item) => item.name)
@@ -672,54 +685,68 @@ async function runScenario() {
 
   const session1 = workbench.createSession("对话一");
   await runTurnWithValidation(workbench, session1, {
-    name: "回合一-创建网页版Linux仿真",
+    name: "回合一-创建心理学帮助网站",
     maxAttempts: 2,
     prompt: [
-      "请在当前项目中直接创建一个网页版 Linux 系统仿真。",
+      "请在当前项目中直接创建一个现代化的心理学帮助网站。",
       "要求：",
-      "1. 至少包含桌面、任务栏、开始菜单、终端窗口四部分。",
-      "2. 使用纯前端实现，文件放在项目根目录。",
-      "3. 最少生成 index.html、styles.css、app.js。",
-      "4. 直接落文件，不要只给方案。",
+      "1. 面向普通用户，主题聚焦压力、焦虑、情绪自助与心理支持。",
+      "2. 网站里至少要有首页介绍、帮助内容区、心理自测题区、结果反馈区四部分。",
+      "3. 使用纯前端实现，文件放在项目根目录，最少生成 index.html、styles.css、app.js。",
+      "4. 内容不能只是空泛占位文案，要有真实可读的心理学说明和若干测试题。",
+      "5. 直接落文件，不要只给方案。",
     ].join("\n"),
     validators: [
       () => {
         const check = ensureGeneratedFiles(projectDir);
         return check.ok ? { ok: true } : { ok: false, message: `缺少文件: ${check.missing.join(", ")}` };
       },
+      () => {
+        const check = ensureProjectContainsSnippets(projectDir, ["心理", "测评", "压力", "焦虑"], 3);
+        return check.ok ? { ok: true } : { ok: false, message: `心理学内容仍然过薄，缺少关键词: ${check.missing.join(", ")}` };
+      },
     ],
   });
 
   await runTurnWithValidation(workbench, session1, {
-    name: "回合二-检索后增强功能",
+    name: "回合二-检索后增强测评与反馈",
     maxAttempts: 2,
     prompt: [
-      "请基于当前仓库现状继续增强这个网页版 Linux 仿真。",
+      "请基于当前仓库现状继续增强这个心理学帮助网站。",
       "要求：",
       "1. 先检索或读取现有文件，再修改，不要凭空重写。",
-      "2. 新增桌面图标、开始菜单应用列表、终端 help 命令。",
-      "3. 尽量通过 edit_file 修改已有文件。",
+      "2. 至少补到 6 道心理自测题，并给出分数区间对应的反馈说明。",
+      "3. 增加更具体的自助建议，例如呼吸练习、睡眠习惯、求助提醒等。",
+      "4. 尽量通过 edit_file 修改已有文件。",
     ].join("\n"),
     validators: [
       (result) => {
         const check = ensureToolUsage(result, ["read_file", "edit_file"]);
         return check.ok ? { ok: true } : { ok: false, message: `缺少必要工具调用: ${check.missing.join(", ")}` };
       },
+      () => {
+        const check = ensureProjectContainsSnippets(projectDir, ["呼吸", "睡眠", "求助", "评分", "结果"], 3);
+        return check.ok ? { ok: true } : { ok: false, message: `增强后的心理支持内容仍不够完整，缺少: ${check.missing.join(", ")}` };
+      },
     ],
   });
 
   await runTurnWithValidation(workbench, session1, {
-    name: "回合三-再次检索并修复移动端",
+    name: "回合三-再次检索并优化移动端与专业提示",
     maxAttempts: 2,
     prompt: [
-      "这个现在手机上看着还有点挤，你顺手再调一下。",
-      "顺便补一句界面提示，让人一眼知道窗口能拖、图标能点。",
+      "这个网站现在请再顺手优化一下移动端和信息层级。",
+      "顺便补充更温和但明确的专业提示，比如这不是医疗诊断、严重情况应及时求助专业人士。",
       "别整套重写，基于现在这个项目直接改。",
     ].join("\n"),
     validators: [
       (result) => {
         const check = ensureToolUsage(result, ["search_repo", "edit_file"]);
         return check.ok ? { ok: true } : { ok: false, message: `缺少必要工具调用: ${check.missing.join(", ")}` };
+      },
+      () => {
+        const check = ensureProjectContainsSnippets(projectDir, ["诊断", "求助", "支持", "帮助"], 2);
+        return check.ok ? { ok: true } : { ok: false, message: `专业提示或移动端相关内容不足，缺少: ${check.missing.join(", ")}` };
       },
     ],
   });
@@ -748,18 +775,22 @@ async function runScenario() {
     name: "新对话-独立检索并补充README",
     maxAttempts: 2,
     prompt: [
-      "这个项目你再顺手收个尾吧。",
-      "说明文档该补就补，有哪里叫法不一致也一起收拾一下。",
+      "这个心理学帮助网站你再顺手收个尾吧。",
+      "README 里把功能、适用人群、心理测评说明和非医疗诊断提示写清楚，有哪里叫法不一致也一起收拾一下。",
       "别靠猜，按现在仓库里真实的东西来。",
     ].join("\n"),
     validators: [
-      (result) => {
+      () => {
         const readme = fs.existsSync(path.join(projectDir, "README.md"));
         return readme ? { ok: true } : { ok: false, message: "README.md 未生成" };
       },
       (result) => {
         const check = ensureToolUsage(result, ["search_repo", "read_file"]);
         return check.ok ? { ok: true } : { ok: false, message: `缺少必要工具调用: ${check.missing.join(", ")}` };
+      },
+      () => {
+        const check = ensureProjectContainsSnippets(projectDir, ["心理", "诊断", "测评", "功能"], 3);
+        return check.ok ? { ok: true } : { ok: false, message: `README 或最终内容缺少关键心理学说明: ${check.missing.join(", ")}` };
       },
     ],
   });

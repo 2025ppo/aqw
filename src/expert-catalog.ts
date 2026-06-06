@@ -591,6 +591,39 @@ function formatActivationProbability(probability: number): string {
   return `${Math.round(probability * 100)}%`;
 }
 
+function isKnowledgeProductIntent(taskDescription: string): boolean {
+  if (!taskDescription) return false;
+  return /(网站|网页|站点|平台|首页|前端页面|教学|课程|题库|测试题|测评|帮助中心|帮助网站|科普|知识库|落地页|landing page|website|help center|quiz)/i.test(taskDescription);
+}
+
+function isSubjectMatterConsultantCandidate(entry: ExpertCatalogEntry): boolean {
+  if (entry.systemRole) return false;
+  if (entry.categoryId === "engineering") return false;
+  return ![
+    "discipline-120",
+    "discipline-630",
+    "discipline-740",
+    "discipline-750",
+    "discipline-760",
+    "discipline-820",
+    "discipline-870",
+    "discipline-910",
+  ].includes(entry.id);
+}
+
+function findPrimarySubjectMatterConsultant(userMessage: string): ExpertCatalogEntry | undefined {
+  if (!isKnowledgeProductIntent(userMessage)) return undefined;
+  return DISCIPLINE_EXPERTS
+    .map((entry) => ({ entry, activation: evaluateExpertActivation(entry, userMessage) }))
+    .filter((item) => isSubjectMatterConsultantCandidate(item.entry) && item.activation.probability >= 0.48)
+    .sort((a, b) => {
+      if (b.activation.probability !== a.activation.probability) {
+        return b.activation.probability - a.activation.probability;
+      }
+      return b.activation.score - a.activation.score;
+    })[0]?.entry;
+}
+
 export function evaluateExpertActivation(
   entry: ExpertCatalogEntry,
   taskDescription: string,
@@ -633,8 +666,31 @@ function buildActivationGuidance(entry: ExpertCatalogEntry, taskDescription: str
   ].join("\n");
 }
 
+function buildConsultingEngagementGuidance(entry: ExpertCatalogEntry, taskDescription: string): string {
+  if (!isKnowledgeProductIntent(taskDescription)) return "";
+  if (entry.toolProfile === "engineering") {
+    return [
+      "【顾问协作约束】",
+      "- 当前任务明显带有垂直知识产品属性。你负责把专业内容产品化为真实界面、交互和文件结构，而不是用空泛占位文案把页面填满。",
+      "- 如果上游已经给出学科内容，你要优先围绕这些真实内容组织页面层级、测评流程、反馈文案和信息架构。",
+      "- 如果当前轮次还缺少足够扎实的专业内容，应先保留清晰结构与可扩展内容位，不要自行降级成模板化、薄内容的“假知识网站”。",
+    ].join("\n");
+  }
+  if (!isSubjectMatterConsultantCandidate(entry)) return "";
+  return [
+    "【顾问出手要求】",
+    "- 当前任务适合你以垂直领域顾问身份高强度介入。不要只给几条泛化建议，而要产出能直接支撑页面/文档/题库落地的专业内容骨架。",
+    "- 优先补齐这些可交付内容：核心主题拆解、目标人群与场景、常见误区、自测题目、评分解释、建议动作、风险提示、延伸阅读或训练路径。",
+    "- 内容要真实、成体系、可复用，避免“这里放一段介绍”“这里做几个题”这类模板占位式表达。",
+  ].join("\n");
+}
+
 export function buildTaskScopedExpertPrompt(entry: ExpertCatalogEntry, taskDescription: string): string {
-  return [buildExpertSystemPrompt(entry), buildActivationGuidance(entry, taskDescription)]
+  return [
+    buildExpertSystemPrompt(entry),
+    buildActivationGuidance(entry, taskDescription),
+    buildConsultingEngagementGuidance(entry, taskDescription),
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -790,7 +846,12 @@ function defaultAnchorExperts(userMessage: string): string[] {
       return anchors;
     }
     case "code-development": {
-      const anchors = ["discipline-520"];
+      const anchors: string[] = [];
+      const consultant = findPrimarySubjectMatterConsultant(userMessage);
+      if (consultant) {
+        anchors.push(consultant.id);
+      }
+      anchors.push("discipline-520");
       if (["系统", "架构", "调度", "工作流", "引擎"].some((keyword) => text.includes(keyword))) {
         anchors.push("discipline-413");
       }

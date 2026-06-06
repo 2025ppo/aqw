@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: frontend_app/config_prompts
+title: 配置与提示词工程管理
+scope:
+    - src/config-cascade.ts
+    - src/prompt-modules.ts
+    - src/prompt-module-history.ts
+    - src/provider-registry.ts
+    - src/project-health.ts
+    - src/data-analysis.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/llm_streaming
+    - path: frontend_app/expert_workflow

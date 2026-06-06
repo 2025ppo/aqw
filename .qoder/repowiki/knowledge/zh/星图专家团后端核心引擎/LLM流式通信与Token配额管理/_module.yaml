@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: backend_core/llm_streaming
+title: LLM流式通信与Token配额管理
+scope:
+    - src-tauri/src/llm_provider.rs
+    - src-tauri/src/llm_stream.rs
+    - src-tauri/src/token_runtime_engine.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend_app/config_prompts

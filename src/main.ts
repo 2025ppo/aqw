@@ -2822,6 +2822,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     // === 根据场景执行 ===
     let finalReply: string;
     let actionExecutionSources: Array<{ content: string; expertId: string; expertName: string; expertTitle: string }> = [];
+    let deliverableMarkdownPath: string | null = null;
 
     if (dispatchPlan.scene === "quick-answer" || dispatchPlan.expertIds.length === 0) {
       // 简单问题：主管直接回答
@@ -3050,16 +3051,20 @@ document.addEventListener("DOMContentLoaded", async () => {
         finalReply = finalizedDelivery.reply;
         await reportFrontendE2ECheckpoint("sendMessage:after-supervisor-review");
 
-        // 生成交付清单（fire-and-forget）
+        // 生成交付清单 Markdown，供自动跳转到文件页直接预览
         if (activeProjectForPipeline?.name && pipelineId) {
-          import("./task-tracker").then(({ generateDeliverable }) => {
-            generateDeliverable(
+          try {
+            const { generateDeliverable, getDeliverableMarkdownPath } = await import("./task-tracker");
+            await generateDeliverable(
               activeProjectForPipeline.name,
               pipelineId,
               dispatchPlan.taskDescription,
               expertResults
-            ).catch(console.error);
-          });
+            );
+            deliverableMarkdownPath = getDeliverableMarkdownPath(pipelineId);
+          } catch (error) {
+            console.error("生成交付清单失败:", error);
+          }
         }
 
         if (activeProjectForPipeline?.name) {
@@ -3114,6 +3119,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     // 移除运行中的实时卡片占位（已通过 expert-tasks 消息持久化）
     document.getElementById("chat-messages")?.querySelector('.expert-tasks-group[data-live="true"]')?.remove();
     renderMessages();
+    const autoOpenPath = pickAutoOpenGeneratedFilePath(actionExecutionResult.touchedFiles, deliverableMarkdownPath);
+    if (autoOpenPath) {
+      void (window as any).openFilePreview?.(autoOpenPath);
+    }
     await reportFrontendE2ECheckpoint("sendMessage:completed");
   }
 
@@ -3438,6 +3447,33 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (text) {
       appendCleanSystemMessage(text);
     }
+  }
+
+  function pickAutoOpenGeneratedFilePath(
+    touchedFiles: string[],
+    deliverablePath?: string | null,
+  ): string | null {
+    const seen = new Set<string>();
+    const candidates = [deliverablePath || "", ...touchedFiles]
+      .map((item) => item.trim())
+      .filter((item) => !!item && !item.startsWith(".xt/") && !item.startsWith(".xt\\"))
+      .filter((item) => {
+        if (seen.has(item)) return false;
+        seen.add(item);
+        return true;
+      });
+    if (candidates.length === 0) return null;
+
+    const priorityGroups = [
+      candidates.filter((item) => isMarkdownFile(item)),
+      candidates.filter((item) => isWebPreviewFile(item)),
+      candidates,
+    ];
+
+    for (const group of priorityGroups) {
+      if (group.length > 0) return group[0];
+    }
+    return null;
   }
 
   async function verifyWorkspaceDeliveryAgainstTask(

@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: frontend_app/expert_workflow
+title: 提示词模块与历史追踪管理
+scope:
+    - src/expert-catalog.ts
+    - src/expert-router.ts
+    - src/agent-loop.ts
+    - src/tool-executor.ts
+    - src/tool-registry.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/expert_engine
+    - path: build_and_scripts
+    - path: frontend_app/config_prompts

@@ -82,6 +82,10 @@ export async function listDeliverables(projectName: string): Promise<Deliverable
   }
 }
 
+export function getDeliverableMarkdownPath(taskId: string): string {
+  return `交付清单/${taskId}.md`;
+}
+
 // ========== 交付清单渲染 ==========
 
 /** 渲染交付清单为 HTML */

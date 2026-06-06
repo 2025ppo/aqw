@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: backend_core/memory_search
+title: 本地记忆与感知索引系统
+scope:
+    - src-tauri/src/memory.rs
+    - src-tauri/src/tfidf.rs
+    - src-tauri/src/perceptual_index.rs
+    - src-tauri/src/code_chunker.rs
+    - src-tauri/src/code_graph.rs
+    - src-tauri/src/code_retention.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/core_utils

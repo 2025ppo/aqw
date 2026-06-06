@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: frontend_app/core_state
+title: AI专家团协作与流水线引擎
+scope:
+    - src/main.ts
+    - src/context-manager.ts
+    - src/memory-store.ts
+    - src/task-tracker.ts
+    - src/draft.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/pipeline_engine
+    - path: backend_core/expert_engine

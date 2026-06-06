@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: backend_core/pipeline_engine
+title: 多专家协作流水线引擎
+scope:
+    - src-tauri/src/pipeline_engine.rs
+    - src-tauri/src/pipeline_progress_engine.rs
+    - src-tauri/src/pipeline_runtime_engine.rs
+    - src-tauri/src/pipeline_session_engine.rs
+    - src-tauri/src/pipeline_step_engine.rs
+    - src-tauri/src/prompt_module_engine.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend_app/core_state
+    - path: backend_core/expert_engine

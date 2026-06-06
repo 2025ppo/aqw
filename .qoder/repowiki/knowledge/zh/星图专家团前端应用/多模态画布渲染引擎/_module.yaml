@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend_app/canvas_rendering
+title: 多模态画布渲染引擎
+scope:
+    - src/canvas.ts
+    - src/image-canvas.ts
+    - src/video-canvas.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend_app/ui_assets

@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: backend_core/tool_system
+title: AI专家工具系统与执行引擎
+scope:
+    - src-tauri/src/tool_system.rs
+    - src-tauri/src/file_patch.rs
+    - src-tauri/src/shell_executor.rs
+    - src-tauri/src/web_search.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: backend_core/expert_engine

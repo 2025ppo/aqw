@@ -1,0 +1,18 @@
+schema_version: 1
+module_path: backend_core/expert_engine
+title: 专家引擎核心逻辑
+scope:
+    - src-tauri/src/expert_identity.rs
+    - src-tauri/src/expert_context_engine.rs
+    - src-tauri/src/expert_postprocess_engine.rs
+    - src-tauri/src/expert_runtime_engine.rs
+    - src-tauri/src/expert_session_engine.rs
+    - src-tauri/src/expert_tool_engine.rs
+    - src-tauri/src/expert_tool_runtime_engine.rs
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend_app/expert_workflow
+    - path: backend_core/tool_system
+    - path: frontend_app/core_state
+    - path: backend_core/pipeline_engine

@@ -2,15 +2,13 @@
 
 <cite>
 **本文档引用的文件**
-- [main.ts](file://ai-experts/src/main.ts)
-- [sidebar.ts](file://ai-experts/src/sidebar.ts)
-- [styles.css](file://ai-experts/src/styles.css)
-- [index.html](file://ai-experts/index.html)
-- [canvas.ts](file://ai-experts/src/canvas.ts)
-- [image-canvas.ts](file://ai-experts/src/image-canvas.ts)
-- [video-canvas.ts](file://ai-experts/src/video-canvas.ts)
-- [data-analysis.ts](file://ai-experts/src/data-analysis.ts)
-- [draft.ts](file://ai-experts/src/draft.ts)
+- [sidebar.ts](file://src/sidebar.ts)
+- [sidebar.css](file://src/sidebar.css)
+- [canvas.ts](file://src/canvas.ts)
+- [image-canvas.ts](file://src/image-canvas.ts)
+- [video-canvas.ts](file://src/video-canvas.ts)
+- [main.ts](file://src/main.ts)
+- [styles.css](file://src/styles.css)
 </cite>
 
 ## 目录
@@ -19,403 +17,630 @@
 3. [核心组件](#核心组件)
 4. [架构总览](#架构总览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考量](#性能考量)
-8. [故障排除指南](#故障排除指南)
+6. [依赖分析](#依赖分析)
+7. [性能考虑](#性能考虑)
+8. [故障排查指南](#故障排查指南)
 9. [结论](#结论)
 10. [附录](#附录)
 
 ## 简介
-本文件面向星图专家团工作台的UI组件系统，系统采用前端框架与桌面端运行时结合的方式，围绕“无限画布 + 多视图面板 + 草稿系统”的架构组织UI功能。核心包括：
-- 主界面组件：顶部标题栏、侧边栏项目管理、浮动视图页签、主内容区画布容器
-- 画布系统：无限画布、文件预览画布、图像/视频/数据分析视图
-- 草稿系统：高性能手绘画布、工具箱、属性栏、历史记录与图层管理
-- 主题与可访问性：基于CSS变量的主题切换、键盘快捷键与无障碍交互
-- 扩展与定制：模块化组件接口、可插拔视图、样式定制方案
+本文件面向UI组件系统，重点覆盖侧边栏组件与Canvas系统两大模块。侧边栏负责项目管理与导航，Canvas系统提供无限画布、文件预览画布以及视频创作视图。文档将从视觉外观、行为与交互、属性/事件/插槽/自定义选项、使用示例、响应式与无障碍、状态/动画/过渡、样式定制与主题、跨浏览器与性能优化、组件组合与集成等方面进行全面阐述。
 
 ## 项目结构
-前端主要由入口脚本、HTML模板、样式表以及多个功能模块组成，采用模块化组织，便于按需加载与扩展。
+- 侧边栏：位于 src/sidebar.ts 与 src/sidebar.css，提供项目列表、创建/打开项目、重命名/删除、展开/收起等能力。
+- Canvas系统：位于 src/canvas.ts，提供无限画布（节点/连线）、文件预览画布（DocBlock布局）、图像画布控制器、视频创作视图控制器。
+- 主入口：src/main.ts 负责初始化、事件绑定、视图切换与错误提示等。
+- 样式：src/styles.css 提供全局主题变量与响应式断点，支撑侧边栏与Canvas的视觉一致性。
 
 ```mermaid
 graph TB
-A["index.html<br/>页面骨架与挂载点"] --> B["main.ts<br/>应用入口与窗口控制"]
-A --> C["styles.css<br/>全局样式与主题变量"]
-B --> D["sidebar.ts<br/>侧边栏与项目管理"]
-B --> E["canvas.ts<br/>无限画布与文件预览画布"]
-B --> F["image-canvas.ts<br/>图像视图控制器"]
-B --> G["video-canvas.ts<br/>视频视图控制器"]
-B --> H["data-analysis.ts<br/>数据分析视图控制器"]
-B --> I["draft.ts<br/>草稿画布与工具箱"]
+subgraph "UI组件层"
+Sidebar["侧边栏组件<br/>sidebar.ts + sidebar.css"]
+Canvas["无限画布<br/>canvas.ts"]
+FileCanvas["文件预览画布<br/>canvas.ts"]
+ImageCanvas["图像画布控制器<br/>image-canvas.ts"]
+VideoCanvas["视频画布控制器<br/>video-canvas.ts"]
+end
+subgraph "应用入口"
+Main["主入口<br/>main.ts"]
+Styles["全局样式<br/>styles.css"]
+end
+Main --> Sidebar
+Main --> Canvas
+Main --> FileCanvas
+Main --> ImageCanvas
+Main --> VideoCanvas
+Sidebar --> Styles
+Canvas --> Styles
+FileCanvas --> Styles
+ImageCanvas --> Styles
+VideoCanvas --> Styles
 ```
 
-**图表来源**
-- [index.html:1-100](file://ai-experts/index.html#L1-L100)
-- [main.ts:1-120](file://ai-experts/src/main.ts#L1-L120)
-- [styles.css:1-120](file://ai-experts/src/styles.css#L1-L120)
-- [sidebar.ts:1-120](file://ai-experts/src/sidebar.ts#L1-L120)
-- [canvas.ts:1-120](file://ai-experts/src/canvas.ts#L1-L120)
-- [image-canvas.ts:1-80](file://ai-experts/src/image-canvas.ts#L1-L80)
-- [video-canvas.ts:1-80](file://ai-experts/src/video-canvas.ts#L1-L80)
-- [data-analysis.ts:1-80](file://ai-experts/src/data-analysis.ts#L1-L80)
-- [draft.ts:1-120](file://ai-experts/src/draft.ts#L1-L120)
+图表来源
+- [sidebar.ts:26-629](file://src/sidebar.ts#L26-L629)
+- [sidebar.css:1-395](file://src/sidebar.css#L1-L395)
+- [canvas.ts:30-664](file://src/canvas.ts#L30-L664)
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
+- [main.ts:1-800](file://src/main.ts#L1-L800)
+- [styles.css:1-800](file://src/styles.css#L1-L800)
 
-**章节来源**
-- [index.html:1-120](file://ai-experts/index.html#L1-L120)
-- [main.ts:1-120](file://ai-experts/src/main.ts#L1-L120)
-- [styles.css:1-120](file://ai-experts/src/styles.css#L1-L120)
+章节来源
+- [sidebar.ts:1-629](file://src/sidebar.ts#L1-L629)
+- [sidebar.css:1-395](file://src/sidebar.css#L1-L395)
+- [canvas.ts:1-664](file://src/canvas.ts#L1-L664)
+- [image-canvas.ts:1-218](file://src/image-canvas.ts#L1-L218)
+- [video-canvas.ts:1-273](file://src/video-canvas.ts#L1-L273)
+- [main.ts:1-800](file://src/main.ts#L1-L800)
+- [styles.css:1-800](file://src/styles.css#L1-L800)
 
 ## 核心组件
-- 无限画布：支持缩放、平移、节点拖拽、连线渲染，自动定位到内容区域，与草稿画布共享视口变换
-- 文件预览画布：文档块布局、树形/列布局、折叠展开、点击打开文件
-- 图像视图：基于无限画布的节点与连线渲染，支持节点增删与列表同步
-- 视频视图：卡片网格布局，播放器、状态徽章、导出按钮、进度条
-- 数据分析视图：嵌入式iframe展示HTML结果，历史记录浏览
-- 草稿系统：高性能Canvas渲染、双缓冲、历史记录、图层管理、工具箱与属性栏
-- 侧边栏：项目列表、图标颜色、延迟保存、打开/新建项目对话框
-- 主题系统：CSS变量驱动的深浅主题切换，动态更新根节点样式
+- 侧边栏组件（Sidebar）
+  - 角色：项目管理与导航，支持创建/打开项目、重命名/删除、展开/收起、活跃项目切换与持久化。
+  - 关键接口：构造函数、createChat、openProject、openProjectFromPath、setActiveChat、deleteChat、renameChat、markHasContent、getActiveChat、getFirstChat、getChats、toggle、expand、collapse。
+  - 交互：点击项目切换、双击重命名、右键菜单操作、点击空白处关闭菜单。
+  - 数据：ChatItem数组、活跃项目ID、图标色彩板、延时保存（防抖）。
+- 无限画布（InfiniteCanvas）
+  - 角色：无限缩放/平移的节点/连线画布，支持聚焦到内容区域、同步视口变化。
+  - 关键接口：setData、addNode、addEdge、clear、panBy、zoomAt、focusOnContent。
+  - 交互：滚轮缩放、鼠标拖拽平移、节点拖拽、点击节点打开预览。
+- 文件预览画布（FileCanvas）
+  - 角色：DocBlock卡片网格布局，支持树形/列布局、折叠/展开、连线渲染、点击打开预览。
+  - 关键接口：setData、toggleBlock、clear、autoLayout、autoLayoutByColumns。
+  - 交互：拖拽节点、滚轮缩放、点击展开/折叠、点击卡片打开预览。
+- 图像画布控制器（ImageCanvasController）
+  - 角色：基于现有画布的图像节点/连线渲染，支持激活/去激活、节点列表联动。
+  - 关键接口：addNode、connect、removeNode、getState、setSelection、getSelection。
+- 视频画布控制器（VideoCanvasController）
+  - 角色：视频创作视图的卡片网格，支持生成状态管理、导出片段与最终视频。
+  - 关键接口：addSegment、setSegments、updateSegment、removeSegment、clearSegments、getState、getSegments、loadState、exportFinal。
 
-**章节来源**
-- [canvas.ts:1-200](file://ai-experts/src/canvas.ts#L1-L200)
-- [image-canvas.ts:1-120](file://ai-experts/src/image-canvas.ts#L1-L120)
-- [video-canvas.ts:1-120](file://ai-experts/src/video-canvas.ts#L1-L120)
-- [data-analysis.ts:1-120](file://ai-experts/src/data-analysis.ts#L1-L120)
-- [draft.ts:350-520](file://ai-experts/src/draft.ts#L350-L520)
-- [sidebar.ts:26-120](file://ai-experts/src/sidebar.ts#L26-L120)
-- [main.ts:260-360](file://ai-experts/src/main.ts#L260-L360)
+章节来源
+- [sidebar.ts:26-629](file://src/sidebar.ts#L26-L629)
+- [canvas.ts:30-664](file://src/canvas.ts#L30-L664)
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
 
 ## 架构总览
-系统采用“模块化组件 + 事件驱动”的架构：
-- 入口脚本负责窗口控制、菜单绑定、主题切换、设置页管理
-- 画布与视图通过统一的事件机制进行切换与数据同步
-- 草稿系统与主画布共享视口，实现右键平移与滚轮缩放联动
+侧边栏与Canvas系统通过事件与DOM协作实现松耦合集成。侧边栏负责项目生命周期与活跃状态，Canvas系统负责可视化呈现与交互。主入口负责初始化与事件桥接。
 
 ```mermaid
 sequenceDiagram
-participant U as "用户"
-participant M as "main.ts"
-participant S as "sidebar.ts"
-participant C as "canvas.ts"
-participant D as "draft.ts"
-U->>M : 点击主题切换/设置
-M->>M : 切换CSS变量并更新根样式
-U->>M : 点击视图页签
-M->>M : 触发视图切换事件
-M->>C : 更新无限画布视口
-M->>D : 同步草稿画布视口
-U->>S : 打开/新建项目
-S->>S : 保存项目列表防抖
-S-->>M : 触发项目变更事件
+participant User as "用户"
+participant Sidebar as "侧边栏(Sidebar)"
+participant Main as "主入口(main.ts)"
+participant Canvas as "无限画布(InfiniteCanvas)"
+participant FileCanvas as "文件预览画布(FileCanvas)"
+User->>Sidebar : 点击项目/双击重命名/右键菜单
+Sidebar->>Main : 触发 chat-changed 事件
+Main->>Canvas : setData(nodes, edges)
+Main->>FileCanvas : setData(blocks, edges, options)
+Canvas->>Canvas : focusOnContent()/updateTransform()
+FileCanvas->>FileCanvas : autoLayout()/render()
+Canvas-->>User : 画布缩放/平移/节点点击
+FileCanvas-->>User : 卡片布局/展开/折叠/点击预览
 ```
 
-**图表来源**
-- [main.ts:260-360](file://ai-experts/src/main.ts#L260-L360)
-- [sidebar.ts:112-180](file://ai-experts/src/sidebar.ts#L112-L180)
-- [canvas.ts:186-218](file://ai-experts/src/canvas.ts#L186-L218)
-- [draft.ts:491-497](file://ai-experts/src/draft.ts#L491-L497)
+图表来源
+- [sidebar.ts:372-389](file://src/sidebar.ts#L372-L389)
+- [main.ts:239-242](file://src/main.ts#L239-L242)
+- [canvas.ts:220-246](file://src/canvas.ts#L220-L246)
+- [canvas.ts:434-444](file://src/canvas.ts#L434-L444)
+
+章节来源
+- [sidebar.ts:372-389](file://src/sidebar.ts#L372-L389)
+- [main.ts:239-242](file://src/main.ts#L239-L242)
+- [canvas.ts:220-246](file://src/canvas.ts#L220-L246)
+- [canvas.ts:434-444](file://src/canvas.ts#L434-L444)
 
 ## 详细组件分析
 
-### 侧边栏设计与项目管理
-- 功能要点
-  - 项目列表渲染、图标颜色随机、延迟保存（防抖）
-  - 打开/新建项目对话框，支持拖拽打开与数据库持久化
-  - 项目激活后触发自定义事件，通知画布与聊天面板
-- 数据持久化
-  - 通过后端接口保存项目列表与状态，支持重启后恢复
-- 用户交互
-  - 双击重命名、右键菜单、点击切换、自动收起（展开状态下）
+### 侧边栏组件（Sidebar）
+- 视觉外观
+  - 默认收起宽度44px，展开宽度240px；顶部新建按钮、底部切换按钮；对话项图标与名称；悬停/激活态样式；滚动条美化。
+- 行为与交互
+  - 展开/收起：点击切换按钮；点击项目在展开状态下自动收起。
+  - 项目操作：右键菜单支持重命名/从列表移除；双击进入重命名输入框；输入回车或失焦保存。
+  - 打开/创建：统一弹窗，支持打开已有项目（文件夹选择）与新建项目（名称/目录）。
+  - 活跃项目：持久化记录 lastProjectId，启动时恢复；工作区连接验证。
+- 属性/事件/插槽/自定义选项
+  - 属性：无公开类属性（内部状态通过方法访问）。
+  - 事件：chat-changed（切换活跃项目）、show-error（错误提示）。
+  - 插槽：无（通过DOM结构与CSS类名组织）。
+  - 自定义选项：图标色彩板（柔和不刺眼）；项目名称去重策略；延时保存（防抖）。
+- 使用示例
+  - 打开项目对话框：调用 showProjectDialog()。
+  - 创建新项目：调用 createChat(customName?)。
+  - 打开已有项目：调用 openProject() 或 openProjectFromPath(path)。
+  - 设置活跃项目：setActiveChat(id)。
+  - 删除项目：deleteChat(id)。
+  - 重命名：renameChat(id, newName)。
+  - 标记有内容：markHasContent(id)。
+  - 获取当前/首个/全部项目：getActiveChat()、getFirstChat()、getChats()。
+  - 展开/收起：toggle()、expand()、collapse()。
+- 响应式与无障碍
+  - 响应式：收起状态下隐藏文本；展开时显示按钮文字与名称；滚动条隐藏/显示。
+  - 无障碍：按钮具备title与可访问性语义；菜单通过键盘可访问。
+- 状态/动画/过渡
+  - 状态：expanded（展开）、active（当前项目）、hover（悬停）、open（菜单展开）。
+  - 动画/过渡：宽度切换0.2s；按钮hover背景/颜色过渡；滚动条美化。
+- 样式定制与主题
+  - 主题变量：--surface-sidebar、--accent-soft、--text-primary/secondary等；暗/亮主题切换。
+  - 自定义：通过修改CSS变量与类名覆盖默认样式。
+- 跨浏览器与性能
+  - 事件委托与防抖：减少频繁保存与重绘。
+  - DOM操作最小化：批量重建列表与延迟保存。
+- 组件组合与集成
+  - 与主入口：通过事件 chat-changed 与 show-error 与主流程集成。
+  - 与Canvas：提供活跃项目信息，触发数据加载与视图更新。
 
 ```mermaid
-flowchart TD
-Start(["打开/新建项目"]) --> OpenFolder["选择本地文件夹"]
-OpenFolder --> Validate["校验工作区连接"]
-Validate --> |成功| AddToList["添加到项目列表"]
-Validate --> |失败| ShowError["显示错误提示"]
-AddToList --> Save["延迟保存防抖"]
-Save --> Activate["设置为当前项目并触发事件"]
-Activate --> End(["完成"])
+classDiagram
+class Sidebar {
+-sidebarEl : HTMLElement
+-chatListEl : HTMLElement
+-createBtn : HTMLElement
+-toggleBtn : HTMLElement
+-chats : ChatItem[]
+-activeChatId : number
+-nextId : number
+-saveTimer : Timeout
++ready : Promise<void>
++constructor()
++showProjectDialog()
++createChat(customName?)
++openProject()
++openProjectFromPath(folderPath)
++setActiveChat(id)
++deleteChat(id)
++renameChat(id, newName)
++markHasContent(id)
++getActiveChat()
++getFirstChat()
++getChats()
++toggle()
++expand()
++collapse()
+-renderChatList()
+-debouncedSave()
+-closeItemMenus(exceptId?)
+-loadProjectsWithRetry(maxRetries, interval)
+-saveProjects()
+-ensureXtConfig(projectName)
+-validateWorkspaceConnection(chat)
+-saveAppState(state)
+}
 ```
 
-**图表来源**
-- [sidebar.ts:194-370](file://ai-experts/src/sidebar.ts#L194-L370)
+图表来源
+- [sidebar.ts:26-629](file://src/sidebar.ts#L26-L629)
 
-**章节来源**
-- [sidebar.ts:26-120](file://ai-experts/src/sidebar.ts#L26-L120)
-- [sidebar.ts:112-180](file://ai-experts/src/sidebar.ts#L112-L180)
-- [sidebar.ts:371-462](file://ai-experts/src/sidebar.ts#L371-L462)
+章节来源
+- [sidebar.ts:26-629](file://src/sidebar.ts#L26-L629)
+- [sidebar.css:1-395](file://src/sidebar.css#L1-L395)
 
-### 无限画布与文件预览画布
-- 无限画布
-  - 支持滚轮缩放、平移、节点拖拽、连线渲染
-  - 自动定位到内容区域，避开左侧对话区
-  - 与草稿画布共享视口事件，保持同步
-- 文件预览画布
-  - 文档块树形/列布局、折叠展开、点击打开文件
-  - 内联Markdown渲染、HTML注入、事件绑定
+### 无限画布（InfiniteCanvas）
+- 视觉外观
+  - 节点：圆形图标+标签；连线：箭头样式；视口控制：缩放百分比显示。
+- 行为与交互
+  - 缩放：滚轮按鼠标位置缩放，限制缩放范围。
+  - 平移：鼠标拖拽平移。
+  - 节点拖拽：点击节点后拖拽更新节点位置。
+  - 聚焦：focusOnContent() 自动适配内容区域，避开左侧对话区。
+  - 视口同步：updateTransform() 同步视口到草稿画布。
+- 属性/事件/插槽/自定义选项
+  - 属性：nodes、edges、view（x,y,scale）。
+  - 事件：canvas-viewport-changed（视口变化）。
+  - 插槽：无。
+  - 自定义选项：NODE_COLORS（文件/文件夹颜色）、NODE_RADIUS、缩放范围与适配策略。
+- 使用示例
+  - 初始化：initCanvas()。
+  - 设置数据：setData(nodes, edges)。
+  - 添加节点/连线：addNode(node)、addEdge(edge)。
+  - 清空：clear()。
+  - 平移/缩放：panBy(dx, dy)、zoomAt(clientX, clientY, factor)。
+  - 聚焦：focusOnContent()。
+- 响应式与无障碍
+  - 响应式：视口适配容器尺寸；缩放范围限制。
+  - 无障碍：鼠标交互为主，建议补充键盘快捷键。
+- 状态/动画/过渡
+  - 状态：panning/draggingNode。
+  - 动画/过渡：transform变换与缩放百分比更新。
+- 样式定制与主题
+  - 主题变量：--surface-panel、--text-primary等；SVG元素颜色继承。
+- 跨浏览器与性能
+  - 事件节流：mousemove统一处理；requestAnimationFrame用于渲染调度。
+  - DOM最小化：一次性innerHTML清空与重建。
+- 组件组合与集成
+  - 与主入口：通过事件同步视口；与FileCanvas共享SVG viewport。
 
 ```mermaid
 classDiagram
 class InfiniteCanvas {
+-svg : SVGSVGElement
+-viewport : SVGGElement
+-scaleEl : HTMLElement
+-view : Viewport
+-nodes : CanvasNode[]
+-edges : CanvasEdge[]
+-isPanning : boolean
+-isDraggingNode : boolean
+-draggedNode : CanvasNode
+-dragOffset : Offset
++constructor()
 +setData(nodes, edges)
 +addNode(node)
 +addEdge(edge)
 +clear()
 +panBy(dx, dy)
-+zoomAt(x, y, factor)
++zoomAt(clientX, clientY, factor)
 +focusOnContent()
+-bindEvents()
+-render()
+-updateTransform()
 }
-class FileCanvas {
-+setData(blocks, edges, options)
-+toggleBlock(id)
-+clear()
-+render()
+class Viewport {
++x : number
++y : number
++scale : number
 }
-InfiniteCanvas <.. FileCanvas : "共享视口事件"
+class CanvasNode {
++id : string
++type : "folder"|"file"
++name : string
++x : number
++y : number
++path : string
+}
+class CanvasEdge {
++from : string
++to : string
+}
+InfiniteCanvas --> Viewport : "持有"
+InfiniteCanvas --> CanvasNode : "渲染"
+InfiniteCanvas --> CanvasEdge : "渲染"
 ```
 
-**图表来源**
-- [canvas.ts:30-316](file://ai-experts/src/canvas.ts#L30-L316)
+图表来源
+- [canvas.ts:30-302](file://src/canvas.ts#L30-L302)
 
-**章节来源**
-- [canvas.ts:1-200](file://ai-experts/src/canvas.ts#L1-L200)
-- [canvas.ts:220-316](file://ai-experts/src/canvas.ts#L220-L316)
+章节来源
+- [canvas.ts:30-302](file://src/canvas.ts#L30-L302)
 
-### 图像处理画布
-- 设计要点
-  - 复用无限画布的视口，渲染图像节点与连线
-  - 提供节点增删、连线连接、状态查询与选择器
-  - 与视图切换事件联动，激活/停用时渲染/清理
-- 使用场景
-  - 图像创作流程中的节点化编排与导出
-
-```mermaid
-sequenceDiagram
-participant V as "视图切换"
-participant IC as "ImageCanvasController"
-participant VC as "无限画布视口"
-V->>IC : 切换到图像视图
-IC->>IC : activate() 渲染节点与连线
-IC->>VC : 渲染到 #canvas-viewport
-IC->>IC : updateNodeList() 同步右侧节点列表
-```
-
-**图表来源**
-- [image-canvas.ts:24-80](file://ai-experts/src/image-canvas.ts#L24-L80)
-
-**章节来源**
-- [image-canvas.ts:1-120](file://ai-experts/src/image-canvas.ts#L1-L120)
-- [image-canvas.ts:120-218](file://ai-experts/src/image-canvas.ts#L120-L218)
-
-### 视频处理画布
-- 设计要点
-  - 卡片网格布局，每个镜头为独立卡片
-  - 播放器、状态徽章、导出按钮、进度条
-  - 支持批量设置镜头、更新状态、导出片段与最终拼接视频
-- 交互特性
-  - 防止多视频同时播放，自动暂停上一个播放器
-  - 空状态提示与命令引导
-
-```mermaid
-flowchart TD
-Init["初始化视频视图"] --> Render["渲染卡片网格"]
-Render --> Play["播放视频"]
-Play --> PausePrev["暂停上一个播放器"]
-Render --> Export["导出片段"]
-Render --> FinalExport["导出最终拼接视频"]
-```
-
-**图表来源**
-- [video-canvas.ts:16-80](file://ai-experts/src/video-canvas.ts#L16-L80)
-
-**章节来源**
-- [video-canvas.ts:1-120](file://ai-experts/src/video-canvas.ts#L1-L120)
-- [video-canvas.ts:120-210](file://ai-experts/src/video-canvas.ts#L120-L210)
-- [video-canvas.ts:210-273](file://ai-experts/src/video-canvas.ts#L210-L273)
-
-### 数据可视化组件
-- 设计要点
-  - 嵌入式iframe承载HTML内容，支持动态加载与历史记录
-  - 左侧浏览器tab切换“数据源/历史”，历史记录可点击重载
-- 使用场景
-  - 对话触发的数据分析结果展示与回溯
-
-```mermaid
-sequenceDiagram
-participant DA as "DataAnalysisController"
-participant IF as "iframe"
-participant LIST as "历史列表"
-DA->>IF : loadHTML(html) 加载内容
-DA->>LIST : updateList() 切换tab并渲染
-LIST-->>DA : 点击历史记录触发重载
-```
-
-**图表来源**
-- [data-analysis.ts:12-60](file://ai-experts/src/data-analysis.ts#L12-L60)
-
-**章节来源**
-- [data-analysis.ts:1-120](file://ai-experts/src/data-analysis.ts#L1-L120)
-- [data-analysis.ts:120-138](file://ai-experts/src/data-analysis.ts#L120-L138)
-
-### 草稿系统（高性能手绘画布）
-- 核心能力
-  - 双缓冲离屏Canvas渲染，避免闪烁与重复绘制
-  - 高性能笔画、形状、便签、截图、小画布的交互与拖拽
-  - 历史记录（撤销/重做）、图层管理、对齐与等间距分布
-- 事件与快捷键
-  - 右键平移、滚轮缩放转发至主画布
-  - 工具快捷键（V/B/P/M/E/R/O/L/A/N等）、撤销/重做、删除、选择
-- 数据持久化
-  - 项目级草稿数据保存/加载，支持延迟保存
+### 文件预览画布（FileCanvas）
+- 视觉外观
+  - DocBlock卡片：标题、元信息、正文（Markdown内联渲染）、折叠/展开控件。
+  - 连线：从父块底部到子块顶部的直线。
+- 行为与交互
+  - 布局：树形布局或列布局（column字段）；自动计算位置与高度。
+  - 折叠/展开：toggleBlock(id)；展开时预留更高空间。
+  - 预览：点击卡片或展开按钮触发预览。
+- 属性/事件/插槽/自定义选项
+  - 属性：blocks、edges、layoutMode（tree/columns）。
+  - 事件：无（通过回调与DOM事件）。
+  - 插槽：无。
+  - 自定义选项：BLOCK_WIDTH/BLOCK_MIN_HEIGHT/BLOCK_COLLAPSED_HEIGHT、间隙与列排序。
+- 使用示例
+  - 设置数据：setData(blocks, edges, { layout? }).
+  - 折叠/展开：toggleBlock(id).
+  - 清空：clear().
+- 响应式与无障碍
+  - 响应式：列布局随窗口宽度变化；文本截断避免重叠。
+  - 无障碍：点击区域明确，建议补充键盘导航。
+- 状态/动画/过渡
+  - 状态：collapsed/expanded；布局计算。
+  - 动画/过渡：无（静态布局）。
+- 样式定制与主题
+  - 主题变量：--surface-panel、--text-primary等；卡片阴影与边框。
+- 跨浏览器与性能
+  - DOM最小化：一次性清空与重建；异步绑定事件。
+- 组件组合与集成
+  - 与主入口：通过事件触发预览；与无限画布共享SVG viewport。
 
 ```mermaid
 classDiagram
-class DraftCanvas {
-+setViewport(vp)
-+setTool(tool)
-+setColor(color)
-+setToolConfig(tool, config)
-+undo()/redo()
-+alignSelection()/distributeSelection()
-+save()/load()
+class FileCanvas {
+-svg : SVGSVGElement
+-viewport : SVGGElement
+-blocks : DocBlock[]
+-edges : Edge[]
+-layoutMode : "tree"|"columns"
+-view : FCViewport
+-isPanning : boolean
+-isDragging : boolean
+-draggedBlock : DocBlock
+-dragOffset : Offset
++constructor()
++setData(blocks, edges, options?)
++toggleBlock(id)
++clear()
++autoLayout()
++autoLayoutByColumns()
+-bindEvents()
+-render()
+-updateTransform()
+-layoutChildren(children, parentX, startY)
+-buildBlockHtml(block)
+-renderMdInline(md)
+-bindEmbeddedActions()
 }
-class DraftToolbox {
-+selectTool(tool)
-+selectColor(color)
-+setOnToolChange(cb)
-+setOnColorChange(cb)
+class DocBlock {
++id : string
++title : string
++level : number
++content : string
++children : string[]
++x : number
++y : number
++w : number
++h : number
++collapsed : boolean
++meta : string
++accent : string
++column : number
++order : number
++openPath : string
++staticHeight : number
 }
-class DraftSidebar {
-+setCanvas(canvas)
-+show()/hide()
-}
-DraftCanvas --> DraftToolbox : "同步工具与颜色"
-DraftCanvas --> DraftSidebar : "同步属性"
+FileCanvas --> DocBlock : "渲染"
 ```
 
-**图表来源**
-- [draft.ts:350-520](file://ai-experts/src/draft.ts#L350-L520)
-- [draft.ts:140-210](file://ai-experts/src/draft.ts#L140-L210)
-- [draft.ts:2627-2802](file://ai-experts/src/draft.ts#L2627-L2802)
+图表来源
+- [canvas.ts:351-664](file://src/canvas.ts#L351-L664)
 
-**章节来源**
-- [draft.ts:1-200](file://ai-experts/src/draft.ts#L1-L200)
-- [draft.ts:520-800](file://ai-experts/src/draft.ts#L520-L800)
-- [draft.ts:800-1200](file://ai-experts/src/draft.ts#L800-L1200)
-- [draft.ts:1200-1600](file://ai-experts/src/draft.ts#L1200-L1600)
-- [draft.ts:1600-2000](file://ai-experts/src/draft.ts#L1600-L2000)
-- [draft.ts:2000-2400](file://ai-experts/src/draft.ts#L2000-L2400)
-- [draft.ts:2400-2802](file://ai-experts/src/draft.ts#L2400-L2802)
+章节来源
+- [canvas.ts:351-664](file://src/canvas.ts#L351-L664)
 
-### 聊天界面与交互
-- 功能要点
-  - 历史记录下拉面板、新建对话、文件附件与执行模式
-  - Slash命令面板（图像/视频），文件选择与多模态附件
-  - 错误提示Toast、文件大小格式化、附件类型识别
-- 与密钥池集成
-  - 根据专家ID解析绑定密钥与模型，支持多模态能力筛选
+### 图像画布控制器（ImageCanvasController）
+- 视觉外观
+  - 图像节点：矩形背景+图片+标签；连线为贝塞尔曲线箭头。
+- 行为与交互
+  - 激活/去激活：根据视图切换决定是否渲染。
+  - 节点渲染：在现有 #canvas-viewport 中叠加SVG元素。
+  - 节点列表：右侧节点列表联动更新。
+- 属性/事件/插槽/自定义选项
+  - 属性：nodes、connections、svgElements、active。
+  - 事件：无。
+  - 插槽：无。
+  - 自定义选项：节点尺寸、连线样式。
+- 使用示例
+  - 添加节点：addNode(src, label, x?, y?).
+  - 连接：connect(fromId, toId, label?).
+  - 删除：removeNode(id).
+  - 获取状态：getState().
+- 响应式与无障碍
+  - 响应式：节点尺寸固定；交互为鼠标点击。
+  - 无障碍：建议补充键盘操作与ARIA标签。
+- 状态/动画/过渡
+  - 状态：active/inactive；渲染元素集合。
+  - 动画/过渡：无。
+- 样式定制与主题
+  - 主题变量：--surface-panel、--text-primary等；深色背景与描边。
+- 跨浏览器与性能
+  - DOM最小化：清空后重建；事件绑定异步。
+- 组件组合与集成
+  - 与主入口：通过全局API暴露；与无限画布共享viewport。
 
 ```mermaid
-sequenceDiagram
-participant U as "用户"
-participant CHAT as "聊天面板"
-participant KEY as "密钥池"
-participant EXP as "专家系统"
-U->>CHAT : 输入消息/选择附件/切换执行模式
-CHAT->>KEY : 解析专家密钥与模型
-KEY-->>CHAT : 返回密钥传输信息
-CHAT->>EXP : 发送消息含附件元数据
-EXP-->>CHAT : 流式/非流式回复
+classDiagram
+class ImageCanvasController {
+-nodes : ImageNode[]
+-connections : ImageConnection[]
+-svgElements : SVGElement[]
+-active : boolean
++constructor()
++addNode(src, label, x?, y?) : string
++connect(fromId, toId, label?)
++removeNode(id)
++getState() : {nodes, connections}
++setSelection(rect)
++getSelection() : Rect|null
+-activate()
+-deactivate()
+-render()
+-clearRendered()
+-updateNodeList()
+-bindEvents()
+}
+class ImageNode {
++id : string
++x : number
++y : number
++label : string
++src : string
++width : number
++height : number
+}
+class ImageConnection {
++id : string
++fromId : string
++toId : string
++label : string
+}
+ImageCanvasController --> ImageNode : "管理"
+ImageCanvasController --> ImageConnection : "管理"
 ```
 
-**图表来源**
-- [main.ts:532-695](file://ai-experts/src/main.ts#L532-L695)
+图表来源
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
 
-**章节来源**
-- [main.ts:532-757](file://ai-experts/src/main.ts#L532-L757)
+章节来源
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
 
-## 依赖关系分析
-- 模块耦合
-  - main.ts作为中枢，依赖sidebar、canvas、draft等模块
-  - 草稿系统与无限画布通过视口事件耦合，保证交互一致性
-  - 各视图控制器（图像/视频/数据分析）通过视图切换事件与主画布协同
+### 视频画布控制器（VideoCanvasController）
+- 视觉外观
+  - 视频片段卡片：占位图/播放器、状态徽章、时长、导出按钮、进度条、错误提示。
+- 行为与交互
+  - 状态管理：pending/generating/done/error。
+  - 导出：单片段导出；最终拼接导出。
+  - 播放控制：互斥播放，避免多视频同时播放。
+- 属性/事件/插槽/自定义选项
+  - 属性：segments、active、currentPlayingId。
+  - 事件：无。
+  - 插槽：无。
+  - 自定义选项：状态徽章文案与样式。
+- 使用示例
+  - 添加片段：addSegment(label, description?).
+  - 设置片段：setSegments([{label, description?}]).
+  - 更新状态：updateSegment(id, update).
+  - 清空：clearSegments().
+  - 导出：exportFinal().
+- 响应式与无障碍
+  - 响应式：卡片网格自适应；播放器controlslist禁用下载。
+  - 无障碍：建议补充播放/暂停按钮的ARIA标签。
+- 状态/动画/过渡
+  - 状态：generating/done/error；进度条填充。
+  - 动画/过渡：无。
+- 样式定制与主题
+  - 主题变量：--surface-panel、--text-primary等。
+- 跨浏览器与性能
+  - DOM最小化：清空后重建；事件绑定异步。
+- 组件组合与集成
+  - 与主入口：通过全局API暴露；导出事件由主入口处理。
+
+```mermaid
+classDiagram
+class VideoCanvasController {
+-segments : VideoSegment[]
+-active : boolean
+-currentPlayingId : string
++constructor()
++addSegment(label, description?) : string
++setSegments(segments) : string[]
++updateSegment(id, update)
++removeSegment(id)
++clearSegments()
++getState() : {segments}
++getSegments() : VideoSegment[]
++loadState(segments)
++exportFinal()
+-activate()
+-deactivate()
+-stopAllPlayers()
+-renderCardGrid()
+-buildSegmentCard(seg) : HTMLElement
+-statusBadge(status) : string
+-clearCardGrid()
+-exportSegment(id)
+-bindEvents()
+}
+class VideoSegment {
++id : string
++label : string
++description : string
++videoUrl : string
++duration : number
++thumbnail : string
++status : "pending"|"generating"|"done"|"error"
++error : string
+}
+VideoCanvasController --> VideoSegment : "管理"
+```
+
+图表来源
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
+
+章节来源
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
+
+## 依赖分析
+- 组件耦合
+  - Sidebar 与 main.ts 通过事件通信；Sidebar 与 Canvas 通过数据与事件协作。
+  - InfiniteCanvas 与 FileCanvas 共享 SVG viewport；ImageCanvasController 与 Canvas 共享 viewport。
+  - VideoCanvasController 与 main.ts 通过导出事件协作。
 - 外部依赖
-  - Tauri后端提供文件系统、对话与专家系统调用
-  - highlight.js用于代码高亮（在文件预览中使用）
+  - @tauri-apps/api：invoke、listen、window等；用于与Rust后端通信与窗口控制。
+  - highlight.js：代码高亮（在主入口引入）。
+- 潜在循环依赖
+  - 无直接循环依赖；事件驱动降低耦合。
 
 ```mermaid
 graph LR
-MAIN["main.ts"] --> SB["sidebar.ts"]
-MAIN --> CV["canvas.ts"]
-MAIN --> DC["draft.ts"]
-MAIN --> IC["image-canvas.ts"]
-MAIN --> VC["video-canvas.ts"]
-MAIN --> DAC["data-analysis.ts"]
-DC --> CV
+Sidebar["Sidebar"] --> Main["main.ts"]
+Main --> Canvas["InfiniteCanvas"]
+Main --> FileCanvas["FileCanvas"]
+Canvas --> FileCanvas
+Canvas --> ImageCanvas["ImageCanvasController"]
+Main --> VideoCanvas["VideoCanvasController"]
 ```
 
-**图表来源**
-- [main.ts:1-47](file://ai-experts/src/main.ts#L1-L47)
-- [canvas.ts:1-30](file://ai-experts/src/canvas.ts#L1-L30)
-- [draft.ts:1-10](file://ai-experts/src/draft.ts#L1-L10)
+图表来源
+- [sidebar.ts:372-389](file://src/sidebar.ts#L372-L389)
+- [main.ts:239-242](file://src/main.ts#L239-L242)
+- [canvas.ts:30-302](file://src/canvas.ts#L30-L302)
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
 
-**章节来源**
-- [main.ts:1-47](file://ai-experts/src/main.ts#L1-L47)
+章节来源
+- [sidebar.ts:372-389](file://src/sidebar.ts#L372-L389)
+- [main.ts:1-800](file://src/main.ts#L1-L800)
+- [canvas.ts:30-302](file://src/canvas.ts#L30-L302)
+- [image-canvas.ts:24-218](file://src/image-canvas.ts#L24-L218)
+- [video-canvas.ts:16-273](file://src/video-canvas.ts#L16-L273)
 
-## 性能考量
-- 画布渲染优化
-  - 草稿画布采用双缓冲离屏Canvas，仅在offscreenDirty时重绘，减少主Canvas绘制压力
-  - 视口裁剪：仅绘制在视口范围内的笔画与形状，降低绘制成本
-  - requestAnimationFrame调度渲染，避免重复绘制
-- 事件与交互
-  - 侧边栏项目保存采用防抖（500ms），减少频繁IO
-  - 无限画布缩放与平移使用事件委托与坐标转换优化
-- 资源加载
-  - 代码高亮样式按需引入，避免不必要的资源占用
+## 性能考虑
+- 事件与渲染
+  - 侧边栏：防抖保存（setTimeout + clearTimeout），减少频繁写入。
+  - 无限画布：一次性innerHTML清空与重建，避免逐项DOM操作。
+  - 文件预览画布：异步绑定事件，避免阻塞渲染。
+  - 图像画布控制器：清空后重建SVG元素，减少重复DOM。
+  - 视频画布：清空后重建卡片网格，避免逐项更新。
+- 视口与坐标
+  - 无限画布：updateTransform统一更新viewport与scale显示；草稿画布同步视口。
+  - 文件预览画布：autoLayout按需计算，避免重复布局。
+- 资源与网络
+  - 视频播放：互斥播放，避免资源竞争。
+  - 图像渲染：SVG image元素按需加载，preserveAspectRatio保证显示质量。
+- 建议
+  - 大数据量场景：考虑虚拟滚动（侧边栏）、分批渲染（画布）。
+  - 事件节流：mousemove与wheel事件可进一步节流/去抖。
+  - 懒加载：图片/视频按需加载，减少初始渲染压力。
 
-**章节来源**
-- [draft.ts:1714-1851](file://ai-experts/src/draft.ts#L1714-L1851)
-- [draft.ts:1853-1884](file://ai-experts/src/draft.ts#L1853-L1884)
-- [sidebar.ts:139-143](file://ai-experts/src/sidebar.ts#L139-L143)
+[本节为通用性能指导，无需特定文件引用]
 
-## 故障排除指南
-- 主题切换无效
-  - 检查CSS变量是否正确更新，确认根节点样式是否生效
-  - 确认设置页主题开关与应用状态一致
-- 项目打开失败
-  - 校验工作区连接，查看错误提示；必要时重新选择项目目录
-  - 确认数据库保存/加载流程未抛出异常
-- 画布无法缩放/平移
-  - 检查鼠标滚轮事件与mosemove/mouseup事件绑定
-  - 确认视口事件是否正确转发至草稿画布
-- 草稿保存失败
-  - 检查Tauri后端save_draft/load_draft接口调用
-  - 查看控制台错误日志，确认JSON序列化/反序列化过程
+## 故障排查指南
+- 侧边栏
+  - 无法加载项目：检查数据库初始化状态与重试机制；查看控制台错误与show-error事件。
+  - 工作区连接异常：validate_workspace_connection失败时延迟显示错误提示。
+  - 项目删除后重启恢复：确保saveProjects同步projects.json。
+- 无限画布
+  - 无节点时聚焦：focusOnContent()设置默认偏移位置。
+  - 视口不同步：检查updateTransform与canvas-viewport-changed事件。
+- 文件预览画布
+  - 布局异常：检查layoutMode与column/order排序；确认autoLayoutByColumns。
+  - 预览不生效：确认openPath与点击事件绑定。
+- 图像画布控制器
+  - 未激活渲染：检查view-changed事件与activate/deactivate。
+- 视频画布
+  - 导出失败：确认blob URL与下载链接；最终导出通过全局事件触发。
 
-**章节来源**
-- [main.ts:260-360](file://ai-experts/src/main.ts#L260-L360)
-- [sidebar.ts:391-422](file://ai-experts/src/sidebar.ts#L391-L422)
-- [draft.ts:2390-2421](file://ai-experts/src/draft.ts#L2390-L2421)
+章节来源
+- [sidebar.ts:391-411](file://src/sidebar.ts#L391-L411)
+- [sidebar.ts:424-462](file://src/sidebar.ts#L424-L462)
+- [canvas.ts:134-184](file://src/canvas.ts#L134-L184)
+- [canvas.ts:186-199](file://src/canvas.ts#L186-L199)
+- [canvas.ts:434-444](file://src/canvas.ts#L434-L444)
+- [image-canvas.ts:34-48](file://src/image-canvas.ts#L34-L48)
+- [video-canvas.ts:166-177](file://src/video-canvas.ts#L166-L177)
+- [video-canvas.ts:179-183](file://src/video-canvas.ts#L179-L183)
 
 ## 结论
-UI组件系统以模块化与事件驱动为核心，围绕无限画布构建了多视图协同的工作台。通过高性能渲染、完善的交互与主题系统，满足专家团在复杂项目中的可视化与协作需求。草稿系统进一步增强了创作与编辑体验，配合侧边栏与聊天面板形成完整的开发工作流。
+本UI组件系统以侧边栏为核心入口，配合Canvas系统实现强大的可视化与交互体验。通过事件驱动与模块化设计，系统具备良好的可扩展性与可维护性。建议在大数据量场景下进一步优化渲染与事件处理，并补充键盘与无障碍支持，以提升用户体验与可访问性。
+
+[本节为总结性内容，无需特定文件引用]
 
 ## 附录
-- 扩展接口
-  - 视图控制器均暴露公共API（如addSegment、updateSegment、getState等），便于外部模块调用
-  - 草稿系统提供工具箱与属性栏的事件回调，支持自定义工具与参数
-- 自定义组件开发
-  - 基于现有画布基类（InfiniteCanvas/FileCanvas）扩展新视图
-  - 通过事件机制（view-changed、canvas-viewport-changed）与主系统集成
-- 样式定制方案
-  - 使用CSS变量统一管理主题色板与层级样式
-  - 通过类名与布局容器（flex/grid）组合实现响应式布局
-- 性能优化策略
-  - 优先采用离屏Canvas与视口裁剪
-  - 控制事件频率（防抖/节流）与批处理更新
-- 动画与用户体验
-  - 平滑缩放与过渡（scale元素文本更新）
-  - 键盘快捷键提升效率，右键平移增强画布操控
-- 使用案例
-  - 图像创作：通过图像视图控制器添加节点与连线，实时预览
-  - 视频创作：使用视频视图控制器批量设置镜头，逐个导出与拼接
-  - 数据分析：将HTML结果注入iframe，支持历史记录回溯
+- 响应式设计要点
+  - 使用CSS变量与媒体查询适配不同窗口宽度；侧边栏在窄屏下隐藏文本与按钮文字。
+  - 画布与卡片布局随窗口宽度动态调整。
+- 主题支持
+  - 通过 :root[data-theme="dark"/"light"] 切换主题；全局变量统一控制颜色与阴影。
+- 无障碍建议
+  - 为按钮与菜单补充title与ARIA属性；为可交互元素提供键盘操作路径。
+- 跨浏览器兼容
+  - 使用标准DOM API与CSS变量；SVG渲染在主流浏览器中表现稳定。
+- 最佳实践
+  - 使用防抖与节流优化高频事件；最小化DOM操作；合理拆分模块职责。
+
+[本节为通用指导，无需特定文件引用]

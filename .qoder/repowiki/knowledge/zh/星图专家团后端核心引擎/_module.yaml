@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: backend_core
+title: 星图专家团后端核心引擎
+scope:
+    - src-tauri/
+source_files: []
+depends_on: []
+related_to: []

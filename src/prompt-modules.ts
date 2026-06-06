@@ -172,7 +172,7 @@ import {
   isDocumentationDisciplineExpert,
   isQuantitativeAnalysisDisciplineExpert,
   isReviewDisciplineExpert,
-} from "./expert-catalog";
+} from "./expert-catalog.js";
 
 function getStaticPromptModulesForExpert(expertId: string): PromptModuleId[] {
   const entry = findExpertEntry(expertId);

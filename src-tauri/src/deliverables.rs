@@ -363,6 +363,91 @@ fn generate_summary_text(
     parts.join("\n")
 }
 
+fn sanitize_filename_component(input: &str) -> String {
+    let mut sanitized = input
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if sanitized.is_empty() {
+        sanitized = "deliverable".to_string();
+    }
+    sanitized
+}
+
+fn render_deliverable_markdown(deliverable: &Deliverable) -> String {
+    let mut sections = Vec::new();
+    sections.push(format!("# 交付清单 {}", deliverable.task_id));
+    sections.push(format!("生成时间：{}", deliverable.created_at));
+    sections.push(String::new());
+    sections.push("## 摘要".to_string());
+    sections.push(deliverable.summary.clone());
+
+    if !deliverable.code_changes.is_empty() {
+        sections.push(String::new());
+        sections.push("## 代码变更".to_string());
+        sections.extend(deliverable.code_changes.iter().map(|change| {
+            format!(
+                "- [{}] `{}` · {}（{}）",
+                change.change_type, change.file_path, change.expert_name, change.expert_id
+            )
+        }));
+    }
+
+    if !deliverable.review_findings.is_empty() {
+        sections.push(String::new());
+        sections.push("## 审查意见".to_string());
+        sections.extend(deliverable.review_findings.iter().map(|finding| {
+            let line = finding
+                .line_number
+                .map(|value| format!(":{}", value))
+                .unwrap_or_default();
+            let suggestion = if finding.suggestion.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" -> {}", finding.suggestion.trim())
+            };
+            format!(
+                "- [{}] `{}`{} {}{}",
+                finding.severity,
+                finding.file_path,
+                line,
+                finding.issue.trim(),
+                suggestion
+            )
+        }));
+    }
+
+    if !deliverable.test_suggestions.is_empty() {
+        sections.push(String::new());
+        sections.push("## 测试建议".to_string());
+        sections.extend(
+            deliverable
+                .test_suggestions
+                .iter()
+                .map(|item| format!("- {}", item.trim())),
+        );
+    }
+
+    if !deliverable.expert_contributions.is_empty() {
+        sections.push(String::new());
+        sections.push("## 专家贡献".to_string());
+        sections.extend(deliverable.expert_contributions.iter().map(|item| {
+            format!(
+                "- {}（{}）状态：{}",
+                item.expert_name, item.expert_id, item.status
+            )
+        }));
+    }
+
+    sections.join("\n")
+}
+
 // ---- 持久化 ----
 
 /// 保存交付清单到 .xt/deliverables/
@@ -374,6 +459,15 @@ pub fn save_deliverable(project_dir: &Path, deliverable: &Deliverable) -> Result
     let json = serde_json::to_string_pretty(deliverable)
         .map_err(|e| format!("序列化交付清单失败: {}", e))?;
     fs::write(&file_path, json).map_err(|e| format!("写入交付清单失败: {}", e))?;
+
+    let markdown_dir = project_dir.join("交付清单");
+    fs::create_dir_all(&markdown_dir).map_err(|e| format!("创建交付 Markdown 目录失败: {}", e))?;
+    let markdown_file = markdown_dir.join(format!(
+        "{}.md",
+        sanitize_filename_component(&deliverable.task_id)
+    ));
+    fs::write(&markdown_file, render_deliverable_markdown(deliverable))
+        .map_err(|e| format!("写入交付 Markdown 失败: {}", e))?;
 
     Ok(())
 }

@@ -97,7 +97,7 @@ export const PROMPT_MODULES = {
 - 当前系统不会执行 \`file_patch\` / \`*** Begin Patch\` 这类补丁文本；不要输出补丁语法。
 - 你必须输出系统可直接落盘的文件动作：\`[ACTION:CREATE_FILE ...]\`、\`[ACTION:WRITE_FILE ...]\`、\`[ACTION:EDIT_FILE ...]\`、\`[ACTION:CREATE_FOLDER ...]\`、\`[ACTION:DELETE ...]\`，或结构化 JSON \`changes\`。
 - 修改已有文件前，先读取真实文件内容，再给出精确的 \`searchText\` / \`replaceText\`；不要凭空编造上下文。
-- 如果是局部修改，优先用 \`[ACTION:EDIT_FILE ...]\`，并提供稳定、可唯一定位的 search/replace 片段。
+- 如果目标是短小、展示型、文本型文件（如 \`index.html\`、\`styles.css\`、\`README.md\`、静态配置），优先用 \`[ACTION:WRITE_FILE ...]\` 直接给出完整最新文件内容；只有在文件较大、确实需要局部修改且 \`searchText\` 来自刚读取的真实原文时，才使用 \`[ACTION:EDIT_FILE ...]\`。
 - 如果一个任务涉及多个文件，逐个输出可执行动作，不要把修改藏在说明文字里。
 - 不要虚构 \`task-1-patch.md\`、\`task-3-patch-1.md\` 之类中间补丁文件；除非你真的用 \`[ACTION:CREATE_FILE]\` 明确创建它们，否则后续专家不得把它们当成已存在的交付物。
 - 永远使用相对项目根目录的路径，不要输出绝对路径。`,
@@ -121,30 +121,58 @@ export const PROMPT_MODULES = {
     },
 };
 const ALL_PROMPT_MODULE_IDS = Object.keys(PROMPT_MODULES);
-const EXPERT_STATIC_PROMPT_MODULES = {
-    "jiang-ruoxi": ["code-tool-primer"],
-    "jiang-dingchu": ["code-tool-primer", "deliverable-guidance"],
-    "jiang-qinglan": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-    "jiang-yumo": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-    "jiang-subai": ["code-tool-primer", "patch-guidance", "deliverable-guidance"],
-    "jiang-yingqiu": ["code-tool-primer"],
-    "jiang-jianheng": ["code-tool-primer", "deliverable-guidance"],
-    "jiang-cexun": ["code-tool-primer", "command-guidance"],
-    "jiang-zhilan": ["document-tool-primer"],
-    "jiang-huaying": ["media-tool-primer"],
-};
-const EXPERT_SUPPORTED_PROMPT_MODULES = {
-    "jiang-ruoxi": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-dingchu": ["code-tool-primer", "web-search-guidance", "deliverable-guidance"],
-    "jiang-qinglan": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-    "jiang-yumo": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-    "jiang-subai": ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"],
-    "jiang-yingqiu": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-jianheng": ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"],
-    "jiang-cexun": ["code-tool-primer", "web-search-guidance", "command-guidance"],
-    "jiang-zhilan": ["document-tool-primer"],
-    "jiang-huaying": ["media-tool-primer", "video-workflow"],
-};
+import { findExpertEntry, isCreativeMediaDisciplineExpert, isDocumentationDisciplineExpert, isQuantitativeAnalysisDisciplineExpert, isReviewDisciplineExpert, } from "./expert-catalog.js";
+function getStaticPromptModulesForExpert(expertId) {
+    const entry = findExpertEntry(expertId);
+    if (!entry)
+        return [];
+    switch (entry.toolProfile) {
+        case "engineering":
+            return ["code-tool-primer", "patch-guidance", "deliverable-guidance"];
+        case "review":
+            return isReviewDisciplineExpert(entry.id)
+                ? ["code-tool-primer", "deliverable-guidance"]
+                : ["code-tool-primer"];
+        case "documentation":
+            return isDocumentationDisciplineExpert(entry.id) && entry.id === "discipline-740"
+                ? ["code-tool-primer"]
+                : ["document-tool-primer"];
+        case "creative":
+            return isCreativeMediaDisciplineExpert(entry.id)
+                ? ["media-tool-primer"]
+                : ["code-tool-primer", "deliverable-guidance"];
+        case "analysis":
+            return isQuantitativeAnalysisDisciplineExpert(entry.id)
+                ? ["code-tool-primer", "command-guidance"]
+                : ["code-tool-primer"];
+        default:
+            return ["code-tool-primer"];
+    }
+}
+function getSupportedPromptModulesForCatalogExpert(expertId) {
+    const entry = findExpertEntry(expertId);
+    const staticModules = getStaticPromptModulesForExpert(expertId);
+    if (!entry)
+        return staticModules;
+    switch (entry.toolProfile) {
+        case "engineering":
+            return ["code-tool-primer", "web-search-guidance", "command-guidance", "patch-guidance", "deliverable-guidance"];
+        case "review":
+            return ["code-tool-primer", "web-search-guidance", "command-guidance", "deliverable-guidance"];
+        case "documentation":
+            return isDocumentationDisciplineExpert(entry.id) && entry.id === "discipline-740"
+                ? ["code-tool-primer", "web-search-guidance"]
+                : ["document-tool-primer", "web-search-guidance"];
+        case "creative":
+            return isCreativeMediaDisciplineExpert(entry.id)
+                ? ["media-tool-primer", "video-workflow", "web-search-guidance"]
+                : ["code-tool-primer", "web-search-guidance", "deliverable-guidance"];
+        case "analysis":
+            return ["code-tool-primer", "web-search-guidance", "command-guidance"];
+        default:
+            return ["code-tool-primer", "web-search-guidance", "command-guidance"];
+    }
+}
 const WEB_SEARCH_TRIGGER_KEYWORDS = [
     "最新", "最近", "官网", "官方", "文档", "release", "changelog", "版本", "兼容", "api",
     "接口", "框架", "库", "标准", "规范", "搜索", "联网", "外部", "资料", "新闻", "cve", "漏洞",
@@ -291,7 +319,8 @@ export function normalizePromptModuleTraces(raw) {
     return traces;
 }
 export function getSupportedPromptModulesForExpert(expertId) {
-    return [...(EXPERT_SUPPORTED_PROMPT_MODULES[expertId] || EXPERT_STATIC_PROMPT_MODULES[expertId] || [])];
+    const supported = getSupportedPromptModulesForCatalogExpert(expertId);
+    return supported.length > 0 ? [...supported] : [...getStaticPromptModulesForExpert(expertId)];
 }
 export function sanitizePromptModuleTaskDescription(taskDescription) {
     return taskDescription
@@ -301,7 +330,7 @@ export function sanitizePromptModuleTaskDescription(taskDescription) {
         .slice(0, 400);
 }
 export function selectPromptModules(expertId, scene, taskDescription) {
-    const modules = new Set(EXPERT_STATIC_PROMPT_MODULES[expertId] || []);
+    const modules = new Set(getStaticPromptModulesForExpert(expertId));
     const hasCodeToolPrimer = modules.has("code-tool-primer");
     if (hasCodeToolPrimer) {
         const searchKeywordHit = includesAnyKeyword(taskDescription, WEB_SEARCH_TRIGGER_KEYWORDS)
@@ -315,7 +344,7 @@ export function selectPromptModules(expertId, scene, taskDescription) {
         if (needsCommandGuidance)
             modules.add("command-guidance");
     }
-    if (expertId === "jiang-huaying") {
+    if (findExpertEntry(expertId)?.toolProfile === "creative") {
         const needsVideoWorkflow = scene === "video-production"
             || (includesAnyKeyword(taskDescription, VIDEO_TRIGGER_KEYWORDS)
                 && !matchesAnyPattern(taskDescription, VIDEO_NEGATION_PATTERNS));
